@@ -1,0 +1,37 @@
+.idea/
+*.iml
+*.test
+/*.pem
+bin/
+bin-*/
+dist/
+docs/docs.go
+docs/superpowers/
+site/
+config.yml
+todo.txt
+!docs/config.yml
+node_modules
+package-lock.json
+vendor/
+coverage.html
+coverage.txt
+coverage/
+denyzer
+
+# Denyzer frontend dashboard (Next.js static export)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+frontend/*.tsbuildinfo
+frontend/generated-logs/
+frontend/.reports/
+frontend/.env
+frontend/.env*.local
+frontend/coverage/
+
+# Compiled dashboard embed output (built by `make dashboard` into web/dashboard)
+# .gitkeep keeps the go:embed pattern compiling on a clean clone.
+web/dashboard/*
+!web/dashboard/.gitkeep

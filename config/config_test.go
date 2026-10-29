@@ -1,0 +1,1808 @@
+package config
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"maps"
+	"net"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/creasty/defaults"
+	"github.com/miekg/dns"
+	"github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus/hooks/test"
+
+	"github.com/mia0x75/denyzer/helpertest"
+	"github.com/mia0x75/denyzer/log"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+var _ = Describe("Config", func() {
+	var (
+		c *Config
+
+		tmpDir *helpertest.TmpFolder
+		err    error
+	)
+
+	suiteBeforeEach()
+
+	BeforeEach(func() {
+		tmpDir = helpertest.NewTmpFolder("config")
+	})
+
+	Describe("Deprecated parameters are converted", func() {
+		BeforeEach(func() {
+			c = new(Config)
+			err := defaults.Set(c)
+			Expect(err).Should(Succeed())
+		})
+
+		When("parameter 'disableIPv6' is set", func() {
+			It("should add 'AAAA' to filter.queryTypes", func() {
+				c.Deprecated.DisableIPv6 = new(true)
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("disableIPv6")))
+				Expect(c.Filtering.QueryTypes).Should(HaveKey(QType(dns.TypeAAAA)))
+				Expect(c.Filtering.QueryTypes.Contains(dns.Type(dns.TypeAAAA))).Should(BeTrue())
+			})
+		})
+
+		When("parameter 'failStartOnListError' is set", func() {
+			BeforeEach(func() {
+				c.Blocking.Deprecated.FailStartOnListError = new(true)
+			})
+			It("should change loading.strategy blocking to failOnError", func() {
+				c.Blocking.Loading.Strategy = InitStrategyBlocking
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("blocking.loading.strategy")))
+				Expect(c.Blocking.Loading.Strategy).Should(Equal(InitStrategyFailOnError))
+			})
+			It("shouldn't change loading.strategy if set to fast", func() {
+				c.Blocking.Loading.Strategy = InitStrategyFast
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("blocking.loading.strategy")))
+				Expect(c.Blocking.Loading.Strategy).Should(Equal(InitStrategyFast))
+			})
+		})
+
+		When("parameter 'logLevel' is set", func() {
+			It("should convert to log.level", func() {
+				c.Deprecated.LogLevel = new(logrus.DebugLevel)
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("log.level")))
+				Expect(c.Log.Level).Should(Equal(logrus.DebugLevel))
+			})
+		})
+
+		When("parameter 'logFormat' is set", func() {
+			It("should convert to log.format", func() {
+				c.Deprecated.LogFormat = new(log.FormatTypeJson)
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("log.format")))
+				Expect(c.Log.Format).Should(Equal(log.FormatTypeJson))
+			})
+		})
+
+		When("parameter 'logPrivacy' is set", func() {
+			It("should convert to log.privacy", func() {
+				c.Deprecated.LogPrivacy = new(true)
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("log.privacy")))
+				Expect(c.Log.Privacy).Should(BeTrue())
+			})
+		})
+
+		When("parameter 'logTimestamp' is set", func() {
+			It("should convert to log.timestamp", func() {
+				c.Deprecated.LogTimestamp = new(bool)
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("log.timestamp")))
+				Expect(c.Log.Timestamp).Should(BeFalse())
+			})
+		})
+
+		When("parameter 'port' is set", func() {
+			It("should convert to ports.dns", func() {
+				ports := ListenConfig([]string{"5333"})
+				c.Deprecated.DNSPorts = new(ports)
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("ports.dns")))
+				Expect(c.Ports.DNS).Should(Equal(ports))
+			})
+		})
+
+		When("parameter 'httpPort' is set", func() {
+			It("should convert to ports.http", func() {
+				ports := ListenConfig([]string{"5333"})
+				c.Deprecated.HTTPPorts = new(ports)
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("ports.http")))
+				Expect(c.Ports.HTTP).Should(Equal(ports))
+			})
+		})
+
+		When("parameter 'httpsPort' is set", func() {
+			It("should convert to ports.https", func() {
+				ports := ListenConfig([]string{"5333"})
+				c.Deprecated.HTTPSPorts = new(ports)
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("ports.https")))
+				Expect(c.Ports.HTTPS).Should(Equal(ports))
+			})
+		})
+
+		When("parameter 'tlsPort' is set", func() {
+			It("should convert to ports.tls", func() {
+				ports := ListenConfig([]string{"5333"})
+				c.Deprecated.TLSPorts = new(ports)
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("ports.tls")))
+				Expect(c.Ports.TLS).Should(Equal(ports))
+			})
+		})
+
+		When("parameter 'startVerifyUpstream' is set", func() {
+			It("should convert to upstreams.init.strategy", func() {
+				c.Deprecated.StartVerifyUpstream = new(true)
+				c.migrate(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("startVerifyUpstream")))
+				Expect(c.Upstreams.Init.Strategy).Should(Equal(InitStrategyFailOnError))
+			})
+		})
+	})
+
+	Describe("LoadConfigWithLogger", func() {
+		It("logs what it finds to the logger it is given, not the global logger", func() {
+			global := maps.Clone(log.Log().Hooks)
+			DeferCleanup(func() { log.Log().ReplaceHooks(global) })
+
+			globalHook := test.NewLocal(log.Log())
+
+			cfgFile := tmpDir.CreateStringFile("config.yml",
+				"upstream:",
+				"  default: [1.1.1.1]",
+				"caching:",
+				"  minTime: 5",
+				"blocking:",
+				"  denylists:",
+				"    ads: [example.com]",
+				"  clientGroupsBlock:",
+				"    default: [ads]",
+				"  schedules:",
+				"    weekend:",
+				"      weekdays: [sat, sat]",
+			)
+
+			_, err := LoadConfigWithLogger(logger, cfgFile.Path, true)
+			Expect(err).Should(Succeed())
+
+			Expect(hook.Messages).Should(ContainElements(
+				ContainSubstring(`config option "upstream" is deprecated`),
+				ContainSubstring("duration without a unit"),
+				ContainSubstring("duplicate weekday 'Saturday'"),
+			))
+			Expect(globalHook.AllEntries()).Should(BeEmpty())
+		})
+
+		DescribeTable("returns an invalid config's error instead of exiting",
+			func(lines []string, expected string) {
+				cfgFile := tmpDir.CreateStringFile("config.yml", lines...)
+
+				_, err := LoadConfigWithLogger(logger, cfgFile.Path, true)
+				Expect(err).Should(MatchError(ContainSubstring(expected)))
+			},
+			Entry("ports", []string{"ports:", "  dohPath: nope"}, "dohPath must start with '/'"),
+			Entry("DNS64",
+				[]string{"dns64:", "  enable: true", "filtering:", "  queryTypes: [AAAA]"},
+				"DNS64 will have no effect"),
+			Entry("rate limit", []string{"rateLimit:", "  enable: true"}, "rate must be > 0"),
+			Entry("rebinding protection",
+				[]string{"rebindingProtection:", "  allowedDomains: [\"  \"]"},
+				"allowedDomains[0] must not be empty"),
+		)
+	})
+
+	Describe("Creation of Config", func() {
+		When("Test config file will be parsed", func() {
+			It("should return a valid config struct", func() {
+				confFile := writeConfigYml(tmpDir)
+
+				c, err = LoadConfig(confFile.Path, true)
+				Expect(err).Should(Succeed())
+
+				defaultTestFileConfig(c)
+			})
+		})
+		When("Test config file contains a zone file with $INCLUDE", func() {
+			When("The config path is set to the config file", func() {
+				It("Should support the $INCLUDE directive with a bare filename", func() {
+					folder := helpertest.NewTmpFolder("zones")
+					folder.CreateStringFile("other.zone", "www 3600 A 1.2.3.4")
+					cfgFile := writeConfigYmlWithLocalZoneFile(folder, "other.zone")
+
+					c, err = LoadConfig(cfgFile.Path, true)
+
+					Expect(err).Should(Succeed())
+					Expect(c.CustomDNS.Zone.RRs).Should(HaveLen(1))
+
+					Expect(c.CustomDNS.Zone.RRs["www.example.com."]).
+						Should(SatisfyAll(
+							HaveLen(1),
+							ContainElements(
+								SatisfyAll(
+									helpertest.BeDNSRecord("www.example.com.", helpertest.A, "1.2.3.4"),
+									helpertest.HaveTTL(BeNumerically("==", 3600)),
+								)),
+						))
+				})
+				It("Should support the $INCLUDE directive with a relative filename", func() {
+					folder := helpertest.NewTmpFolder("zones")
+					folder.CreateStringFile("other.zone", "www 3600 A 1.2.3.4")
+					cfgFile := writeConfigYmlWithLocalZoneFile(folder, "./other.zone")
+
+					c, err = LoadConfig(cfgFile.Path, true)
+
+					Expect(err).Should(Succeed())
+					Expect(c.CustomDNS.Zone.RRs).Should(HaveLen(1))
+
+					Expect(c.CustomDNS.Zone.RRs["www.example.com."]).
+						Should(SatisfyAll(
+
+							HaveLen(1),
+							ContainElements(
+								SatisfyAll(
+									helpertest.BeDNSRecord("www.example.com.", helpertest.A, "1.2.3.4"),
+									helpertest.HaveTTL(BeNumerically("==", 3600)),
+								)),
+						))
+				})
+			})
+			When("The config path is set to a directory", func() {
+				It("Should support the $INCLUDE directive with a bare filename", func() {
+					folder := helpertest.NewTmpFolder("zones")
+					folder.CreateStringFile("other.zone", "www 3600 A 1.2.3.4")
+					writeConfigYmlWithLocalZoneFile(folder, "other.zone")
+
+					c, err = LoadConfig(folder.Path, true)
+
+					Expect(err).Should(Succeed())
+					Expect(c.CustomDNS.Zone.RRs).Should(HaveLen(1))
+
+					Expect(c.CustomDNS.Zone.RRs["www.example.com."]).
+						Should(SatisfyAll(
+							HaveLen(1),
+							ContainElements(
+								SatisfyAll(
+									helpertest.BeDNSRecord("www.example.com.", helpertest.A, "1.2.3.4"),
+									helpertest.HaveTTL(BeNumerically("==", 3600)),
+								)),
+						))
+				})
+				It("Should support the $INCLUDE directive with a relative filename", func() {
+					folder := helpertest.NewTmpFolder("zones")
+					folder.CreateStringFile("other.zone", "www 3600 A 1.2.3.4")
+					writeConfigYmlWithLocalZoneFile(folder, "./other.zone")
+
+					c, err = LoadConfig(folder.Path, true)
+
+					Expect(err).Should(Succeed())
+					Expect(c.CustomDNS.Zone.RRs).Should(HaveLen(1))
+
+					Expect(c.CustomDNS.Zone.RRs["www.example.com."]).
+						Should(SatisfyAll(
+
+							HaveLen(1),
+							ContainElements(
+								SatisfyAll(
+									helpertest.BeDNSRecord("www.example.com.", helpertest.A, "1.2.3.4"),
+									helpertest.HaveTTL(BeNumerically("==", 3600)),
+								)),
+						))
+				})
+			})
+		})
+		When("Test file does not exist", func() {
+			It("should fail", func() {
+				_, err := LoadConfig(tmpDir.JoinPath("config-does-not-exist.yaml"), true)
+				Expect(err).Should(HaveOccurred())
+			})
+		})
+		When("Multiple config files are used", func() {
+			BeforeEach(func() {
+				writeConfigDir(tmpDir)
+			})
+
+			It("should return a valid config struct", func() {
+				c, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(Succeed())
+
+				defaultTestFileConfig(c)
+			})
+
+			It("should ignore non YAML files", func() {
+				tmpDir.CreateStringFile("ignore-me.txt", "THIS SHOULD BE IGNORED!")
+
+				_, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(Succeed())
+			})
+
+			It("should ignore non regular files", func() {
+				tmpDir.CreateSubFolder("subfolder")
+				tmpDir.CreateSubFolder("subfolder.yml")
+
+				_, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(Succeed())
+			})
+		})
+		When("multiple config files share keys", func() {
+			It("merges maps across files (issue #1827)", func() {
+				tmpDir.CreateStringFile("00_default.yaml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - 8.8.8.8",
+				)
+				tmpDir.CreateStringFile("10_local.yaml",
+					"upstreams:",
+					"  groups:",
+					"    192.168.0.0/16:",
+					"      - 1.1.1.1",
+				)
+
+				c, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(Succeed())
+				Expect(c.Upstreams.Groups).Should(HaveLen(2))
+				Expect(c.Upstreams.Groups).Should(HaveKey("default"))
+				Expect(c.Upstreams.Groups).Should(HaveKey("192.168.0.0/16"))
+			})
+
+			It("lets the last file win scalar and list conflicts", func() {
+				tmpDir.CreateStringFile("00_default.yaml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - 8.8.8.8",
+					"      - 8.8.4.4",
+					"log:",
+					"  level: info",
+				)
+				tmpDir.CreateStringFile("10_local.yaml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - 1.1.1.1",
+					"log:",
+					"  level: debug",
+				)
+
+				c, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(Succeed())
+				Expect(c.Upstreams.Groups["default"]).Should(HaveLen(1))
+				Expect(c.Log.Level).Should(Equal(logrus.DebugLevel))
+			})
+
+			It("still rejects duplicate keys within one file, naming the file", func() {
+				tmpDir.CreateStringFile("bad.yaml",
+					"log:",
+					"  level: debug",
+					"log:",
+					"  level: info",
+				)
+
+				_, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("bad.yaml"))
+				Expect(err.Error()).Should(ContainSubstring("already set in map"))
+			})
+
+			It("rejects a file whose top level is not a mapping, naming the file", func() {
+				tmpDir.CreateStringFile("list.yaml", "- not", "- a", "- mapping")
+
+				_, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("list.yaml"))
+				Expect(err.Error()).Should(ContainSubstring("must be a mapping"))
+			})
+
+			It("skips empty and comment-only files", func() {
+				tmpDir.CreateStringFile("00_real.yaml", "log:", "  level: debug")
+				tmpDir.CreateEmptyFile("10_empty.yaml")
+				tmpDir.CreateStringFile("20_comments.yaml", "# overlay placeholder")
+
+				c, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(Succeed())
+				Expect(c.Log.Level).Should(Equal(logrus.DebugLevel))
+			})
+
+			It("merges multi-document files in document order", func() {
+				tmpDir.CreateStringFile("multi.yaml",
+					"log:",
+					"  level: info",
+					"---",
+					"log:",
+					"  level: debug",
+				)
+
+				c, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(Succeed())
+				Expect(c.Log.Level).Should(Equal(logrus.DebugLevel))
+			})
+
+			It("preserves scalar literals so minTlsServeVersion: 1.0 still loads (issue #1827)", func() {
+				// Folder merging used to re-marshal scalars through a generic
+				// map, collapsing `1.0` to `1` and breaking startup. Node-tree
+				// merging keeps the literal, so this loads just like a single
+				// file (which accepts 1.0 and bumps it to the secure default).
+				tmpDir.CreateStringFile("00_tls.yaml",
+					"minTlsServeVersion: 1.0",
+				)
+
+				c, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(Succeed())
+				Expect(c.MinTLSServeVer).Should(Equal(TLSVersion12))
+			})
+
+			It("attributes an unknown key to its source file", func() {
+				tmpDir.CreateStringFile("00_good.yaml", "log:", "  level: debug")
+				tmpDir.CreateStringFile("10_typo.yaml", "blocing:", "  blockType: zeroIp")
+
+				_, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("10_typo.yaml"))
+			})
+
+			It("attributes an unknown key introduced by a non-first document of a multi-doc file", func() {
+				// The bad key lives in the SECOND document of the file. Schema
+				// attribution must read every document of the source, not just
+				// the first one, so the file is still named (issue: yaml.v2's
+				// single-document Unmarshal in schema.ValidateYAML).
+				tmpDir.CreateStringFile("00_good.yaml", "log:", "  level: debug")
+				tmpDir.CreateStringFile("10_multidoc.yaml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - 8.8.8.8",
+					"---",
+					"blocing:",
+					"  blockType: zeroIp",
+				)
+
+				_, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("10_multidoc.yaml"))
+			})
+
+			It("does not duplicate findings and never blames a valid-after-merge file", func() {
+				// 00_good.yaml sets blocking.denylists.ads to null; after merging
+				// 10_bad.yaml fills it with a real list. The merged doc is invalid
+				// only because of blocking.badkey from 10_bad.yaml.
+				// Before the reconciliation fix, 00_good.yaml was falsely blamed
+				// for a null-ads finding and the badkey line appeared twice.
+				tmpDir.CreateStringFile("00_good.yaml",
+					"blocking:",
+					"  denylists:",
+					"    ads:",
+				)
+				tmpDir.CreateStringFile("10_bad.yaml",
+					"blocking:",
+					"  denylists:",
+					"    ads:",
+					"      - http://x",
+					"  badkey: 1",
+				)
+
+				_, err := LoadConfig(tmpDir.Path, true)
+				Expect(err).Should(HaveOccurred())
+
+				errStr := err.Error()
+
+				// "badkey" must appear at most twice: once in the yaml unmarshal
+				// error and once in the attributed schema line. It must NOT appear
+				// three times (which would mean both an unattributed and an
+				// attributed schema line).
+				Expect(strings.Count(errStr, "badkey")).Should(BeNumerically("<=", 2))
+
+				// The good file that is only valid after merging must not be blamed.
+				Expect(errStr).ShouldNot(ContainSubstring("00_good.yaml"))
+
+				// The bad file that introduced the unknown key must be blamed.
+				Expect(errStr).Should(ContainSubstring("10_bad.yaml"))
+			})
+		})
+		When("a single config file contains duplicate keys", func() {
+			It("keeps the single-file error shape, proving the merge path is not used", func() {
+				cfgFile := tmpDir.CreateStringFile("config.yml",
+					"log:",
+					"  level: debug",
+					"log:",
+					"  level: info",
+				)
+
+				_, err := LoadConfig(cfgFile.Path, true)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("wrong file structure"))
+				Expect(err.Error()).ShouldNot(ContainSubstring("can't parse config file"))
+			})
+		})
+		When("Config folder does not exist", func() {
+			It("should fail", func() {
+				_, err := LoadConfig(tmpDir.JoinPath("does-not-exist-config/"), true)
+				Expect(err).Should(HaveOccurred())
+			})
+		})
+		When("config file is malformed", func() {
+			It("should return error", func() {
+				cfgFile := tmpDir.CreateStringFile("config.yml", "malformed_config")
+
+				c, err = LoadConfig(cfgFile.Path, true)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("wrong file structure"))
+			})
+		})
+		When("duration is in wrong format", func() {
+			It("should return error", func() {
+				cfg := Config{}
+				data := `
+blocking:
+  loading:
+    refreshPeriod: wrongduration`
+				err := unmarshalConfig(logger, []byte(data), &cfg, nil)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("invalid duration \"wrongduration\""))
+			})
+		})
+		When("CustomDNS hast wrong IP defined", func() {
+			It("should return error", func() {
+				cfg := Config{}
+				data := `customDNS:
+  mapping:
+    someDomain: 192.168.178.WRONG`
+				err := unmarshalConfig(logger, []byte(data), &cfg, nil)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("invalid IP address '192.168.178.WRONG'"))
+			})
+		})
+		When("CustomDNS hast wrong IPv6 defined", func() {
+			It("should return error", func() {
+				cfg := Config{}
+				data := `customDNS:
+  mapping:
+    someDomain: 2001:MALFORMED:IP:ADDRESS:0000:8a2e:0370:7334`
+				err := unmarshalConfig(logger, []byte(data), &cfg, nil)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("invalid IP address '2001:MALFORMED:IP:ADDRESS:0000:8a2e:0370:7334'"))
+			})
+		})
+		When("Conditional mapping hast wrong defined upstreams", func() {
+			It("should return error", func() {
+				cfg := Config{}
+				data := `conditional:
+  mapping:
+    multiple.resolvers: 192.168.178.1,wrongprotocol:4.4.4.4:53`
+				err := unmarshalConfig(logger, []byte(data), &cfg, nil)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("wrong host name 'wrongprotocol:4.4.4.4:53'"))
+			})
+		})
+		When("Wrong upstreams are defined", func() {
+			It("should return error", func() {
+				cfg := Config{}
+				data := `upstream:
+  default:
+    - 8.8.8.8
+    - wrongprotocol:8.8.4.4
+    - 1.1.1.1`
+				err := unmarshalConfig(logger, []byte(data), &cfg, nil)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("can't convert upstream 'wrongprotocol:8.8.4.4'"))
+			})
+		})
+		When("Wrong filtering is defined", func() {
+			It("should return error", func() {
+				cfg := Config{}
+				data := `filtering:
+  queryTypes:
+    - invalidqtype
+`
+				err := unmarshalConfig(logger, []byte(data), &cfg, nil)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("unknown DNS query type: 'invalidqtype'"))
+			})
+		})
+
+		When("bootstrapDns is defined", func() {
+			It("should be backwards compatible to 'single IP syntax'", func() {
+				cfg := Config{}
+				data := "bootstrapDns: 0.0.0.0"
+
+				err := unmarshalConfig(logger, []byte(data), &cfg, nil)
+				Expect(err).Should(Succeed())
+				Expect(cfg.BootstrapDNS[0].Upstream.Host).Should(Equal("0.0.0.0"))
+			})
+			It("should be backwards compatible to 'single item definition'", func() {
+				cfg := Config{}
+				data := `
+bootstrapDns:
+  upstream: tcp-tls:dns.example.com
+  ips:
+    - 0.0.0.0
+`
+				err := unmarshalConfig(logger, []byte(data), &cfg, nil)
+				Expect(err).Should(Succeed())
+				Expect(cfg.BootstrapDNS[0].Upstream.Host).Should(Equal("dns.example.com"))
+				Expect(cfg.BootstrapDNS[0].IPs).Should(HaveLen(1))
+			})
+			It("should process list of bootstrap items", func() {
+				cfg := Config{}
+				data := `
+bootstrapDns:
+  - upstream: tcp-tls:dns.example.com
+    ips:
+      - 0.0.0.0
+  - upstream: 1.2.3.4
+`
+				err := unmarshalConfig(logger, []byte(data), &cfg, nil)
+				Expect(err).Should(Succeed())
+				Expect(cfg.BootstrapDNS).Should(HaveLen(2))
+				Expect(cfg.BootstrapDNS[0].Upstream.Host).Should(Equal("dns.example.com"))
+				Expect(cfg.BootstrapDNS[0].Upstream.Net).Should(Equal(NetProtocolTcpTls))
+				Expect(cfg.BootstrapDNS[0].IPs).Should(HaveLen(1))
+				Expect(cfg.BootstrapDNS[1].Upstream.Host).Should(Equal("1.2.3.4"))
+				Expect(cfg.BootstrapDNS[1].Upstream.Net).Should(Equal(NetProtocolTcpUdp))
+			})
+		})
+
+		When("config is not YAML", func() {
+			It("should return error", func() {
+				cfg := Config{}
+				data := `///`
+				err := unmarshalConfig(logger, []byte(data), &cfg, nil)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("cannot unmarshal !!str `///`"))
+			})
+		})
+
+		When("config directory does not exist", func() {
+			It("should return error", func() {
+				c, err = LoadConfig(tmpDir.JoinPath("config.yml"), true)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("no such file or directory"))
+			})
+
+			It("should use default config if config is not mandatory", func() {
+				c, err = LoadConfig(tmpDir.JoinPath("config.yml"), false)
+
+				Expect(err).Should(Succeed())
+				Expect(c.Log.Level).Should(Equal(logrus.InfoLevel))
+			})
+		})
+	})
+
+	Describe("Parsing", func() {
+		Context("upstream", func() {
+			It("should create the upstream struct with data", func() {
+				u := &Upstream{}
+				err := u.UnmarshalText([]byte("tcp+udp:1.2.3.4"))
+				Expect(err).Should(Succeed())
+				Expect(u.Net).Should(Equal(NetProtocolTcpUdp))
+				Expect(u.Host).Should(Equal("1.2.3.4"))
+				Expect(u.Port).Should(BeNumerically("==", 53))
+			})
+
+			It("should fail if the upstream is in wrong format", func() {
+				u := &Upstream{}
+				err := u.UnmarshalText([]byte("invalid!"))
+				Expect(err).Should(HaveOccurred())
+			})
+		})
+		Context("ListenConfig", func() {
+			It("should parse and split valid string config", func() {
+				l := &ListenConfig{}
+				err := l.UnmarshalText([]byte("55,:56"))
+				Expect(err).Should(Succeed())
+				Expect(*l).Should(HaveLen(2))
+				Expect(*l).Should(ContainElements(":55", ":56"))
+			})
+		})
+	})
+
+	DescribeTable("Upstream parsing",
+		func(in string, wantResult Upstream, wantErr bool) {
+			result, err := ParseUpstream(in)
+			if wantErr {
+				Expect(err).Should(HaveOccurred(), in)
+			} else {
+				Expect(err).Should(Succeed(), in)
+			}
+			Expect(result).Should(Equal(wantResult), in)
+		},
+		Entry("tcp+udp with port",
+			"4.4.4.4:531",
+			Upstream{Net: NetProtocolTcpUdp, Host: "4.4.4.4", Port: 531},
+			false),
+		Entry("tcp+udp without port, use default",
+			"4.4.4.4",
+			Upstream{Net: NetProtocolTcpUdp, Host: "4.4.4.4", Port: 53},
+			false),
+		Entry("tcp+udp with port",
+			"tcp+udp:4.4.4.4:4711",
+			Upstream{Net: NetProtocolTcpUdp, Host: "4.4.4.4", Port: 4711},
+			false),
+		Entry("tcp without port, use default",
+			"4.4.4.4",
+			Upstream{Net: NetProtocolTcpUdp, Host: "4.4.4.4", Port: 53},
+			false),
+		Entry("tcp-tls without port, use default",
+			"tcp-tls:4.4.4.4",
+			Upstream{Net: NetProtocolTcpTls, Host: "4.4.4.4", Port: 853},
+			false),
+		Entry("tcp-tls with common name",
+			"tcp-tls:1.1.1.2#security.cloudflare-dns.com",
+			Upstream{Net: NetProtocolTcpTls, Host: "1.1.1.2", Port: 853, CommonName: "security.cloudflare-dns.com"},
+			false),
+		Entry("DoH without port, use default",
+			"https:4.4.4.4",
+			Upstream{Net: NetProtocolHttps, Host: "4.4.4.4", Port: 443},
+			false),
+		Entry("DoH with port",
+			"https:4.4.4.4:888",
+			Upstream{Net: NetProtocolHttps, Host: "4.4.4.4", Port: 888},
+			false),
+		Entry("DoH named",
+			"https://dns.google/dns-query",
+			Upstream{Net: NetProtocolHttps, Host: "dns.google", Port: 443, Path: "/dns-query"},
+			false),
+		Entry("DoH named, path with multiple slashes",
+			"https://dns.google/dns-query/a/b",
+			Upstream{Net: NetProtocolHttps, Host: "dns.google", Port: 443, Path: "/dns-query/a/b"},
+			false),
+		Entry("DoH named with port",
+			"https://dns.google:888/dns-query",
+			Upstream{Net: NetProtocolHttps, Host: "dns.google", Port: 888, Path: "/dns-query"},
+			false),
+		Entry("empty",
+			"",
+			Upstream{Net: 0},
+			true),
+		Entry("udpIpv6WithPort",
+			"tcp+udp:[fd00::6cd4:d7e0:d99d:2952]:53",
+			Upstream{Net: NetProtocolTcpUdp, Host: "fd00::6cd4:d7e0:d99d:2952", Port: 53},
+			false),
+		Entry("udpIpv6WithPort2",
+			"[2001:4860:4860::8888]:53",
+			Upstream{Net: NetProtocolTcpUdp, Host: "2001:4860:4860::8888", Port: 53},
+			false),
+		Entry("default net, default port",
+			"1.1.1.1",
+			Upstream{Net: NetProtocolTcpUdp, Host: "1.1.1.1", Port: 53},
+			false),
+		Entry("wrong host name",
+			"host$name",
+			Upstream{},
+			true),
+		Entry("default net with port",
+			"1.1.1.1:153",
+			Upstream{Net: NetProtocolTcpUdp, Host: "1.1.1.1", Port: 153},
+			false),
+		Entry("with negative port",
+			"tcp:4.4.4.4:-1",
+			nil,
+			true),
+		Entry("with invalid port",
+			"tcp:4.4.4.4:65536",
+			nil,
+			true),
+		Entry("with not numeric port",
+			"tcp:4.4.4.4:A636",
+			nil,
+			true),
+		Entry("with wrong protocol",
+			"bla:4.4.4.4:53",
+			nil,
+			true),
+		Entry("tcp+udp",
+			"tcp+udp:1.1.1.1:53",
+			Upstream{Net: NetProtocolTcpUdp, Host: "1.1.1.1", Port: 53},
+			false),
+		Entry("tcp+udp default port",
+			"tcp+udp:1.1.1.1",
+			Upstream{Net: NetProtocolTcpUdp, Host: "1.1.1.1", Port: 53},
+			false),
+		Entry("defaultIpv6Short",
+			"2620:fe::fe",
+			Upstream{Net: NetProtocolTcpUdp, Host: "2620:fe::fe", Port: 53},
+			false),
+		Entry("defaultIpv6Short2",
+			"2620:fe::9",
+			Upstream{Net: NetProtocolTcpUdp, Host: "2620:fe::9", Port: 53},
+			false),
+		Entry("defaultIpv6WithPort",
+			"[2620:fe::9]:55",
+			Upstream{Net: NetProtocolTcpUdp, Host: "2620:fe::9", Port: 55},
+			false),
+	)
+
+	DescribeTable("Upstream string representation",
+		func(upstream Upstream, canonical string) {
+			Expect(upstream.String()).To(Equal(canonical))
+
+			if !upstream.IsDefault() {
+				roundTripped, err := ParseUpstream(canonical)
+				Expect(err).Should(Succeed())
+				Expect(roundTripped).Should(Equal(upstream))
+			}
+		},
+		Entry("Default",
+			Upstream{}, "no upstream",
+		),
+		Entry("tcp+udp with port",
+			Upstream{Net: NetProtocolTcpUdp, Host: "localhost", Port: 531},
+			"tcp+udp:localhost:531",
+		),
+		Entry("tcp+udp default port",
+			Upstream{Net: NetProtocolTcpUdp, Host: "localhost", Port: 53},
+			"tcp+udp:localhost",
+		),
+		Entry("tcp-tls with port",
+			Upstream{Net: NetProtocolTcpTls, Host: "localhost", Port: 888},
+			"tcp-tls:localhost:888",
+		),
+		Entry("tcp-tls default port",
+			Upstream{Net: NetProtocolTcpTls, Host: "localhost", Port: 853},
+			"tcp-tls:localhost",
+		),
+		Entry("tcp+udp with other default port",
+			Upstream{Net: NetProtocolTcpUdp, Host: "localhost", Port: 443},
+			"tcp+udp:localhost:443"),
+		Entry("https with port",
+			Upstream{Net: NetProtocolHttps, Host: "localhost", Port: 888},
+			"https://localhost:888",
+		),
+		Entry("https with path",
+			Upstream{Net: NetProtocolHttps, Host: "localhost", Port: 443, Path: "/dns-query"},
+			"https://localhost/dns-query",
+		),
+		Entry("https with path and port",
+			Upstream{Net: NetProtocolHttps, Host: "localhost", Port: 888, Path: "/dns-query"},
+			"https://localhost:888/dns-query",
+		),
+		Entry("tcp+udp IPv4 with port",
+			Upstream{Net: NetProtocolTcpUdp, Host: "127.0.0.1", Port: 531},
+			"tcp+udp:127.0.0.1:531",
+		),
+		Entry("tcp+udp IPv4 default port",
+			Upstream{Net: NetProtocolTcpUdp, Host: "127.0.0.1", Port: 53},
+			"tcp+udp:127.0.0.1",
+		),
+		Entry("tcp-tls IPv6 with port",
+			Upstream{Net: NetProtocolTcpTls, Host: "fd00::6cd4:d7e0:d99d:2952", Port: 531},
+			"tcp-tls:[fd00::6cd4:d7e0:d99d:2952]:531",
+		),
+		Entry("tcp-tls IPv6 default port",
+			Upstream{Net: NetProtocolTcpTls, Host: "fd00::6cd4:d7e0:d99d:2952", Port: 853},
+			"tcp-tls:[fd00::6cd4:d7e0:d99d:2952]",
+		),
+	)
+
+	Describe("SourceLoadingConfig", func() {
+		var cfg SourceLoading
+
+		BeforeEach(func() {
+			cfg = SourceLoading{
+				Concurrency:   12,
+				RefreshPeriod: Duration(time.Hour),
+			}
+		})
+
+		Describe("LogConfig", func() {
+			It("should log configuration", func() {
+				cfg.LogConfig(logger)
+
+				Expect(hook.Calls).ShouldNot(BeEmpty())
+				Expect(hook.Messages).Should(ContainElements(
+					ContainSubstring("concurrency = 12"),
+					ContainSubstring("refresh = every 1 hour"),
+				))
+			})
+			When("refresh is disabled", func() {
+				BeforeEach(func() {
+					cfg.RefreshPeriod = Duration(-1)
+				})
+
+				It("should reflect that", func() {
+					logger.Logger.Level = logrus.InfoLevel
+
+					cfg.LogConfig(logger)
+
+					Expect(hook.Calls).ShouldNot(BeEmpty())
+					Expect(hook.Messages).ShouldNot(ContainElement(ContainSubstring("refresh = disabled")))
+
+					logger.Logger.Level = logrus.TraceLevel
+
+					cfg.LogConfig(logger)
+
+					Expect(hook.Calls).ShouldNot(BeEmpty())
+					Expect(hook.Messages).Should(ContainElement(ContainSubstring("refresh = disabled")))
+				})
+			})
+		})
+
+		Describe("DownloaderConfig", func() {
+			It("defaults cachePath to empty (stateless)", func() {
+				cfg, err := WithDefaults[Downloader]()
+				Expect(err).Should(Succeed())
+				Expect(cfg.CachePath).Should(BeEmpty())
+			})
+
+			It("logs the cache path when configured", func() {
+				cfg, err := WithDefaults[Downloader]()
+				Expect(err).Should(Succeed())
+				cfg.CachePath = "/var/cache/denyzer/lists"
+
+				cfg.LogConfig(logger)
+
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("cachePath = /var/cache/denyzer/lists")))
+			})
+
+			It("logs disabled only at debug level when cachePath is empty", func() {
+				cfg, err := WithDefaults[Downloader]()
+				Expect(err).Should(Succeed())
+
+				// At the default info level the disabled note is suppressed (it is a debug line)...
+				logger.Logger.Level = logrus.InfoLevel
+				cfg.LogConfig(logger)
+				Expect(hook.Messages).ShouldNot(ContainElement(ContainSubstring("disabled")))
+
+				// ...and only appears once debug/trace logging is enabled.
+				logger.Logger.Level = logrus.TraceLevel
+				cfg.LogConfig(logger)
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("disabled")))
+			})
+		})
+	})
+
+	Describe("InitStrategy", func() {
+		Describe("InitStrategyBlocking", func() {
+			It("runs in the current goroutine", func() {
+				sut := InitStrategyBlocking
+				panicVal := new(int)
+
+				defer func() {
+					// recover will catch the panic if it happened in the same goroutine
+					Expect(recover()).Should(BeIdenticalTo(panicVal))
+				}()
+
+				_ = sut.Do(context.Background(), func(context.Context) error {
+					return errors.New("trigger `logErr`")
+				}, func(err error) {
+					panic(panicVal)
+				})
+
+				Fail("unreachable")
+			})
+
+			It("logs errors and doesn't return them", func() {
+				sut := InitStrategyBlocking
+				expectedErr := errors.New("test")
+
+				err := sut.Do(context.Background(), func(context.Context) error {
+					return expectedErr
+				}, func(err error) {
+					Expect(err).Should(MatchError(expectedErr))
+				})
+
+				Expect(err).Should(Succeed())
+			})
+
+			It("logs panics and doesn't convert them to errors", func() {
+				sut := InitStrategyBlocking
+
+				logged := false
+				err := sut.Do(context.Background(), func(context.Context) error {
+					panic(struct{}{})
+				}, func(err error) {
+					logged = true
+					Expect(err).Should(MatchError(ContainSubstring("panic")))
+				})
+
+				Expect(err).Should(Succeed())
+				Expect(logged).Should(BeTrue())
+			})
+		})
+
+		Describe("InitStrategyFailOnError", func() {
+			It("runs in the current goroutine", func() {
+				sut := InitStrategyFailOnError
+				panicVal := new(int)
+
+				defer func() {
+					// recover will catch the panic if it happened in the same goroutine
+					Expect(recover()).Should(BeIdenticalTo(panicVal))
+				}()
+
+				_ = sut.Do(context.Background(), func(context.Context) error {
+					return errors.New("trigger `logErr`")
+				}, func(err error) {
+					panic(panicVal)
+				})
+
+				Fail("unreachable")
+			})
+
+			It("logs errors and returns them", func() {
+				sut := InitStrategyFailOnError
+				expectedErr := errors.New("test")
+
+				err := sut.Do(context.Background(), func(context.Context) error {
+					return expectedErr
+				}, func(err error) {
+					Expect(err).Should(MatchError(expectedErr))
+				})
+
+				Expect(err).Should(MatchError(expectedErr))
+			})
+
+			It("returns logs panics and converts them to errors", func() {
+				sut := InitStrategyFailOnError
+
+				logged := false
+				err := sut.Do(context.Background(), func(context.Context) error {
+					panic(struct{}{})
+				}, func(err error) {
+					logged = true
+					Expect(err).Should(MatchError(ContainSubstring("panic")))
+				})
+
+				Expect(err).Should(HaveOccurred())
+				Expect(logged).Should(BeTrue())
+			})
+		})
+
+		Describe("InitStrategyFast", func() {
+			It("runs in a new goroutine", func() {
+				sut := InitStrategyFast
+				events := make(chan string)
+				wait := make(chan struct{})
+
+				err := sut.Do(context.Background(), func(context.Context) error {
+					events <- "start"
+					<-wait
+					events <- "done"
+
+					return nil
+				}, nil)
+
+				Eventually(events, "50ms").Should(Receive(Equal("start")))
+				Expect(err).Should(Succeed())
+				Consistently(events).ShouldNot(Receive())
+				close(wait)
+				Eventually(events, "50ms").Should(Receive(Equal("done")))
+			})
+
+			It("logs errors", func() {
+				sut := InitStrategyFast
+				expectedErr := errors.New("test")
+				wait := make(chan struct{})
+
+				err := sut.Do(context.Background(), func(context.Context) error {
+					return expectedErr
+				}, func(err error) {
+					Expect(err).Should(MatchError(expectedErr))
+					close(wait)
+				})
+
+				Expect(err).Should(Succeed())
+				Eventually(wait, "50ms").Should(BeClosed())
+			})
+
+			It("logs panics", func() {
+				sut := InitStrategyFast
+				expectedErr := errors.New("test")
+				wait := make(chan struct{})
+
+				err := sut.Do(context.Background(), func(context.Context) error {
+					return expectedErr
+				}, func(err error) {
+					Expect(err).Should(MatchError(expectedErr))
+					close(wait)
+				})
+
+				Expect(err).Should(Succeed())
+				Eventually(wait, "50ms").Should(BeClosed())
+			})
+		})
+	})
+
+	Describe("BootstrapDNSConfig", func() {
+		It("is not enabled when empty", func() {
+			var sut BootstrapDNS
+
+			Expect(sut.IsEnabled()).Should(BeFalse())
+		})
+
+		It("is enabled if non empty", func() {
+			sut := BootstrapDNS{
+				BootstrappedUpstream{},
+				BootstrappedUpstream{},
+			}
+
+			Expect(sut.IsEnabled()).Should(BeTrue())
+		})
+
+		It("LogConfig panics", func() {
+			sut := BootstrapDNS{}
+
+			Expect(func() {
+				sut.LogConfig(logger)
+			}).Should(Panic())
+		})
+	})
+
+	Describe("SourceLoadingConfig", func() {
+		var (
+			ctx      context.Context
+			cancelFn context.CancelFunc
+		)
+		BeforeEach(func() {
+			ctx, cancelFn = context.WithCancel(context.Background())
+			DeferCleanup(cancelFn)
+		})
+		It("handles panics", func() {
+			sut := SourceLoading{
+				Init: Init{Strategy: InitStrategyFailOnError},
+			}
+
+			panicMsg := "panic value"
+
+			err := sut.StartPeriodicRefresh(ctx, func(context.Context) error {
+				panic(panicMsg)
+			}, func(err error) {
+				Expect(err).Should(MatchError(ContainSubstring(panicMsg)))
+			})
+
+			Expect(err).Should(MatchError(ContainSubstring(panicMsg)))
+		})
+
+		It("periodically calls refresh", func() {
+			sut := SourceLoading{
+				Init:          Init{Strategy: InitStrategyFast},
+				RefreshPeriod: Duration(5 * time.Millisecond),
+			}
+
+			panicMsg := "panic value"
+			calls := make(chan int32, 3)
+
+			var call atomic.Int32
+
+			err := sut.StartPeriodicRefresh(ctx, func(context.Context) error {
+				call := call.Add(1)
+				calls <- call
+
+				if call == 3 {
+					panic(panicMsg)
+				}
+
+				return nil
+			}, func(err error) {
+				defer GinkgoRecover()
+
+				Expect(err).Should(MatchError(ContainSubstring(panicMsg)))
+				Expect(call.Load()).Should(Equal(int32(3)))
+			})
+
+			Expect(err).Should(Succeed())
+			Eventually(calls, "50ms").Should(Receive(Equal(int32(1))))
+			Eventually(calls, "50ms").Should(Receive(Equal(int32(2))))
+			Eventually(calls, "50ms").Should(Receive(Equal(int32(3))))
+		})
+	})
+
+	Describe("WithDefaults", func() {
+		It("use valid defaults", func() {
+			type T struct {
+				X int `default:"1"`
+			}
+
+			t, err := WithDefaults[T]()
+			Expect(err).Should(Succeed())
+			Expect(t.X).Should(Equal(1))
+		})
+
+		It("return an error if the tag is invalid", func() {
+			type T struct {
+				X struct{} `default:"fail"`
+			}
+
+			_, err := WithDefaults[T]()
+			Expect(err).Should(HaveOccurred())
+		})
+	})
+
+	Describe("Documentation config", func() {
+		It("should not use deprecated options", func() {
+			logger, hook := log.NewMockEntry()
+
+			_, err := loadConfig(logger, "../docs/config.yml", true)
+			Expect(err).Should(Succeed())
+			Expect(hook.Messages).ShouldNot(ContainElement(ContainSubstring("deprecated")))
+		})
+	})
+
+	Describe("DNS Stamp Upstreams", func() {
+		When("Config contains DNS stamps", func() {
+			It("should parse DNS stamp upstreams correctly", func() {
+				confFile := tmpDir.CreateStringFile("config.yml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - sdns://AgcAAAAAAAAABzEuMC4wLjGgENk8mGSlIfMGXMOlIlCcKvq7AVgcrZxtjon911-ep0cg63Ul-I8NlFj4GplQGb_TTLiczclX57DvMV8Q-JdjgRgSZG5zLmNsb3VkZmxhcmUuY29tCi9kbnMtcXVlcnk", // Cloudflare DoH
+					"      - sdns://AAcAAAAAAAAABzguOC44Ljg", // Google DNS Plain
+				)
+
+				c, err = LoadConfig(confFile.Path, true)
+				Expect(err).Should(Succeed())
+
+				// Verify default group
+				defaultUpstreams := c.Upstreams.Groups["default"]
+				Expect(defaultUpstreams).Should(HaveLen(2))
+
+				// Verify Cloudflare DoH
+				Expect(defaultUpstreams[0].Net).Should(Equal(NetProtocolHttps))
+				Expect(defaultUpstreams[0].Host).Should(Equal("dns.cloudflare.com"))
+				Expect(defaultUpstreams[0].Port).Should(Equal(uint16(443)))
+				Expect(defaultUpstreams[0].Path).Should(Equal("/dns-query"))
+				Expect(defaultUpstreams[0].CommonName).Should(Equal("dns.cloudflare.com"))
+				Expect(defaultUpstreams[0].CertificateFingerprints).ShouldNot(BeEmpty())
+
+				// Verify Google Plain DNS
+				Expect(defaultUpstreams[1].Net).Should(Equal(NetProtocolTcpUdp))
+				Expect(defaultUpstreams[1].Host).Should(Equal("8.8.8.8"))
+				Expect(defaultUpstreams[1].Port).Should(Equal(uint16(53)))
+			})
+
+			It("should support mixed DNS stamp and traditional format", func() {
+				confFile := tmpDir.CreateStringFile("config.yml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - 8.8.8.8",                        // Traditional
+					"      - https://dns.google/dns-query",   // Traditional DoH
+					"      - sdns://AAcAAAAAAAAABzguOC44Ljg", // DNS Stamp
+					"      - sdns://AgcAAAAAAAAABzEuMC4wLjGgENk8mGSlIfMGXMOlIlCcKvq7AVgcrZxtjon911-ep0cg63Ul-I8NlFj4GplQGb_TTLiczclX57DvMV8Q-JdjgRgSZG5zLmNsb3VkZmxhcmUuY29tCi9kbnMtcXVlcnk", // DNS Stamp DoH
+				)
+
+				c, err = LoadConfig(confFile.Path, true)
+				Expect(err).Should(Succeed())
+
+				defaultUpstreams := c.Upstreams.Groups["default"]
+				Expect(defaultUpstreams).Should(HaveLen(4))
+
+				// All should be parsed correctly
+				Expect(defaultUpstreams[0].Host).Should(Equal("8.8.8.8"))
+				Expect(defaultUpstreams[0].Net).Should(Equal(NetProtocolTcpUdp))
+
+				Expect(defaultUpstreams[1].Host).Should(Equal("dns.google"))
+				Expect(defaultUpstreams[1].Net).Should(Equal(NetProtocolHttps))
+
+				Expect(defaultUpstreams[2].Host).Should(Equal("8.8.8.8"))
+				Expect(defaultUpstreams[2].Net).Should(Equal(NetProtocolTcpUdp))
+
+				Expect(defaultUpstreams[3].Host).Should(Equal("dns.cloudflare.com"))
+				Expect(defaultUpstreams[3].Net).Should(Equal(NetProtocolHttps))
+			})
+
+			It("should reject unsupported protocol in DNS stamp", func() {
+				confFile := tmpDir.CreateStringFile("config.yml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - sdns://AQMAAAAAAAAAETk0Ljc2Ljc2LjE6ODQ0MyAK-Y3YBV0rO9yqiOWp6OMQNvPPRMfOqCvQV7C8BmOW6hnSZG5zY3J5cHQuZGU", // DNSCrypt
+				)
+
+				_, err = LoadConfig(confFile.Path, true)
+				Expect(err).Should(HaveOccurred())
+				// May fail with various error messages depending on stamp validity
+			})
+
+			It("should reject invalid DNS stamp", func() {
+				confFile := tmpDir.CreateStringFile("config.yml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - sdns://invalid!!!", // Invalid stamp
+				)
+
+				_, err = LoadConfig(confFile.Path, true)
+				Expect(err).Should(HaveOccurred())
+			})
+
+			It("should preserve certificate fingerprints from DNS stamps", func() {
+				confFile := tmpDir.CreateStringFile("config.yml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - sdns://AgcAAAAAAAAABzEuMC4wLjGgENk8mGSlIfMGXMOlIlCcKvq7AVgcrZxtjon911-ep0cg63Ul-I8NlFj4GplQGb_TTLiczclX57DvMV8Q-JdjgRgSZG5zLmNsb3VkZmxhcmUuY29tCi9kbnMtcXVlcnk", // Cloudflare with certs
+				)
+
+				c, err = LoadConfig(confFile.Path, true)
+				Expect(err).Should(Succeed())
+
+				upstream := c.Upstreams.Groups["default"][0]
+				Expect(upstream.CertificateFingerprints).Should(HaveLen(2))
+
+				// Each fingerprint should be 32 bytes (SHA256)
+				for _, fp := range upstream.CertificateFingerprints {
+					Expect(fp).Should(HaveLen(32))
+				}
+			})
+
+			It("should handle IPv6 in DNS stamps", func() {
+				confFile := tmpDir.CreateStringFile("config.yml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - sdns://AAcAAAAAAAAAKVsyMDAxOjBkYjg6ODVhMzowMDAwOjAwMDA6OGEyZTowMzcwOjczMzRd",
+				)
+
+				c, err = LoadConfig(confFile.Path, true)
+				Expect(err).Should(Succeed())
+
+				upstream := c.Upstreams.Groups["default"][0]
+
+				// All should be parsed correctly
+				Expect(upstream.Host).Should(Equal("2001:0db8:85a3:0000:0000:8a2e:0370:7334"))
+				Expect(upstream.Net).Should(Equal(NetProtocolTcpUdp))
+			})
+		})
+
+		When("Config uses conditional upstream with DNS stamps", func() {
+			It("should parse DNS stamps in conditional mapping", func() {
+				confFile := tmpDir.CreateStringFile("config.yml",
+					"upstreams:",
+					"  groups:",
+					"    default:",
+					"      - 8.8.8.8",
+					"conditional:",
+					"  mapping:",
+					"    example.com: sdns://AgcAAAAAAAAABzEuMC4wLjGgENk8mGSlIfMGXMOlIlCcKvq7AVgcrZxtjon911-ep0cg63Ul-I8NlFj4GplQGb_TTLiczclX57DvMV8Q-JdjgRgSZG5zLmNsb3VkZmxhcmUuY29tCi9kbnMtcXVlcnk",
+					"    test.com: 1.1.1.1", // Traditional format
+				)
+
+				c, err = LoadConfig(confFile.Path, true)
+				Expect(err).Should(Succeed())
+
+				// Verify conditional mapping parsed DNS stamp
+				exampleUpstreams := c.Conditional.Mapping.Upstreams["example.com"]
+				Expect(exampleUpstreams).Should(HaveLen(1))
+				Expect(exampleUpstreams[0].Host).Should(Equal("dns.cloudflare.com"))
+				Expect(exampleUpstreams[0].Net).Should(Equal(NetProtocolHttps))
+
+				// Verify traditional format still works
+				testUpstreams := c.Conditional.Mapping.Upstreams["test.com"]
+				Expect(testUpstreams).Should(HaveLen(1))
+				Expect(testUpstreams[0].Host).Should(Equal("1.1.1.1"))
+			})
+		})
+	})
+})
+
+func defaultTestFileConfig(config *Config) {
+	Expect(config.Ports.DNS).Should(Equal(ListenConfig{":55553", ":55554", "[::1]:55555"}))
+	Expect(config.Ports.HTTP).Should(Equal(ListenConfig{":4000"}))
+	Expect(config.Upstreams.Init.Strategy).Should(Equal(InitStrategyFailOnError))
+	Expect(config.Upstreams.UserAgent).Should(Equal("testDenyzer"))
+	Expect(config.Upstreams.Groups["default"]).Should(HaveLen(3))
+	Expect(config.Upstreams.Groups["default"][0].Host).Should(Equal("8.8.8.8"))
+	Expect(config.Upstreams.Groups["default"][1].Host).Should(Equal("8.8.4.4"))
+	Expect(config.Upstreams.Groups["default"][2].Host).Should(Equal("1.1.1.1"))
+	Expect(config.CustomDNS.Mapping).Should(HaveLen(2))
+
+	duckDNSEntry := config.CustomDNS.Mapping["my.duckdns.org"][0]
+	duckDNSA := duckDNSEntry.(*dns.A)
+	Expect(duckDNSA.A).Should(Equal(net.ParseIP("192.168.178.3")))
+
+	multipleIpsEntry := config.CustomDNS.Mapping["multiple.ips"][0]
+	multipleIpsA := multipleIpsEntry.(*dns.A)
+	Expect(multipleIpsA.A).Should(Equal(net.ParseIP("192.168.178.3")))
+
+	multipleIpsEntry = config.CustomDNS.Mapping["multiple.ips"][1]
+	multipleIpsA = multipleIpsEntry.(*dns.A)
+	Expect(multipleIpsA.A).Should(Equal(net.ParseIP("192.168.178.4")))
+
+	multipleIpsEntry = config.CustomDNS.Mapping["multiple.ips"][2]
+	multipleIpsAAAA := multipleIpsEntry.(*dns.AAAA)
+	Expect(multipleIpsAAAA.AAAA).Should(Equal(net.ParseIP("2001:db8:85a3:8d3:1319:8a2e:370:7344")))
+
+	Expect(config.Conditional.Mapping.Upstreams).Should(HaveLen(2))
+	Expect(config.Conditional.Mapping.Upstreams["fritz.box"]).Should(HaveLen(1))
+	Expect(config.Conditional.Mapping.Upstreams["multiple.resolvers"]).Should(HaveLen(2))
+	Expect(config.ClientLookup.Upstream.Host).Should(Equal("192.168.178.1"))
+	Expect(config.ClientLookup.SingleNameOrder).Should(Equal([]uint{2, 1}))
+	Expect(config.Blocking.Denylists).Should(HaveLen(2))
+	Expect(config.Blocking.Allowlists).Should(HaveLen(1))
+	Expect(config.Blocking.ClientGroupsBlock).Should(HaveLen(2))
+	Expect(config.Blocking.BlockTTL).Should(Equal(Duration(time.Minute)))
+	Expect(config.Blocking.Loading.RefreshPeriod).Should(Equal(Duration(2 * time.Hour)))
+	Expect(config.Filtering.QueryTypes).Should(HaveLen(2))
+	Expect(config.FQDNOnly.Enable).Should(BeTrue())
+
+	Expect(config.Caching.MaxCachingTime).Should(BeZero())
+	Expect(config.Caching.MinCachingTime).Should(BeZero())
+
+	Expect(config.MinTLSServeVer).Should(Equal(TLSVersion13))
+	Expect(config.MinTLSServeVer).Should(BeEquivalentTo(tls.VersionTLS13))
+}
+
+func writeConfigYml(tmpDir *helpertest.TmpFolder) *helpertest.TmpFile {
+	return tmpDir.CreateStringFile("config.yml",
+		"upstreams:",
+		"  userAgent: testDenyzer",
+		"  init:",
+		"    strategy: failOnError",
+		"  groups:",
+		"    default:",
+		"      - tcp+udp:8.8.8.8",
+		"      - tcp+udp:8.8.4.4",
+		"      - 1.1.1.1",
+		"customDNS:",
+		"  mapping:",
+		"    my.duckdns.org: 192.168.178.3",
+		"    multiple.ips: 192.168.178.3,192.168.178.4,2001:0db8:85a3:08d3:1319:8a2e:0370:7344",
+		"conditional:",
+		"  mapping:",
+		"    fritz.box: tcp+udp:192.168.178.1",
+		"    multiple.resolvers: tcp+udp:192.168.178.1,tcp+udp:192.168.178.2",
+		"filtering:",
+		"  queryTypes:",
+		"    - AAAA",
+		"    - A",
+		"fqdnOnly:",
+		"  enable: true",
+		"blocking:",
+		"  denylists:",
+		"    ads:",
+		"      - https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt",
+		"      - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+		"      - https://mirror1.malwaredomains.com/files/justdomains",
+		"      - http://sysctl.org/cameleon/hosts",
+		"      - https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist",
+		"      - https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt",
+		"    special:",
+		"      - https://hosts-file.net/ad_servers.txt",
+		"  allowlists:",
+		"    ads:",
+		"      - allowlist.txt",
+		"  clientGroupsBlock:",
+		"    default:",
+		"      - ads",
+		"      - special",
+		"    Laptop-D.fritz.box:",
+		"      - ads",
+		"  blockTTL: 1m",
+		"  loading:",
+		"    refreshPeriod: 120",
+		"clientLookup:",
+		"  upstream: 192.168.178.1",
+		"  singleNameOrder:",
+		"    - 2",
+		"    - 1",
+		"queryLog:",
+		"  type: sqlite",
+		"  target: /opt/log/querylog.db",
+		"ports:",
+		"  dns: 55553,:55554,[::1]:55555",
+		"  http:",
+		"    - 4000",
+		"logLevel: debug",
+		"minTlsServeVersion: 1.3",
+	)
+}
+
+func writeConfigYmlWithLocalZoneFile(tmpDir *helpertest.TmpFolder, includeStr string) *helpertest.TmpFile {
+	return tmpDir.CreateStringFile("config.yml",
+		"upstreams:",
+		"  userAgent: testDenyzer",
+		"  init:",
+		"    strategy: failOnError",
+		"  groups:",
+		"    default:",
+		"      - tcp+udp:8.8.8.8",
+		"      - tcp+udp:8.8.4.4",
+		"      - 1.1.1.1",
+		"customDNS:",
+		"  zone: |",
+		"    $ORIGIN example.com.",
+		"    $INCLUDE "+includeStr,
+		"filtering:",
+		"  queryTypes:",
+		"    - AAAA",
+		"    - A",
+		"fqdnOnly:",
+		"  enable: true",
+		"ports:",
+		"  dns: 55553,:55554,[::1]:55555",
+		"  http:",
+		"    - 4000",
+		"logLevel: debug",
+		"minTlsServeVersion: 1.3",
+	)
+}
+
+func writeConfigDir(tmpDir *helpertest.TmpFolder) {
+	tmpDir.CreateStringFile("config1.yaml",
+		"upstreams:",
+		"  userAgent: testDenyzer",
+		"  init:",
+		"    strategy: failOnError",
+		"  groups:",
+		"    default:",
+		"      - tcp+udp:8.8.8.8",
+		"      - tcp+udp:8.8.4.4",
+		"      - 1.1.1.1",
+		"customDNS:",
+		"  mapping:",
+		"    my.duckdns.org: 192.168.178.3",
+		"    multiple.ips: 192.168.178.3,192.168.178.4,2001:0db8:85a3:08d3:1319:8a2e:0370:7344",
+		"conditional:",
+		"  mapping:",
+		"    fritz.box: tcp+udp:192.168.178.1",
+		"    multiple.resolvers: tcp+udp:192.168.178.1,tcp+udp:192.168.178.2",
+		"filtering:",
+		"  queryTypes:",
+		"    - AAAA",
+		"    - A",
+	)
+
+	tmpDir.CreateStringFile("config2.yaml",
+		"blocking:",
+		"  denylists:",
+		"    ads:",
+		"      - https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt",
+		"      - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+		"      - https://mirror1.malwaredomains.com/files/justdomains",
+		"      - http://sysctl.org/cameleon/hosts",
+		"      - https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist",
+		"      - https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt",
+		"    special:",
+		"      - https://hosts-file.net/ad_servers.txt",
+		"  allowlists:",
+		"    ads:",
+		"      - allowlist.txt",
+		"  clientGroupsBlock:",
+		"    default:",
+		"      - ads",
+		"      - special",
+		"    Laptop-D.fritz.box:",
+		"      - ads",
+		"  blockTTL: 1m",
+		"  loading:",
+		"    refreshPeriod: 120",
+		"clientLookup:",
+		"  upstream: 192.168.178.1",
+		"  singleNameOrder:",
+		"    - 2",
+		"    - 1",
+		"fqdnOnly:",
+		"  enable: true",
+		"queryLog:",
+		"  type: sqlite",
+		"  target: /opt/log/querylog.db",
+		"ports:",
+		"  dns: 55553,:55554,[::1]:55555",
+		"  http:",
+		"    - 4000",
+		"logLevel: debug",
+		"minTlsServeVersion: 1.3",
+	)
+}
+
+var _ = Describe("Ports", func() {
+	suiteBeforeEach()
+
+	Describe("LogConfig", func() {
+		It("should log all port configurations", func() {
+			cfg := Ports{
+				DNS:      ListenConfig{":53"},
+				HTTP:     ListenConfig{":4000"},
+				HTTPS:    ListenConfig{":443"},
+				TLS:      ListenConfig{":853"},
+				DOHPath:  "/dns-query",
+				FreeBind: true,
+				ProxyProtocol: ProxyProtocolListeners{
+					ProxyProtocolTypeDns,
+					ProxyProtocolTypeHttp,
+					ProxyProtocolTypeHttps,
+					ProxyProtocolTypeTls,
+				},
+			}
+
+			cfg.LogConfig(logger)
+
+			Expect(hook.Calls).ShouldNot(BeEmpty())
+			Expect(hook.Messages).Should(ContainElements(
+				ContainSubstring("DNS"),
+				ContainSubstring("HTTP"),
+				ContainSubstring("HTTPS"),
+				ContainSubstring("TLS"),
+				ContainSubstring("DOHPath"),
+				ContainSubstring("FreeBind"),
+				ContainSubstring("PROXY protocol = [dns http https tls]"),
+			))
+		})
+	})
+	Describe("validate", func() {
+		It("should accept the default path", func() {
+			cfg := Ports{DOHPath: "/dns-query"}
+			Expect(cfg.validate()).Should(Succeed())
+		})
+
+		It("should accept a custom valid path", func() {
+			cfg := Ports{DOHPath: "/my-custom-path"}
+			Expect(cfg.validate()).Should(Succeed())
+		})
+
+		It("should reject an empty path", func() {
+			cfg := Ports{DOHPath: ""}
+			Expect(cfg.validate()).Should(MatchError(ContainSubstring("dohPath must not be empty")))
+		})
+
+		It("should reject a path without leading slash", func() {
+			cfg := Ports{DOHPath: "dns-query"}
+			Expect(cfg.validate()).Should(MatchError(ContainSubstring("dohPath must start with '/'")))
+		})
+
+		It("should reject a path with spaces", func() {
+			cfg := Ports{DOHPath: "/dns query"}
+			Expect(cfg.validate()).Should(MatchError(ContainSubstring("dohPath must not contain whitespace")))
+		})
+
+		It("should reject a path with a query string", func() {
+			cfg := Ports{DOHPath: "/dns-query?foo=bar"}
+			Expect(cfg.validate()).Should(MatchError(ContainSubstring("dohPath must not contain '?'")))
+		})
+
+		It("should reject a path with a fragment", func() {
+			cfg := Ports{DOHPath: "/dns-query#section"}
+			Expect(cfg.validate()).Should(MatchError(ContainSubstring("dohPath must not contain '#'")))
+		})
+	})
+})
+
+var _ = Describe("toEnable", func() {
+	suiteBeforeEach()
+
+	Describe("IsEnabled", func() {
+		It("should return false when not enabled", func() {
+			cfg := toEnable{Enable: false}
+			Expect(cfg.IsEnabled()).Should(BeFalse())
+		})
+
+		It("should return true when enabled", func() {
+			cfg := toEnable{Enable: true}
+			Expect(cfg.IsEnabled()).Should(BeTrue())
+		})
+	})
+
+	Describe("LogConfig", func() {
+		It("should log enabled", func() {
+			cfg := toEnable{Enable: true}
+			cfg.LogConfig(logger)
+
+			Expect(hook.Calls).ShouldNot(BeEmpty())
+			Expect(hook.Messages).Should(ContainElement(ContainSubstring("enabled")))
+		})
+	})
+})
+
+var _ = Describe("IPVersion", func() {
+	suiteBeforeEach()
+
+	Describe("Net", func() {
+		It("should return correct net for dual", func() {
+			Expect(IPVersionDual.Net()).Should(Equal("ip"))
+		})
+
+		It("should return correct net for v4", func() {
+			Expect(IPVersionV4.Net()).Should(Equal("ip4"))
+		})
+
+		It("should return correct net for v6", func() {
+			Expect(IPVersionV6.Net()).Should(Equal("ip6"))
+		})
+	})
+
+	Describe("QTypes", func() {
+		It("should return A and AAAA for dual", func() {
+			qtypes := IPVersionDual.QTypes()
+			Expect(qtypes).Should(HaveLen(2))
+		})
+
+		It("should return only A for v4", func() {
+			qtypes := IPVersionV4.QTypes()
+			Expect(qtypes).Should(HaveLen(1))
+		})
+
+		It("should return only AAAA for v6", func() {
+			qtypes := IPVersionV6.QTypes()
+			Expect(qtypes).Should(HaveLen(1))
+		})
+	})
+})
+
+var _ = Describe("BytesSource", func() {
+	suiteBeforeEach()
+
+	Describe("String", func() {
+		It("should return URL for HTTP source", func() {
+			s := BytesSource{Type: BytesSourceTypeHttp, From: "https://example.com/list.txt"}
+			Expect(s.String()).Should(Equal("https://example.com/list.txt"))
+		})
+
+		It("should return file:// prefixed path for file source", func() {
+			s := BytesSource{Type: BytesSourceTypeFile, From: "/tmp/list.txt"}
+			Expect(s.String()).Should(Equal("file:///tmp/list.txt"))
+		})
+
+		It("should return unknown source for invalid type", func() {
+			s := BytesSource{Type: BytesSourceType(99), From: "something"}
+			Expect(s.String()).Should(ContainSubstring("unknown source"))
+		})
+
+		It("should truncate long text sources", func() {
+			longText := "this is a very long inline text source"
+			s := BytesSource{Type: BytesSourceTypeText, From: longText}
+			result := s.String()
+			Expect(result).Should(HaveSuffix("..."))
+		})
+
+		It("should truncate to first line for multiline text sources", func() {
+			s := BytesSource{Type: BytesSourceTypeText, From: "first line\nsecond line\nthird line"}
+			result := s.String()
+			Expect(result).Should(Equal("first line"))
+		})
+
+		It("should truncate long first line in multiline text sources", func() {
+			s := BytesSource{Type: BytesSourceTypeText, From: "a very long first line here\nsecond line"}
+			result := s.String()
+			Expect(result).Should(HaveSuffix("..."))
+		})
+
+		It("should return short text source as-is", func() {
+			s := BytesSource{Type: BytesSourceTypeText, From: "short"}
+			Expect(s.String()).Should(Equal("short"))
+		})
+	})
+})
+
+var _ = Describe("TLSVersion", func() {
+	suiteBeforeEach()
+
+	Describe("validate", func() {
+		It("should warn and fix insecure TLS version", func() {
+			v := TLSVersion(tls.VersionTLS10)
+			v.validate(logger)
+
+			Expect(v).Should(BeNumerically(">=", TLSVersion(tls.VersionTLS12)))
+			Expect(hook.Messages).Should(ContainElement(ContainSubstring("insecure")))
+		})
+
+		It("should not change valid TLS version", func() {
+			v := TLSVersion(tls.VersionTLS13)
+			v.validate(logger)
+
+			Expect(v).Should(Equal(TLSVersion(tls.VersionTLS13)))
+		})
+	})
+})
+
+var _ = Describe("Config with RateLimit", func() {
+	It("exposes the RateLimit field", func() {
+		cfg := Config{}
+		Expect(cfg.RateLimit.IsEnabled()).Should(BeFalse())
+	})
+})

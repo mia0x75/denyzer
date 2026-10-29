@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Denyzer REST API</title>
+  <script type="module" src="/static/rapidoc-min.js"></script>
+  <style>
+    /* Match the DenyzerUI dashboard dark theme (frontend/src/styles/globals.css). */
+    html, body { margin: 0; background: #18181b; }
+    :root {
+      --denyzer-bg: #18181b;
+      --denyzer-surface: #232327;
+      --denyzer-text: #e4e4e7;
+      --denyzer-muted: #a1a1aa;
+      --denyzer-hover: #3f3f46;
+      --denyzer-accent: #4c6ef5;
+    }
+  </style>
+</head>
+<body>
+  <rapi-doc
+    spec-url="/docs/openapi.yaml"
+    theme="dark"
+    allow-authentication="false"
+    show-header="false"
+    bg-color="#18181b"
+    text-color="#e4e4e7"
+    nav-bg-color="#232327"
+    nav-text-color="#a1a1aa"
+    nav-hover-bg-color="#3f3f46"
+    nav-hover-text-color="#fafafa"
+    nav-accent-color="#4c6ef5"
+    primary-color="#4c6ef5"
+    regular-font="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif"
+    mono-font="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace"
+  ></rapi-doc>
+</body>
+</html>

@@ -1,0 +1,18 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 80%
+    patch:
+      default:
+        # basic
+        target: auto
+        threshold: 0%
+        base: auto 
+        only_pulls: true
+ignore:
+  - "**/mock_*"
+  - "**/*_enum.go"
+  - "**/*.gen.go"
+  - "e2e/*.go"

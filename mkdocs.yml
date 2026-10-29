@@ -1,0 +1,82 @@
+site_name: denyzer
+site_description: denyzer Documentation
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.top
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - content.tooltips
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - search.share
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+        # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+extra:
+  version:
+    provider: mike
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/mia0x75/denyzer
+    - icon: fontawesome/brands/docker
+      link: https://ghcr.io/mia0x75/denyzer
+repo_url: https://github.com/mia0x75/denyzer
+edit_uri: edit/main/docs/
+
+markdown_extensions:
+  - abbr
+  - attr_list
+  - md_in_html
+  - pymdownx.snippets:
+      base_path: [docs]
+      auto_append:
+        - includes/abbreviations.md
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.keys
+  - admonition
+  - pymdownx.details
+
+nav:
+  - "Welcome": "index.md"
+  - "Configuration": "configuration.md"
+  - "Installation": "installation.md"
+  - "Interfaces": "interfaces.md"
+  - "Network configuration": "network_configuration.md"
+  - "Additional information": "additional_information.md"
+  - "Decisions":
+      - "SQLite driver and release pipeline": "sqlite-driver.md"

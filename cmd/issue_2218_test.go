@@ -1,0 +1,135 @@
+package cmd
+
+import (
+	"os"
+	"path/filepath"
+
+	"github.com/mia0x75/denyzer/helpertest"
+	"github.com/mia0x75/denyzer/log"
+	"github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus/hooks/test"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+// unusedPort is a port that no test server listens on. It is used to point a
+// configuration at a dead end, so that a command line flag can be shown to
+// take precedence over the configured port.
+const unusedPort = "65199"
+
+// Reproduces #2218: the Docker image runs `denyzer healthcheck` with no flags, but the
+// command defaults to port 53 and never looks at `ports.dns`, so a container that
+// listens on a different DNS port is reported unhealthy.
+var _ = Describe("Healthcheck derives the port from the config (#2218)", func() {
+	var cfgFile string
+
+	writeConfig := func(body string) {
+		dir := GinkgoT().TempDir()
+		cfgFile = filepath.Join(dir, "config.yml")
+		Expect(os.WriteFile(cfgFile, []byte(body), 0o600)).Should(Succeed())
+
+		GinkgoT().Setenv("DENYZER_CONFIG_FILE", cfgFile)
+
+		// initConfig() only consults the env var while configPath is still the default.
+		old := configPath
+		configPath = defaultConfigPath
+		DeferCleanup(func() { configPath = old })
+	}
+
+	It("probes the DNS port from ports.dns when no flag is given", func() {
+		ip := "127.0.0.1"
+		port := helpertest.GetStringPort(65111)
+		hostPort := helpertest.GetHostPort(ip, 65111)
+
+		srv := createMockServer(hostPort)
+		go func() {
+			defer GinkgoRecover()
+			Expect(srv.ListenAndServe()).Should(Succeed())
+		}()
+
+		writeConfig("ports:\n  dns: " + port + "\nupstreams:\n  groups:\n    default:\n      - 1.1.1.1\n")
+
+		Eventually(func() error {
+			c := NewHealthcheckCommand()
+			c.SetArgs([]string{})
+
+			return c.Execute()
+		}, "2s").Should(Succeed())
+	})
+
+	It("still lets an explicit --port win over the config", func() {
+		ip := "127.0.0.1"
+		port := helpertest.GetStringPort(65112)
+		hostPort := helpertest.GetHostPort(ip, 65112)
+
+		srv := createMockServer(hostPort)
+		go func() {
+			defer GinkgoRecover()
+			Expect(srv.ListenAndServe()).Should(Succeed())
+		}()
+
+		// Config points somewhere nothing is listening; the flag must take precedence.
+		writeConfig("ports:\n  dns: " + unusedPort + "\nupstreams:\n  groups:\n    default:\n      - 1.1.1.1\n")
+
+		Eventually(func() error {
+			c := NewHealthcheckCommand()
+			c.SetArgs([]string{"-p", port, "-b", ip})
+
+			return c.Execute()
+		}, "2s").Should(Succeed())
+	})
+
+	It("keeps working when no config file exists at all", func() {
+		ip := "127.0.0.1"
+		port := helpertest.GetStringPort(65114)
+		hostPort := helpertest.GetHostPort(ip, 65114)
+
+		srv := createMockServer(hostPort)
+		go func() {
+			defer GinkgoRecover()
+			Expect(srv.ListenAndServe()).Should(Succeed())
+		}()
+
+		GinkgoT().Setenv("DENYZER_CONFIG_FILE", filepath.Join(GinkgoT().TempDir(), "does-not-exist.yml"))
+		old := configPath
+		configPath = defaultConfigPath
+		DeferCleanup(func() { configPath = old })
+
+		Eventually(func() error {
+			c := NewHealthcheckCommand()
+			c.SetArgs([]string{"-p", port, "-b", ip})
+
+			return c.Execute()
+		}, "2s").Should(Succeed())
+	})
+
+	It("keeps working and logs why when the config is invalid", func() {
+		keepGlobals()
+		hook := test.NewLocal(log.Log())
+
+		ip := "127.0.0.1"
+		port := helpertest.GetStringPort(65116)
+		hostPort := helpertest.GetHostPort(ip, 65116)
+
+		srv := createMockServer(hostPort)
+		go func() {
+			defer GinkgoRecover()
+			Expect(srv.ListenAndServe()).Should(Succeed())
+		}()
+
+		writeConfig("rateLimit:\n  enable: true\nupstreams:\n  groups:\n    default:\n      - 1.1.1.1\n")
+
+		Eventually(func() error {
+			c := NewHealthcheckCommand()
+			c.SetArgs([]string{"-p", port, "-b", ip})
+
+			return c.Execute()
+		}, "2s").Should(Succeed())
+
+		Expect(hook.AllEntries()).Should(ContainElement(SatisfyAll(
+			HaveField("Level", logrus.WarnLevel),
+			HaveField("Message", ContainSubstring("rate must be > 0 when enabled")),
+		)))
+	})
+})

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>denyzer</title>
+</head>
+<body>
+    <h1>denyzer</h1>
+    <ul>
+    {{range .Links}}
+        <li><a href="{{.URL}}">{{.Title}}</a></li>
+    {{end}}
+    </ul>
+
+    <p><span class="small">Version {{.Version}}   Build time {{.BuildTime}}</span></p>
+
+    <footer>
+        <p>Denyzer is free and open source, built in spare time &mdash; if it's useful to you, please consider
+        <a href="https://mia0x75.github.io/denyzer/#support-denyzer" target="_blank" rel="noopener noreferrer">supporting its development</a> &#10084;</p>
+    </footer>
+    </body>
+</html>

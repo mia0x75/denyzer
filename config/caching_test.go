@@ -1,0 +1,140 @@
+package config
+
+import (
+	"time"
+
+	"github.com/creasty/defaults"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+var _ = Describe("CachingConfig", func() {
+	var cfg Caching
+
+	suiteBeforeEach()
+
+	BeforeEach(func() {
+		cfg = Caching{
+			MaxCachingTime: Duration(time.Hour),
+		}
+	})
+
+	Describe("IsEnabled", func() {
+		It("should be true by default", func() {
+			cfg := Caching{}
+			Expect(defaults.Set(&cfg)).Should(Succeed())
+
+			Expect(cfg.IsEnabled()).Should(BeTrue())
+		})
+
+		When("the config is disabled", func() {
+			BeforeEach(func() {
+				cfg = Caching{
+					MaxCachingTime: Duration(time.Hour * -1),
+				}
+			})
+			It("should be false", func() {
+				Expect(cfg.IsEnabled()).Should(BeFalse())
+			})
+		})
+
+		When("the config is enabled", func() {
+			It("should be true", func() {
+				Expect(cfg.IsEnabled()).Should(BeTrue())
+			})
+		})
+
+		When("the config is disabled", func() {
+			It("should be false", func() {
+				cfg := Caching{
+					MaxCachingTime: Duration(-1),
+				}
+
+				Expect(cfg.IsEnabled()).Should(BeFalse())
+			})
+		})
+	})
+
+	Describe("LogConfig", func() {
+		When("prefetching is enabled", func() {
+			BeforeEach(func() {
+				cfg = Caching{
+					Prefetching: true,
+				}
+			})
+
+			It("should return configuration", func() {
+				cfg.LogConfig(logger)
+
+				Expect(hook.Calls).ShouldNot(BeEmpty())
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("prefetching:")))
+			})
+		})
+		When("has any settings", func() {
+			BeforeEach(func() {
+				cfg = Caching{}
+			})
+			It("should return Exclude", func() {
+				cfg.LogConfig(logger)
+
+				Expect(hook.Calls).ShouldNot(BeEmpty())
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("exclude:")))
+			})
+		})
+		When("Exclude any settings", func() {
+			BeforeEach(func() {
+				cfg = Caching{Exclude: []string{"local"}}
+			})
+			It("should return Exclude and a list with values in it", func() {
+				cfg.LogConfig(logger)
+
+				Expect(hook.Calls).ShouldNot(BeEmpty())
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("exclude:")))
+				Expect(hook.Messages).Should(ContainElement(ContainSubstring("- local")))
+			})
+		})
+	})
+
+	Describe("EnablePrefetch", func() {
+		When("caching is already enabled", func() {
+			BeforeEach(func() {
+				cfg = Caching{
+					MaxCachingTime: Duration(time.Hour),
+				}
+			})
+
+			It("should enable prefetching without changing MaxCachingTime", func() {
+				cfg.EnablePrefetch()
+
+				Expect(cfg.Prefetching).Should(BeTrue())
+				Expect(cfg.PrefetchThreshold).Should(Equal(0))
+				Expect(cfg.MaxCachingTime).Should(Equal(Duration(time.Hour)))
+			})
+		})
+
+		When("caching is disabled", func() {
+			BeforeEach(func() {
+				cfg = Caching{
+					MaxCachingTime: Duration(-1),
+				}
+			})
+
+			It("should enable caching with 24h MaxCachingTime", func() {
+				cfg.EnablePrefetch()
+
+				Expect(cfg.Prefetching).Should(BeTrue())
+				Expect(cfg.PrefetchThreshold).Should(Equal(0))
+				Expect(cfg.MaxCachingTime).Should(Equal(Duration(24 * time.Hour)))
+			})
+		})
+	})
+
+	Describe("Exclude", func() {
+		It("should be empty by default", func() {
+			cfg := Caching{}
+			Expect(defaults.Set(&cfg)).Should(Succeed())
+
+			Expect(cfg.Exclude).Should(BeEmpty())
+		})
+	})
+})

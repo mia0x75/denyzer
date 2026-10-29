@@ -1,0 +1,593 @@
+package e2e
+
+import (
+	"context"
+	"fmt"
+
+	. "github.com/mia0x75/denyzer/helpertest"
+	"github.com/mia0x75/denyzer/util"
+	"github.com/miekg/dns"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/testcontainers/testcontainers-go"
+)
+
+var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
+	var (
+		e2eNet  *testcontainers.DockerNetwork
+		denyzer testcontainers.Container
+		err     error
+	)
+
+	BeforeEach(func(ctx context.Context) {
+		e2eNet = getRandomNetwork(ctx)
+	})
+
+	Describe("DNSSEC validation support", func() {
+		Context("with DNSSEC validation enabled", func() {
+			When("upstream returns response with invalid DNSSEC signatures", func() {
+				BeforeEach(func(ctx context.Context) {
+					// Create a mock DNS server that returns DNSSEC records but with invalid signatures
+					// This simulates a compromised or broken upstream
+					rrsigRecord := `RRSIG A 13 3 300 20991231235959 20230101000000 12345 ` +
+						`invalid.dnssec.example. YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFyc3Q= 300`
+					_, err = createDNSMokkaContainer(ctx, "moka-dnssec", e2eNet,
+						// Return A record with RRSIG but signature is fake/invalid (valid base64 though)
+						// Note: Using .example TLD instead of .test (SUDN resolver blocks .test)
+						`A invalid.dnssec.example/NOERROR("A 192.0.2.1 300", "`+rrsigRecord+`")`,
+					)
+					Expect(err).Should(Succeed())
+
+					// Create denyzer with DNSSEC validation enabled
+					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
+						upstreams:
+						  groups:
+						    default:
+						      - moka-dnssec
+						dnssec:
+						  validate: true
+						`))
+					Expect(err).Should(Succeed())
+				})
+
+				It("should reject the response and return SERVFAIL", func(ctx context.Context) {
+					// DNSSEC validation is now implemented!
+
+					msg := util.NewMsgWithQuestion("invalid.dnssec.example.", A)
+					msg.SetEdns0(4096, true) // Enable DNSSEC OK (DO) bit
+
+					resp, err := doDNSRequest(ctx, denyzer, msg)
+					Expect(err).Should(Succeed())
+
+					// Should return SERVFAIL because DNSSEC validation failed
+					Expect(resp.Rcode).Should(Equal(dns.RcodeServerFailure),
+						"Expected SERVFAIL for invalid DNSSEC signatures")
+
+					// Should NOT have the Authenticated Data (AD) flag set
+					Expect(resp.AuthenticatedData).Should(BeFalse(),
+						"AD flag should not be set for failed DNSSEC validation")
+				})
+			})
+
+			When("upstream returns RRSIG with matching valid DNSKEY", func() {
+				var (
+					validData *DNSSECTestData
+					mokka     testcontainers.Container
+				)
+
+				BeforeEach(func(ctx context.Context) {
+					// Generate cryptographically valid DNSSEC data for a TLD
+					// Using "example." as the zone (TLD) so the trust anchor is at the top level
+					var genErr error
+					validData, genErr = GenerateValidDNSSEC("example.", "www.example.", "192.0.2.10")
+					Expect(genErr).Should(Succeed())
+
+					// Format records for mokka
+					aRecordStr := FormatRecordForMokka(validData.ARecord)
+					rrsigStr := FormatRecordForMokka(validData.RRSIG)
+					dnskeyStr := FormatRecordForMokka(validData.DNSKEY)
+
+					// Create mokka with properly signed DNSSEC records
+					// Mokka needs to handle two query types:
+					// 1. A query for www.example -> return A + RRSIG
+					// 2. DNSKEY query for example -> return DNSKEY
+					mokka, err = createDNSMokkaContainer(ctx, "moka-dnssec-valid", e2eNet,
+						fmt.Sprintf(`A www.example/NOERROR("%s", "%s")`, aRecordStr, rrsigStr),
+						fmt.Sprintf(`DNSKEY example/NOERROR("%s")`, dnskeyStr),
+					)
+					Expect(err).Should(Succeed())
+
+					// Create denyzer with DNSSEC validation enabled
+					// Add the generated DNSKEY as a trust anchor for the example. TLD
+					// This makes example. a trusted zone, similar to how root trust anchors work
+					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
+						upstreams:
+						  groups:
+						    default:
+						      - moka-dnssec-valid
+						dnssec:
+						  validate: true
+						  trustAnchors:
+						    - "`+validData.DNSKEY.String()+`"
+						log:
+						  level: debug
+						`))
+					Expect(err).Should(Succeed())
+				})
+
+				It("should validate RRSIG against DNSKEY and return success", func(ctx context.Context) {
+					msg := util.NewMsgWithQuestion("www.example.", A)
+					msg.SetEdns0(4096, true) // Enable DNSSEC OK (DO) bit
+
+					resp, err := doDNSRequest(ctx, denyzer, msg)
+					Expect(err).Should(Succeed())
+
+					// Should return NOERROR because DNSSEC validation succeeded
+					Expect(resp.Rcode).Should(Equal(dns.RcodeSuccess),
+						"Expected NOERROR for valid DNSSEC signatures")
+
+					// Should have the Authenticated Data (AD) flag set
+					Expect(resp.AuthenticatedData).Should(BeTrue(),
+						"AD flag should be set after successful DNSSEC validation")
+
+					// Should have the A record in the answer
+					Expect(resp.Answer).Should(ContainElement(
+						BeDNSRecord("www.example.", A, "192.0.2.10"),
+					))
+				})
+
+				It("should not return the DNSSEC records to a client with the DO bit clear", func(ctx context.Context) {
+					// Denyzer queries the upstream with DO set so it can validate, but the records it
+					// gets back are for validation, not for the client (RFC 4035 §3.2.1).
+					msg := util.NewMsgWithQuestion("www.example.", A)
+					msg.SetEdns0(4096, false) // EDNS0 present, DNSSEC OK (DO) bit clear
+
+					resp, err := doDNSRequest(ctx, denyzer, msg)
+					Expect(err).Should(Succeed())
+
+					Expect(resp.Rcode).Should(Equal(dns.RcodeSuccess),
+						"Expected NOERROR for valid DNSSEC signatures")
+
+					// The validated answer is still returned, just without the DNSSEC records
+					Expect(resp.Answer).Should(ContainElement(
+						BeDNSRecord("www.example.", A, "192.0.2.10"),
+					))
+					Expect(resp.Answer).ShouldNot(ContainElement(BeAssignableToTypeOf(&dns.RRSIG{})),
+						"RRSIG must not be returned to a client that didn't set the DO bit")
+
+					Expect(resp.AuthenticatedData).Should(BeFalse(),
+						"AD flag should not be set for a client that set neither DO nor AD")
+				})
+
+				It("should still serve the DNSSEC records from cache to a client with the DO bit set",
+					func(ctx context.Context) {
+						// The cache sits below the DNSSEC resolver and holds the signed answer.
+						// Stripping happens per client on the way out, so it must not take the
+						// records out of the cached entry other clients are served from.
+						withoutDO := util.NewMsgWithQuestion("www.example.", A)
+						withoutDO.SetEdns0(4096, false)
+
+						resp, err := doDNSRequest(ctx, denyzer, withoutDO)
+						Expect(err).Should(Succeed())
+						Expect(resp.Answer).ShouldNot(ContainElement(BeAssignableToTypeOf(&dns.RRSIG{})))
+
+						// The upstream disappears; any later answer comes from the cache.
+						Expect(mokka.Terminate(ctx)).Should(Succeed())
+
+						withDO := util.NewMsgWithQuestion("www.example.", A)
+						withDO.SetEdns0(4096, true)
+
+						resp, err = doDNSRequest(ctx, denyzer, withDO)
+						Expect(err).Should(Succeed())
+						Expect(resp.Rcode).Should(Equal(dns.RcodeSuccess))
+						Expect(resp.Answer).Should(ContainElement(BeAssignableToTypeOf(&dns.RRSIG{})),
+							"the cached entry must still carry the signatures")
+						// The AD flag is not asserted here: the cached answer is re-validated on
+						// every hit, which can no longer reach the upstream for the DNSKEY.
+					})
+			})
+
+			When("upstream returns RRSIG with wrong DNSKEY signature", func() {
+				BeforeEach(func(ctx context.Context) {
+					// Generate DNSSEC data where RRSIG and DNSKEY don't match
+					// Using "mismatch." as TLD for same reason as happy path test
+					var genErr error
+					validData, wrongKey, genErr := GenerateMismatchedDNSSEC("mismatch.", "www.mismatch.", "192.0.2.20")
+					Expect(genErr).Should(Succeed())
+
+					// Format records for mokka
+					aRecordStr := FormatRecordForMokka(validData.ARecord)
+					rrsigStr := FormatRecordForMokka(validData.RRSIG) // Signed with keyA
+					wrongKeyStr := FormatRecordForMokka(wrongKey)     // Different keyB
+
+					// Create mokka that returns RRSIG signed with one key, but DNSKEY is different
+					// This should cause validation to fail
+					_, err = createDNSMokkaContainer(ctx, "moka-dnssec-mismatch", e2eNet,
+						fmt.Sprintf(`A www.mismatch/NOERROR("%s", "%s")`, aRecordStr, rrsigStr),
+						fmt.Sprintf(`DNSKEY mismatch/NOERROR("%s")`, wrongKeyStr),
+					)
+					Expect(err).Should(Succeed())
+
+					// Create denyzer with DNSSEC validation enabled
+					// Add the wrong key as trust anchor so chain validation passes,
+					// but signature verification will fail
+					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet,
+						dedent(`
+						upstreams:
+						  groups:
+						    default:
+						      - moka-dnssec-mismatch
+						dnssec:
+						  validate: true
+						  trustAnchors:
+						    - "`+wrongKey.String()+`"
+						log:
+						  level: debug
+						`))
+					Expect(err).Should(Succeed())
+				})
+
+				It("should detect signature mismatch and return SERVFAIL", func(ctx context.Context) {
+					msg := util.NewMsgWithQuestion("www.mismatch.", A)
+					msg.SetEdns0(4096, true) // Enable DNSSEC OK (DO) bit
+
+					resp, err := doDNSRequest(ctx, denyzer, msg)
+					Expect(err).Should(Succeed())
+
+					// Should return SERVFAIL because RRSIG signature doesn't match DNSKEY
+					Expect(resp.Rcode).Should(Equal(dns.RcodeServerFailure),
+						"Expected SERVFAIL when RRSIG doesn't match DNSKEY")
+
+					// Should NOT have the Authenticated Data (AD) flag set
+					Expect(resp.AuthenticatedData).Should(BeFalse(),
+						"AD flag should not be set for failed DNSSEC validation")
+				})
+			})
+
+			When("upstream returns valid DNSSEC-signed response", func() {
+				BeforeEach(func(ctx context.Context) {
+					// For now, use a real DNSSEC-validating upstream (Cloudflare)
+					// In the future, we could mock a proper DNSSEC-signed response
+					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
+						upstreams:
+						  groups:
+						    default:
+						      - 1.1.1.1
+						dnssec:
+						  validate: true
+						`))
+					Expect(err).Should(Succeed())
+				})
+
+				It("should accept valid DNSSEC and set AD flag", func(ctx context.Context) {
+					// DNSSEC validation is now implemented!
+
+					msg := util.NewMsgWithQuestion("cloudflare.com.", A)
+					msg.SetEdns0(4096, true) // Enable DNSSEC OK (DO) bit
+
+					resp, err := doDNSRequest(ctx, denyzer, msg)
+					Expect(err).Should(Succeed())
+
+					// Should return NOERROR
+					Expect(resp.Rcode).Should(Equal(dns.RcodeSuccess))
+
+					// Should have the Authenticated Data (AD) flag set
+					// NOTE: Currently Denyzer just passes through the AD flag from upstream
+					// After implementing validation, Denyzer should set this flag itself
+					Expect(resp.AuthenticatedData).Should(BeTrue(),
+						"AD flag should be set after successful DNSSEC validation")
+
+					// Should have answer records
+					Expect(resp.Answer).ShouldNot(BeEmpty())
+				})
+			})
+
+			When("upstream returns complete DNSSEC chain with DS records", func() {
+				var chainData *DNSSECChainData
+
+				BeforeEach(func(ctx context.Context) {
+					// Generate a complete DNSSEC chain: parent.example -> child.example -> www.child.example
+					// This tests the full chain of trust validation with DS records
+					var genErr error
+					chainData, genErr = GenerateDNSSECChain("parent.", "child.parent.", "www.child.parent.", "192.0.2.30")
+					Expect(genErr).Should(Succeed())
+
+					// Format all records for mokka
+					aRecordStr := FormatRecordForMokka(chainData.ARecord)
+					aRRSIGStr := FormatRecordForMokka(chainData.ARRRSIG)
+					childKeyStr := FormatRecordForMokka(chainData.ChildDNSKEY)
+					childKeyRRSIGStr := FormatRecordForMokka(chainData.ChildDNSKEYRRSIG)
+					dsStr := FormatRecordForMokka(chainData.DS)
+					dsRRSIGStr := FormatRecordForMokka(chainData.DSRRSIG)
+					parentKeyStr := FormatRecordForMokka(chainData.ParentDNSKEY)
+					parentKeyRRSIGStr := FormatRecordForMokka(chainData.ParentDNSKEYRRSIG)
+
+					// Create mokka with complete DNSSEC chain
+					// Query responses:
+					// 1. A www.child.parent -> A + RRSIG (signed by child)
+					// 2. DNSKEY child.parent -> DNSKEY + DNSKEY_RRSIG (self-signed)
+					// 3. DS child.parent -> DS + DS_RRSIG (DS signed by parent)
+					// 4. DNSKEY parent -> DNSKEY + DNSKEY_RRSIG (self-signed, parent is trust anchor)
+					_, err = createDNSMokkaContainer(ctx, "moka-dnssec-chain", e2eNet,
+						fmt.Sprintf(`A www.child.parent/NOERROR("%s", "%s")`, aRecordStr, aRRSIGStr),
+						fmt.Sprintf(`DNSKEY child.parent/NOERROR("%s", "%s")`, childKeyStr, childKeyRRSIGStr),
+						fmt.Sprintf(`DS child.parent/NOERROR("%s", "%s")`, dsStr, dsRRSIGStr),
+						fmt.Sprintf(`DNSKEY parent/NOERROR("%s", "%s")`, parentKeyStr, parentKeyRRSIGStr),
+					)
+					Expect(err).Should(Succeed())
+
+					// Create denyzer with parent DNSKEY as trust anchor
+					// The validator should:
+					// 1. Verify A record signature against child DNSKEY
+					// 2. Verify child DNSKEY against DS record
+					// 3. Verify DS record signature against parent DNSKEY
+					// 4. Verify parent DNSKEY against trust anchor
+					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet,
+						dedent(`
+						upstreams:
+						  groups:
+						    default:
+						      - moka-dnssec-chain
+						dnssec:
+						  validate: true
+						  trustAnchors:
+						    - "`+chainData.ParentDNSKEY.String()+`"
+						log:
+						  level: debug
+						`))
+					Expect(err).Should(Succeed())
+				})
+
+				It("should validate complete DNSSEC chain and set AD flag", func(ctx context.Context) {
+					msg := util.NewMsgWithQuestion("www.child.parent.", A)
+					msg.SetEdns0(4096, true) // Enable DNSSEC OK (DO) bit
+
+					resp, err := doDNSRequest(ctx, denyzer, msg)
+					Expect(err).Should(Succeed())
+
+					// Should return NOERROR because full DNSSEC chain validated successfully
+					Expect(resp.Rcode).Should(Equal(dns.RcodeSuccess),
+						"Expected NOERROR for valid DNSSEC chain")
+
+					// Should have the Authenticated Data (AD) flag set
+					Expect(resp.AuthenticatedData).Should(BeTrue(),
+						"AD flag should be set after successful chain of trust validation")
+
+					// Should have the A record in the answer
+					Expect(resp.Answer).Should(ContainElement(
+						BeDNSRecord("www.child.parent.", A, "192.0.2.30"),
+					))
+				})
+			})
+
+			When("upstream returns an unsigned answer for a DNSSEC-signed zone", func() {
+				var signed *DNSSECTestData
+
+				BeforeEach(func(ctx context.Context) {
+					// example. is a DNSSEC-signed zone; its KSK is installed as a trust
+					// anchor so denyzer knows the zone is signed. An unsigned answer below
+					// it must therefore be treated as bogus, not insecure.
+					var genErr error
+					signed, genErr = GenerateValidDNSSEC("example.", "www.example.", "192.0.2.10")
+					Expect(genErr).Should(Succeed())
+
+					// Upstream returns a forged A record with no RRSIG.
+					_, err = createDNSMokkaContainer(ctx, "moka-unsigned", e2eNet,
+						`A www.example/NOERROR("A 203.0.113.77 300")`)
+					Expect(err).Should(Succeed())
+
+					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
+						upstreams:
+						  groups:
+						    default:
+						      - moka-unsigned
+						dnssec:
+						  validate: true
+						  trustAnchors:
+						    - "`+signed.DNSKEY.String()+`"
+						log:
+						  level: debug
+						`))
+					Expect(err).Should(Succeed())
+				})
+
+				It("should reject the unsigned answer and return SERVFAIL", func(ctx context.Context) {
+					msg := util.NewMsgWithQuestion("www.example.", A)
+					msg.SetEdns0(4096, true) // DO bit
+
+					resp, err := doDNSRequest(ctx, denyzer, msg)
+					Expect(err).Should(Succeed())
+
+					Expect(resp.Rcode).Should(Equal(dns.RcodeServerFailure),
+						"unsigned answer accepted for a DNSSEC-signed zone")
+					Expect(resp.AuthenticatedData).Should(BeFalse())
+					Expect(resp.Answer).ShouldNot(ContainElement(
+						BeDNSRecord("www.example.", A, "203.0.113.77")))
+				})
+			})
+
+			When("an unsigned answer for a signed zone has been cached", func() {
+				var (
+					signed *DNSSECTestData
+					mokka  testcontainers.Container
+				)
+
+				BeforeEach(func(ctx context.Context) {
+					var genErr error
+					signed, genErr = GenerateValidDNSSEC("example.", "www.example.", "192.0.2.10")
+					Expect(genErr).Should(Succeed())
+
+					mokka, err = createDNSMokkaContainer(ctx, "moka-cache", e2eNet,
+						`A www.example/NOERROR("A 203.0.113.77 300")`)
+					Expect(err).Should(Succeed())
+
+					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
+						upstreams:
+						  groups:
+						    default:
+						      - moka-cache
+						dnssec:
+						  validate: true
+						  trustAnchors:
+						    - "`+signed.DNSKEY.String()+`"
+						caching:
+						  minTime: 5m
+						log:
+						  level: debug
+						`))
+					Expect(err).Should(Succeed())
+				})
+
+				It("should not serve the unsigned answer from cache after the upstream is gone",
+					func(ctx context.Context) {
+						msg := util.NewMsgWithQuestion("www.example.", A)
+						msg.SetEdns0(4096, true) // DO bit
+
+						// First query populates the cache.
+						_, err := doDNSRequest(ctx, denyzer, msg)
+						Expect(err).Should(Succeed())
+
+						// The upstream disappears; any later answer comes from the cache.
+						Expect(mokka.Terminate(ctx)).Should(Succeed())
+
+						resp, err := doDNSRequest(ctx, denyzer, msg)
+						Expect(err).Should(Succeed())
+
+						Expect(resp.Answer).ShouldNot(ContainElement(
+							BeDNSRecord("www.example.", A, "203.0.113.77")),
+							"forged unsigned answer replayed from cache after upstream shutdown")
+					})
+			})
+
+			When("upstream returns an unsigned answer for a signed public domain under only the default root anchor", func() {
+				// GHSA-x845-2f78-7v36 finding 1 + 2: the documented basic configuration is just
+				// `dnssec: {validate: true}` with no custom trustAnchors, so only the implicit IANA
+				// root anchor is present. A malicious/compromised upstream that returns an unsigned
+				// forged answer for a DNSSEC-signed public name (and cannot supply an authenticated
+				// insecure-delegation proof) must NOT have that answer accepted or replayed.
+				var mokka testcontainers.Container
+
+				BeforeEach(func(ctx context.Context) {
+					// Forged unsigned A for cloudflare.com (a signed public domain), no RRSIG, and
+					// no DS/NSEC proofs for the auxiliary chain queries.
+					mokka, err = createDNSMokkaContainer(ctx, "moka-root-bypass", e2eNet,
+						`A cloudflare.com/NOERROR("A 203.0.113.77 300")`)
+					Expect(err).Should(Succeed())
+
+					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
+						upstreams:
+						  groups:
+						    default:
+						      - moka-root-bypass
+						dnssec:
+						  validate: true
+						caching:
+						  minTime: 5m
+						log:
+						  level: debug
+						`))
+					Expect(err).Should(Succeed())
+				})
+
+				It("rejects the forged answer and does not replay it from cache after the upstream is gone",
+					func(ctx context.Context) {
+						msg := util.NewMsgWithQuestion("cloudflare.com.", A)
+						msg.SetEdns0(4096, true) // DO bit
+
+						resp, err := doDNSRequest(ctx, denyzer, msg)
+						Expect(err).Should(Succeed())
+						Expect(resp.Rcode).Should(Equal(dns.RcodeServerFailure),
+							"forged unsigned answer accepted under the default root anchor")
+						Expect(resp.Answer).ShouldNot(ContainElement(
+							BeDNSRecord("cloudflare.com.", A, "203.0.113.77")))
+
+						// The malicious upstream disappears; any later answer comes from the cache.
+						Expect(mokka.Terminate(ctx)).Should(Succeed())
+
+						resp, err = doDNSRequest(ctx, denyzer, msg)
+						Expect(err).Should(Succeed())
+						Expect(resp.Answer).ShouldNot(ContainElement(
+							BeDNSRecord("cloudflare.com.", A, "203.0.113.77")),
+							"forged unsigned answer replayed from cache after upstream shutdown")
+					})
+			})
+
+			When("DNSSEC validation is disabled", func() {
+				BeforeEach(func(ctx context.Context) {
+					// Note: Using .example TLD instead of .test (SUDN resolver blocks .test)
+					_, err = createDNSMokkaContainer(ctx, "moka-dnssec-disabled", e2eNet,
+						`A any.domain.example/NOERROR("A 192.0.2.1 300")`,
+					)
+					Expect(err).Should(Succeed())
+
+					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
+						upstreams:
+						  groups:
+						    default:
+						      - moka-dnssec-disabled
+						# dnssec validation is disabled by default
+						`))
+					Expect(err).Should(Succeed())
+				})
+
+				It("should not validate DNSSEC and accept all responses", func(ctx context.Context) {
+					msg := util.NewMsgWithQuestion("any.domain.example.", A)
+
+					resp, err := doDNSRequest(ctx, denyzer, msg)
+					Expect(err).Should(Succeed())
+
+					// Should return NOERROR and the answer
+					Expect(resp.Rcode).Should(Equal(dns.RcodeSuccess))
+					Expect(resp.Answer).Should(ContainElement(
+						BeDNSRecord("any.domain.example.", A, "192.0.2.1"),
+					))
+
+					// AD flag should not be set when validation is disabled
+					Expect(resp.AuthenticatedData).Should(BeFalse())
+				})
+			})
+		})
+
+		Describe("Issue #1287 - Independent DNSSEC validation", func() {
+			When("upstream returns invalid DNSSEC data with CheckingDisabled flag", func() {
+				BeforeEach(func(ctx context.Context) {
+					// Use Google DNS - when queried with +cd flag, it returns data even for broken DNSSEC
+					// With DNSSEC validation enabled, Denyzer should independently validate and reject
+					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
+						upstreams:
+						  groups:
+						    default:
+						      - 8.8.8.8
+						dnssec:
+						  validate: true
+						log:
+						  level: debug
+						`))
+					Expect(err).Should(Succeed())
+				})
+
+				It("should independently validate and reject broken DNSSEC (Issue #1287 FIXED)", func(ctx context.Context) {
+					// Query dnssec-failed.org with CheckingDisabled flag
+					// This domain has intentionally broken DNSSEC signatures
+					// Google DNS will return data when queried with +cd flag (CheckingDisabled)
+					// But Denyzer should independently validate and reject it
+					msg := util.NewMsgWithQuestion("dnssec-failed.org.", A)
+					msg.CheckingDisabled = true // +cd flag
+					msg.SetEdns0(4096, true)    // DO bit
+
+					resp, err := doDNSRequest(ctx, denyzer, msg)
+					Expect(err).Should(Succeed())
+
+					// FIXED BEHAVIOR: Denyzer validates independently regardless of upstream behavior
+					// Should return SERVFAIL because DNSSEC validation failed
+					Expect(resp.Rcode).Should(Equal(dns.RcodeServerFailure),
+						"Denyzer should validate independently and reject broken DNSSEC")
+
+					// Should NOT have the Authenticated Data (AD) flag set
+					Expect(resp.AuthenticatedData).Should(BeFalse(),
+						"AD flag should not be set for failed DNSSEC validation")
+				})
+			})
+		})
+	})
+})

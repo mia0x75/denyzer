@@ -1,0 +1,985 @@
+openapi: 3.1.1
+info:
+  title: denyzer API
+  description: >-
+    REST API for Denyzer, a DNS proxy and ad-blocker for the local network.
+
+
+    For features, configuration, and installation see the
+    [project documentation](https://mia0x75.github.io/denyzer/) and the
+    [README](https://github.com/mia0x75/denyzer/blob/main/README.md).
+  contact:
+    name: denyzer@github
+    url: https://github.com/mia0x75/denyzer
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  version: '1.0'
+servers:
+  - url: /api
+paths:
+  /blocking/disable:
+    post:
+      operationId: disableBlocking
+      tags:
+        - blocking
+      summary: Disable blocking
+      description: disable the blocking status
+      parameters:
+        - name: duration
+          in: query
+          description: 'duration of blocking (Example: 300s, 5m, 1h, 5m30s)'
+          schema:
+            type: string
+        - name: groups
+          in: query
+          description: groups to disable (comma separated). If empty, disable all groups
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Blocking is disabled
+        '400':
+          description: Bad request (e.g. unknown group)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Bad request
+  /blocking/enable:
+    post:
+      operationId: enableBlocking
+      tags:
+        - blocking
+      summary: Enable blocking
+      description: enable the blocking status
+      responses:
+        '200':
+          description: Blocking is enabled
+  /blocking/status:
+    get:
+      operationId: blockingStatus
+      tags:
+        - blocking
+      summary: Blocking status
+      description: get current blocking status
+      responses:
+        '200':
+          description: Returns current blocking status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.BlockingStatus'
+  /lists/refresh:
+    post:
+      operationId: listRefresh
+      tags:
+        - lists
+      summary: List refresh
+      description: Refresh all lists
+      responses:
+        '200':
+          description: Lists were reloaded
+        '500':
+          description: List refresh error
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Error text
+  /query:
+    post:
+      operationId: query
+      tags:
+        - query
+      summary: Performs DNS query
+      description: Performs DNS query
+      requestBody:
+        description: query data
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/api.QueryRequest'
+        required: true
+      responses:
+        '200':
+          description: query was executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.QueryResult'
+        '400':
+          description: Wrong request format
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Bad request
+  /cache/flush:
+    post:
+      operationId: cacheFlush
+      tags:
+        - cache
+      summary: Clears the DNS response cache
+      description: Removes all DNS responses from cache
+      responses:
+        '200':
+          description: All caches cleared
+  /stats:
+    get:
+      operationId: getStats
+      tags:
+        - stats
+      summary: DNS statistics
+      description: >-
+        In-memory statistics over a rolling 24h window. Requires statistics to be
+        enabled in the configuration; returns 503 otherwise.
+        All timestamps (start, end, perHour[].hour) are returned in UTC (RFC 3339,
+        `Z` suffix).
+      responses:
+        '200':
+          description: Current statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.Stats'
+        '503':
+          description: Statistics are disabled
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: statistics are disabled
+  # --- SQLite dashboard API (embedded database) ---
+  # These endpoints are served directly by the server on top of the embedded
+  # SQLite store used by the DenyzerUI dashboard. They are tagged `dashboard` and
+  # excluded from the generated OpenAPI client/server code (see api/*.cfg.yaml
+  # `output-options.exclude-tags`), so they are kept in sync only here and in
+  # server/api_handlers.go.
+  /stats/summary:
+    get:
+      operationId: dashboardStatsSummary
+      tags:
+        - dashboard
+      summary: All-time DNS statistics summary
+      description: >-
+        All-time, cumulative counters read from the embedded SQLite `metrics`
+        table, together with the current in-memory result-cache entry count.
+      responses:
+        '200':
+          description: Current all-time statistics summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.StatsSummaryResponse'
+        '500':
+          description: query_stats read error
+          content:
+            text/plain:
+              schema:
+                type: string
+  /stats/hourly_trend:
+    get:
+      operationId: dashboardStatsTrend
+      tags:
+        - dashboard
+      summary: Query statistics trend over time
+      description: >-
+        Returns a zero-filled time axis of query counts, ordered oldest first.
+        Granularity depends on the parameters: minute buckets are used when
+        `hours <= 1`, hourly buckets otherwise, and daily buckets when `days` is
+        set (the days parameter wins). Timestamps are UTC; daily rows use
+        `YYYY-MM-DD`.
+      parameters:
+        - name: hours
+          in: query
+          description: Number of hourly buckets to return (default 24).
+          schema:
+            type: integer
+            default: 24
+        - name: days
+          in: query
+          description: >-
+            If set, returns `days` daily buckets instead of hourly ones.
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Trend entries, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/api.HourlyTrendEntry'
+        '500':
+          description: Statistics read error
+          content:
+            text/plain:
+              schema:
+                type: string
+  /stats/top_domains:
+    get:
+      operationId: dashboardStatsTopDomains
+      tags:
+        - dashboard
+      summary: Top queried domains
+      description: >-
+        Aggregates the per-day top_domains table over the last `days` days and
+        returns the `limit` most queried domains, sorted by count descending.
+        When `hours` is set it scans the query_logs detail for that rolling
+        window instead (used by the "1h" dashboard view).
+      parameters:
+        - name: days
+          in: query
+          description: Number of days to aggregate (default 7).
+          schema:
+            type: integer
+            default: 7
+        - name: hours
+          in: query
+          description: >-
+            Rolling hour window to aggregate (when > 0, preferred over `days`,
+            clamped to 24). Reads are served from the raw query_logs detail.
+          schema:
+            type: integer
+            default: 0
+        - name: limit
+          in: query
+          description: Maximum number of entries (default 10).
+          schema:
+            type: integer
+            default: 10
+        - name: blocked
+          in: query
+          description: >-
+            Optional filter: `true` returns only domains that had at least one
+            blocked query, `false` only domains that never were blocked.
+          schema:
+            type: string
+            enum: [ 'true', 'false' ]
+      responses:
+        '200':
+          description: Top domain entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/api.TopDomainEntry'
+        '500':
+          description: top_domains read error
+          content:
+            text/plain:
+              schema:
+                type: string
+  /stats/top_clients:
+    get:
+      operationId: dashboardStatsTopClients
+      tags:
+        - dashboard
+      summary: Top querying clients
+      description: >-
+        Aggregates the per-day top_clients table over the last `days` days and
+        returns the `limit` most active clients, sorted by count descending.
+        With `blocked=true` the returned count is the number of blocked queries
+        per client. When `hours` is set it scans the query_logs detail for that
+        rolling window instead (used by the "1h" dashboard view).
+      parameters:
+        - name: days
+          in: query
+          description: Number of days to aggregate (default 7).
+          schema:
+            type: integer
+            default: 7
+        - name: hours
+          in: query
+          description: >-
+            Rolling hour window to aggregate (when > 0, preferred over `days`,
+            clamped to 24). Reads are served from the raw query_logs detail.
+          schema:
+            type: integer
+            default: 0
+        - name: limit
+          in: query
+          description: Maximum number of entries (default 10).
+          schema:
+            type: integer
+            default: 10
+        - name: blocked
+          in: query
+          description: >-
+            Optional filter: `true` returns only clients with at least one
+            blocked query (count becomes the blocked count), `false` only
+            clients without any blocked queries.
+          schema:
+            type: string
+            enum: [ 'true', 'false' ]
+      responses:
+        '200':
+          description: Top client entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/api.TopClientEntry'
+        '500':
+          description: top_clients read error
+          content:
+            text/plain:
+              schema:
+                type: string
+  /stats/search_domains:
+    get:
+      operationId: dashboardSearchDomains
+      tags:
+        - dashboard
+      summary: Search queried domains
+      description: >-
+        Returns domains whose names contain `query` (case-insensitive), sorted
+        by count descending and truncated to `limit`. Used by the dashboard's
+        domain autocomplete.
+      parameters:
+        - name: days
+          in: query
+          description: Number of days to aggregate (default 7).
+          schema:
+            type: integer
+            default: 7
+        - name: query
+          in: query
+          description: Substring to search for within domain names.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of entries (default 10).
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Matching domain entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/api.SearchDomainEntry'
+        '500':
+          description: top_domains read error
+          content:
+            text/plain:
+              schema:
+                type: string
+  /stats/search_clients:
+    get:
+      operationId: dashboardSearchClients
+      tags:
+        - dashboard
+      summary: Search querying clients
+      description: >-
+        Returns clients whose IP address or name contains `query`
+        (case-insensitive), sorted by count descending and truncated to
+        `limit`. Used by the dashboard's client autocomplete.
+      parameters:
+        - name: days
+          in: query
+          description: Number of days to aggregate (default 7).
+          schema:
+            type: integer
+            default: 7
+        - name: query
+          in: query
+          description: Substring to search for within client IP or name.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of entries (default 10).
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Matching client entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/api.SearchClientEntry'
+        '500':
+          description: top_clients read error
+          content:
+            text/plain:
+              schema:
+                type: string
+  /stats/query_types:
+    get:
+      operationId: dashboardStatsQueryTypes
+      tags:
+        - dashboard
+      summary: Query type breakdown
+      description: >-
+        Returns per-query-type counts (A, AAAA, ...) with their percentage share
+        of the total, sorted by count descending. When `days` is positive only
+        the daily per-type counters for that window are summed; otherwise the
+        all-time per-type counters are returned.
+      parameters:
+        - name: days
+          in: query
+          description: Number of days to aggregate (default 7).
+          schema:
+            type: integer
+            default: 7
+      responses:
+        '200':
+          description: Query type entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/api.QueryTypeEntry'
+        '500':
+          description: query_stats read error
+          content:
+            text/plain:
+              schema:
+                type: string
+  /stats/lists:
+    get:
+      operationId: dashboardStatsListed
+      tags:
+        - dashboard
+      summary: Blocking list entry counts
+      description: >-
+        Current per-group denylist and allowlist entry counts. Returns 503 when
+        no blocklist provider is wired into the resolver chain.
+      responses:
+        '200':
+          description: Current list counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.ListedStatsResponse'
+        '503':
+          description: No blocklist provider available
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: statistics are disabled
+  /stats/recalculate:
+    post:
+      operationId: dashboardStatsRecalculate
+      tags:
+        - dashboard
+      summary: Recalculate statistics
+      description: >-
+        Rebuilds the global and per-day query_stats counters from the
+        authoritative stats_daily table (e.g. after an external edit of the
+        store). Per-query-type counters are left untouched.
+      responses:
+        '200':
+          description: Recalculation finished
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.RecalculateResponse'
+        '500':
+          description: Recalculation failed
+          content:
+            text/plain:
+              schema:
+                type: string
+  /logs/query:
+    get:
+      operationId: dashboardQueryLogs
+      tags:
+        - dashboard
+      summary: Query logs (keyset paginated)
+      description: >-
+        Returns a page of query log entries ordered newest first, using keyset
+        pagination over the auto-increment primary key. The `cursor` returned by
+        a previous page (when `hasMore` is true) starts the next page strictly
+        below that entry. `totalCount` is populated only when no filters are
+        applied. Cursor-less requests limited to `limit` entries (max 100).
+      parameters:
+        - name: limit
+          in: query
+          description: Page size (default and max 100).
+          schema:
+            type: integer
+            default: 100
+            maximum: 100
+        - name: cursor
+          in: query
+          description: Opaque cursor from the previous page (last entry id).
+          schema:
+            type: string
+        - name: search
+          in: query
+          description: Case-insensitive substring match on the domain.
+          schema:
+            type: string
+        - name: responseType
+          in: query
+          description: Exact response type (CACHED, BLOCKED, ...).
+          schema:
+            type: string
+        - name: client
+          in: query
+          description: Case-insensitive substring match on the client IP.
+          schema:
+            type: string
+        - name: questionType
+          in: query
+          description: Exact query type (A, AAAA, ...).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of query log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.QueryLogResponse'
+        '500':
+          description: query_logs read error
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  schemas:
+    api.BlockingStatus:
+      type: object
+      properties:
+        autoEnableInSec:
+          type: integer
+          minimum: 0
+          description: >-
+            If blocking is temporary disabled: amount of seconds until blocking
+            will be enabled
+        disabledGroups:
+          type: array
+          description: Disabled group names
+          items:
+            type: string
+        enabled:
+          type: boolean
+          description: True if blocking is enabled
+      required:
+        - enabled
+    api.QueryRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          description: query for DNS request
+        type:
+          type: string
+          description: request type (A, AAAA, ...)
+      required:
+        - query
+        - type
+    api.QueryResult:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: denyzer reason for resolution
+        response:
+          type: string
+          description: actual DNS response
+        responseType:
+          type: string
+          description: response type (CACHED, BLOCKED, ...)
+        returnCode:
+          type: string
+          description: DNS return code (NOERROR, NXDOMAIN, ...)
+      required:
+        - reason
+        - response
+        - responseType
+        - returnCode
+    api.Stats:
+      type: object
+      description: In-memory DNS statistics snapshot.
+      properties:
+        start:
+          type: string
+          format: date-time
+          description: Start of the covered window for the windowed fields (not the gauges). UTC (RFC 3339).
+        end:
+          type: string
+          format: date-time
+          description: Snapshot time. UTC (RFC 3339).
+        summary:
+          $ref: '#/components/schemas/api.StatsSummary'
+        byResponseType:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Raw per-RType counts over the window (CACHED, BLOCKED, ...).
+        byQueryType:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Counts per DNS query type over the window (A, AAAA, ...).
+        byResponseCode:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Counts per DNS response code over the window (NOERROR, NXDOMAIN, ...).
+        perHour:
+          type: array
+          description: Per-hour time series over the window.
+          items:
+            $ref: '#/components/schemas/api.HourPoint'
+        topDomains:
+          type: array
+          items:
+            $ref: '#/components/schemas/api.NameCount'
+        topBlockedDomains:
+          type: array
+          items:
+            $ref: '#/components/schemas/api.NameCount'
+        topClients:
+          type: array
+          items:
+            $ref: '#/components/schemas/api.NameCount'
+        lists:
+          $ref: '#/components/schemas/api.ListCounts'
+        cache:
+          $ref: '#/components/schemas/api.CacheStats'
+      required:
+        - start
+        - end
+        - summary
+        - byResponseType
+        - byQueryType
+        - byResponseCode
+        - perHour
+        - topDomains
+        - topBlockedDomains
+        - topClients
+        - lists
+        - cache
+    api.StatsSummary:
+      type: object
+      description: Curated outcome categories over the window (server computes the mapping).
+      properties:
+        queries:
+          type: integer
+          description: Total queries received in the window.
+        cached:
+          type: integer
+        forwarded:
+          type: integer
+        blocked:
+          type: integer
+          description: >-
+            Real blocks: denylist hits (BLOCKED) and DNS rebinding-protection hits (REBIND).
+            Excludes query-type filtered and NOTFQDN responses.
+        filtered:
+          type: integer
+          description: >-
+            Query-type filtered (e.g. AAAA via filtering.queryTypes) and NOTFQDN responses.
+            These are not blocks.
+        local:
+          type: integer
+        dropped:
+          type: integer
+        errors:
+          type: integer
+          description: >-
+            Queries that did not resolve: a resolver returned an error, or the answer
+            failed DNSSEC validation (BOGUS). Not blocks.
+        avgResponseMs:
+          type: integer
+        cacheHitRate:
+          type: number
+          format: double
+      required:
+        - queries
+        - cached
+        - forwarded
+        - blocked
+        - filtered
+        - local
+        - dropped
+        - errors
+        - avgResponseMs
+        - cacheHitRate
+    api.NameCount:
+      type: object
+      properties:
+        name:
+          type: string
+        count:
+          type: integer
+      required:
+        - name
+        - count
+    api.HourPoint:
+      type: object
+      properties:
+        hour:
+          type: string
+          format: date-time
+          description: Start of the hour bucket. UTC (RFC 3339).
+        queries:
+          type: integer
+        blocked:
+          type: integer
+          description: Real blocks in this hour, same definition as summary.blocked.
+        filtered:
+          type: integer
+          description: Query-type filtered / NOTFQDN responses in this hour, same definition as summary.filtered.
+      required:
+        - hour
+        - queries
+        - blocked
+        - filtered
+    api.ListCounts:
+      type: object
+      description: Current per-group list entry counts (point-in-time, not windowed).
+      properties:
+        denylist:
+          type: object
+          additionalProperties:
+            type: integer
+        allowlist:
+          type: object
+          additionalProperties:
+            type: integer
+      required:
+        - denylist
+        - allowlist
+    api.CacheStats:
+      type: object
+      description: Current cache state (point-in-time, not windowed).
+      properties:
+        entries:
+          type: integer
+          description: Current number of entries in the result cache.
+      required:
+        - entries
+    # --- SQLite dashboard API schemas (tag: dashboard) ---
+    api.StatsSummaryResponse:
+      type: object
+      description: All-time cumulative statistics from the embedded query_stats table.
+      properties:
+        totalQueries:
+          type: integer
+          description: Total queries since the store was first written.
+        blocked:
+          type: integer
+        blockedPercentage:
+          type: number
+          format: double
+          description: blocked / totalQueries as a percentage (0-100).
+        cached:
+          type: integer
+        forwarded:
+          type: integer
+        filtered:
+          type: integer
+        local:
+          type: integer
+        errors:
+          type: integer
+        other:
+          type: integer
+        dropped:
+          type: integer
+        cacheHitRate:
+          type: number
+          format: double
+          description: cached / (cached + forwarded), 0 when no lookups.
+        avgResponseMs:
+          type: integer
+          description: Mean response time over answered queries.
+        cacheEntries:
+          type: integer
+          description: Current number of entries in the in-memory result cache.
+      required:
+        - totalQueries
+        - blocked
+        - blockedPercentage
+        - cached
+        - forwarded
+        - filtered
+        - local
+        - errors
+        - other
+        - dropped
+        - cacheHitRate
+        - avgResponseMs
+        - cacheEntries
+    api.HourlyTrendEntry:
+      type: object
+      properties:
+        time:
+          type: string
+          description: >-
+            Start of the bucket. UTC RFC 3339 for minute/hour buckets,
+            YYYY-MM-DD for daily buckets.
+        total:
+          type: integer
+        blocked:
+          type: integer
+        cached:
+          type: integer
+        avgResponseMs:
+          type: integer
+          description: Average response latency in milliseconds for the bucket.
+      required:
+        - time
+        - total
+        - blocked
+        - cached
+        - avgResponseMs
+    api.TopDomainEntry:
+      type: object
+      properties:
+        name:
+          type: string
+        count:
+          type: integer
+      required:
+        - name
+        - count
+    api.TopClientEntry:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Client name if known, otherwise the client IP.
+        count:
+          type: integer
+          description: >-
+            Query count; the blocked count when filtered with blocked=true.
+        blocked:
+          type: integer
+      required:
+        - name
+        - count
+        - blocked
+    api.SearchDomainEntry:
+      type: object
+      properties:
+        domain:
+          type: string
+        count:
+          type: integer
+      required:
+        - domain
+        - count
+    api.SearchClientEntry:
+      type: object
+      properties:
+        client:
+          type: string
+          description: Client name if known, otherwise the client IP.
+        count:
+          type: integer
+      required:
+        - client
+        - count
+    api.QueryTypeEntry:
+      type: object
+      properties:
+        type:
+          type: string
+          description: DNS query type (A, AAAA, ...).
+        count:
+          type: integer
+        percentage:
+          type: number
+          format: double
+          description: share of the total, 0-100.
+      required:
+        - type
+        - count
+        - percentage
+    api.ListedStatsResponse:
+      type: object
+      properties:
+        denylistGroups:
+          type: integer
+          description: Number of denylist groups.
+        listedDomains:
+          type: integer
+          description: Total denylisted domains across all groups.
+        allowlistDomains:
+          type: integer
+          description: Total allowlisted domains.
+      required:
+        - denylistGroups
+        - listedDomains
+        - allowlistDomains
+    api.RecalculateResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ ok ]
+      required:
+        - status
+    api.QueryLogResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/api.QueryLogItem'
+        nextCursor:
+          type: string
+          description: Present only when hasMore is true.
+        hasMore:
+          type: boolean
+        totalCount:
+          type: integer
+          description: >-
+            O(1) all-time total from query_stats; present only when no filters
+            are applied.
+      required:
+        - items
+        - hasMore
+    api.QueryLogItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: Monotonic primary key used as the pagination cursor.
+        requestTs:
+          type: string
+          format: date-time
+          description: Query timestamp, UTC RFC 3339.
+        clientIp:
+          type: string
+        clientName:
+          type: string
+        durationMs:
+          type: integer
+        reason:
+          type: string
+        questionName:
+          type: string
+        responseType:
+          type: string
+        questionType:
+          type: string
+      required:
+        - id
+        - requestTs
+        - clientIp
+        - durationMs
+        - questionName
+        - responseType
+        - questionType

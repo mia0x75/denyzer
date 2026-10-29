@@ -1,0 +1,148 @@
+version: 2
+
+project_name: denyzer
+
+before:
+  hooks:
+    - go mod tidy
+
+# Denyzer keeps its query log in SQLite through the native driver
+# (github.com/mattn/go-sqlite3), so every release binary has to be built with
+# CGO_ENABLED=1. Go turns cgo off automatically for cross builds and no system
+# C compiler can target every platform Denyzer ships, so the cross build runs
+# through the Zig wrapper in scripts/zigcc/cc-zig.sh.
+#
+# macOS is the exception: Go's darwin runtime always links -lresolv and
+# imports res_9_* from /usr/lib/libresolv.9.dylib, which only exists on a real
+# macOS host. The macOS binaries are therefore built on a macOS runner with the
+# native Apple compiler.
+#
+# DENYZER_TARGET selects the group that gets built:
+#   cross  (default) - every platform except macOS, built with the Zig wrapper
+#   darwin           - macOS only, built with the native compiler
+#
+# CC points at the Zig wrapper for the cross build; the workflows export it as
+# an absolute path (cgo runs the compiler from its own build directory, so a
+# relative path would not resolve).
+builds:
+  - id: cross
+    goos:
+      - linux
+      - windows
+      - freebsd
+      - netbsd
+      - openbsd
+    goarch:
+      - amd64
+      - arm
+      - arm64
+      - mipsle
+      - mips
+      - mips64le
+      - mips64
+    goarm:
+      - 6
+      - 7
+    # Applies to both MIPS families: goreleaser maps this to GOMIPS for
+    # mips/mipsle and to GOMIPS64 for mips64/mips64le.
+    gomips:
+      - softfloat
+    ignore:
+      - goos: windows
+        goarch: arm
+      - goos: windows
+        goarch: arm64
+      - goos: windows
+        goarch: mipsle
+      - goos: windows
+        goarch: mips
+      - goos: windows
+        goarch: mips64le
+      - goos: windows
+        goarch: mips64
+    # Same tags as the container build: the pure Go resolver and user lookup
+    # keep the behaviour of the previous pure Go releases (and the musl
+    # resolver out of the picture), sqlite_omit_load_extension drops the
+    # extension loading code.
+    tags:
+      - netgo
+      - osusergo
+      - sqlite_omit_load_extension
+    env:
+      - CGO_ENABLED=1
+      - CC={{ envOrDefault "CC" "cc" }}
+    skip: '{{ if eq (envOrDefault "DENYZER_TARGET" "cross") "darwin" }}true{{ else }}false{{ end }}'
+    ldflags: &ldflags
+      - -w
+      - -s
+      - -X github.com/mia0x75/denyzer/util.Version=v{{.Version}}
+      - -X github.com/mia0x75/denyzer/util.BuildTime={{time "20060102-150405"}}
+      - -X github.com/mia0x75/denyzer/util.Architecture={{.Arch}}{{.Arm}}{{.Mips}}
+
+  - id: macos
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    tags:
+      - netgo
+      - osusergo
+      - sqlite_omit_load_extension
+    env:
+      - CGO_ENABLED=1
+      - CC=clang
+    skip: '{{ if eq (envOrDefault "DENYZER_TARGET" "cross") "darwin" }}false{{ else }}true{{ end }}'
+    ldflags: *ldflags
+
+release:
+  draft: true
+  # A failed release run leaves a draft release behind. Re-running the
+  # workflow updates that draft instead of failing because the release for the
+  # tag already exists.
+  use_existing_draft: true
+  footer: |
+    ---
+
+    ## Denyzer
+
+    Denyzer is free and open source, developed in my spare time — no telemetry, no ads, no hidden
+    filtering.
+archives:
+  - format_overrides:
+      - goos: windows
+        formats: ["zip"]
+    name_template: >-
+      {{ .ProjectName }}_v
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+      {{- if .Mips }}_{{ .Mips }}{{ end }}
+
+snapshot:
+  version_template: "{{ .Version }}-{{.ShortCommit}}"
+checksum:
+  name_template: "{{ .ProjectName }}_checksums.txt"
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: "Bug fixes"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: "Build and dependencies"
+      regexp: '^.*?build(\([[:word:]]+\))??!?:.+$'
+      order: 30
+    - title: Misc
+      order: 999
+  filters:
+    exclude:
+      - '^docs:'
+      - '^chore:'
+      - '^test:'

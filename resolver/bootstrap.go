@@ -1,0 +1,464 @@
+package resolver
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"math/rand"
+	"net"
+	"net/http"
+	"slices"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/hashicorp/go-multierror"
+	"github.com/mia0x75/denyzer/config"
+	"github.com/mia0x75/denyzer/model"
+	"github.com/mia0x75/denyzer/util"
+	"github.com/miekg/dns"
+	"github.com/sirupsen/logrus"
+)
+
+var errArbitrarySystemResolverRequest = errors.New(
+	"cannot resolve arbitrary requests using the system resolver",
+)
+
+// bootstrapMaxCacheTime bounds how long bootstrap lookups may be cached when
+// caching is otherwise disabled.
+const bootstrapMaxCacheTime = 24 * time.Hour
+
+type bootstrapConfig struct {
+	config.BootstrapDNS
+
+	connectIPVersion config.IPVersion
+	timeout          config.Duration
+}
+
+func newBootstrapConfig(cfg *config.Config) *bootstrapConfig {
+	return &bootstrapConfig{
+		BootstrapDNS: cfg.BootstrapDNS,
+
+		connectIPVersion: cfg.ConnectIPVersion,
+		timeout:          cfg.Upstreams.Timeout,
+	}
+}
+
+// Bootstrap allows resolving hostnames using the configured bootstrap DNS.
+type Bootstrap struct {
+	configurable[*bootstrapConfig]
+	typed
+
+	resolver    Resolver
+	bootstraped bootstrapedResolvers
+
+	// To allow replacing during tests
+	systemResolver *net.Resolver
+	dialer         interface {
+		DialContext(ctx context.Context, network, addr string) (net.Conn, error)
+	}
+}
+
+// NewBootstrap creates and returns a new Bootstrap.
+// Internally, it uses a CachingResolver and an UpstreamResolver.
+func NewBootstrap(ctx context.Context, cfg *config.Config) (b *Bootstrap, err error) {
+	// Create b in multiple steps: Bootstrap and UpstreamResolver have a cyclic dependency
+	// This also prevents the GC to clean up these two structs, but is not currently an
+	// issue since they stay allocated until the process terminates
+	b = &Bootstrap{
+		configurable: withConfig(newBootstrapConfig(cfg)),
+		typed:        withType("bootstrap"),
+
+		systemResolver: net.DefaultResolver,
+		dialer:         new(net.Dialer),
+	}
+
+	ctx, logger := b.log(ctx)
+
+	bootstraped, err := newBootstrapedResolvers(b, cfg.BootstrapDNS, cfg.Upstreams, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create bootstrap resolvers: %w", err)
+	}
+
+	if len(bootstraped) == 0 {
+		logger.Info("bootstrapDns is not configured, will use system resolver")
+
+		return b, nil
+	}
+
+	pbCfg := config.NewUpstreamGroup("<bootstrap>", cfg.Upstreams, nil)
+	pbCfg.Groups = nil // To be on the safe side it doesn't try to use anything besides the bootstrap
+
+	// Always cache bootstrap lookups to avoid stalling user requests.
+	// Otherwise, a request to denyzer could end up waiting for 2 DNS requests:
+	//   1. lookup the DNS server IP
+	//   2. forward the user request to the server looked-up in 1
+	cachingCfg := cfg.Caching
+
+	if !cachingCfg.IsEnabled() {
+		// make sure the bootstrap resolver caches its lookups
+		cachingCfg.MaxCachingTime = config.Duration(bootstrapMaxCacheTime)
+	}
+
+	if !cachingCfg.MinCachingTime.IsAboveZero() {
+		// Keep bootstrap results cached for a while to avoid repeated lookups
+		cachingCfg.MinCachingTime = config.Duration(time.Hour)
+	}
+
+	b.bootstraped = bootstraped
+	// Bootstrap lookups are never DNSSEC-validated, so prefetch reloads don't
+	// need the DO bit.
+	cachingResolver, _ := newCachingResolver(ctx, cachingCfg, config.DNSSEC{})
+
+	b.resolver = Chain(
+		NewFilteringResolver(cfg.Filtering),
+		// false: no metrics, to not overwrite the main blocking resolver ones
+		cachingResolver,
+		newParallelBestResolver(pbCfg, bootstraped.Resolvers()),
+	)
+
+	return b, nil
+}
+
+func (b *Bootstrap) Resolve(ctx context.Context, request *model.Request) (*model.Response, error) {
+	if b.resolver == nil {
+		// We could implement most queries using the `b.systemResolver.Lookup*` functions,
+		// but that requires a lot of boilerplate to translate from `dns` to `net` and back.
+		return nil, errArbitrarySystemResolverRequest
+	}
+
+	// Add bootstrap prefix to all inner resolver logs
+	ctx, _ = b.log(ctx)
+
+	resp, err := b.resolver.Resolve(ctx, request)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap DNS resolution failed: %w", err)
+	}
+
+	return resp, nil
+}
+
+func (b *Bootstrap) UpstreamIPs(ctx context.Context, r *UpstreamResolver) (*IPSet, error) {
+	hostname := r.Upstream().Host
+
+	if ip := net.ParseIP(hostname); ip != nil { // nil-safe when hostname is an IP: makes writing tests easier
+		return newIPSet([]net.IP{ip}), nil
+	}
+
+	// Use IPs from DNS stamp if available (avoids bootstrap resolution)
+	if ips := r.Upstream().IPs; len(ips) > 0 {
+		return newIPSet(ips), nil
+	}
+
+	ips, err := b.resolveUpstream(ctx, r, hostname)
+	if err != nil {
+		return nil, fmt.Errorf("could not resolve IPs for upstream %s: %w", hostname, err)
+	}
+
+	return newIPSet(ips), nil
+}
+
+func (b *Bootstrap) resolveUpstream(ctx context.Context, r Resolver, host string) ([]net.IP, error) {
+	if ips, ok := b.bootstraped[r]; ok {
+		// Special path for bootstraped upstreams to avoid infinite recursion
+		return ips, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, b.cfg.timeout.ToDuration())
+	defer cancel()
+
+	// Use system resolver if no bootstrap is configured
+	if b.resolver == nil {
+		ips, err := b.systemResolver.LookupIP(ctx, b.cfg.connectIPVersion.Net(), host)
+		if err != nil {
+			return nil, fmt.Errorf("system resolver lookup failed for '%s': %w", host, err)
+		}
+
+		return ips, nil
+	}
+
+	return b.resolve(ctx, host, b.cfg.connectIPVersion.QTypes())
+}
+
+// NewHTTPTransport returns a new http.Transport that uses b to resolve hostnames
+func (b *Bootstrap) NewHTTPTransport() *http.Transport {
+	transport := util.DefaultHTTPTransport()
+	transport.DialContext = b.dialContext
+
+	return transport
+}
+
+func (b *Bootstrap) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if b.resolver == nil {
+		conn, err := b.dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, fmt.Errorf("system dialer failed to connect to '%s': %w", addr, err)
+		}
+
+		return conn, nil
+	}
+
+	ctx, logger := b.logWithFields(ctx, logrus.Fields{"network": network, "addr": addr})
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		logger.Errorf("dial error: %s", err)
+
+		return nil, fmt.Errorf("failed to parse dial address '%s': %w", addr, err)
+	}
+
+	var qTypes []dns.Type
+
+	switch {
+	case b.cfg.connectIPVersion != config.IPVersionDual: // ignore `network` if a specific version is configured
+		qTypes = b.cfg.connectIPVersion.QTypes()
+	case strings.HasSuffix(network, "4"):
+		qTypes = config.IPVersionV4.QTypes()
+	case strings.HasSuffix(network, "6"):
+		qTypes = config.IPVersionV6.QTypes()
+	default:
+		qTypes = config.IPVersionDual.QTypes()
+	}
+
+	// Resolve the host with the bootstrap DNS
+	ips, err := b.resolve(ctx, host, qTypes)
+	if err != nil {
+		logger.Errorf("resolve error: %s", err)
+
+		return nil, fmt.Errorf("failed to resolve host '%s' via bootstrap DNS: %w", host, err)
+	}
+
+	// Shuffle so that load is spread across the resolved addresses. On a dial
+	// failure we fall back to the remaining addresses (e.g. the other IP
+	// family) instead of consuming the whole attempt — the standard dialer
+	// does this dual-stack fallback for us, but we bypass it by resolving the
+	// host ourselves and dialing a single address.
+	//nolint:gosec // load balancing does not require cryptographic randomness
+	rand.Shuffle(len(ips), func(i, j int) { ips[i], ips[j] = ips[j], ips[i] })
+
+	var dialErr *multierror.Error
+
+	for _, ip := range ips {
+		logger.WithField("ip", ip).Tracef("dialing %s", host)
+
+		// Use the standard dialer to actually connect
+		addrWithIP := net.JoinHostPort(ip.String(), port)
+
+		conn, err := b.dialer.DialContext(ctx, network, addrWithIP)
+		if err == nil {
+			return conn, nil
+		}
+
+		dialErr = multierror.Append(dialErr, fmt.Errorf("dial '%s': %w", addrWithIP, err))
+	}
+
+	return nil, fmt.Errorf("failed to dial '%s' (resolved from '%s'): %w", addr, host, dialErr.ErrorOrNil())
+}
+
+func (b *Bootstrap) resolve(ctx context.Context, hostname string, qTypes []dns.Type) (ips []net.IP, err error) {
+	ips = make([]net.IP, 0, len(qTypes))
+
+	for _, qType := range qTypes {
+		qIPs, qErr := b.resolveType(ctx, hostname, qType)
+		if qErr != nil {
+			err = multierror.Append(err, qErr)
+
+			continue
+		}
+
+		ips = append(ips, qIPs...)
+	}
+
+	if err == nil && len(ips) == 0 {
+		return nil, fmt.Errorf("no such host %s", hostname)
+	}
+
+	if err != nil {
+		return ips, fmt.Errorf("failed to resolve %s: %w", hostname, err)
+	}
+
+	return ips, nil
+}
+
+func (b *Bootstrap) resolveType(ctx context.Context, hostname string, qType dns.Type) (ips []net.IP, err error) {
+	if ip := net.ParseIP(hostname); ip != nil {
+		return []net.IP{ip}, nil
+	}
+
+	ctx, _ = b.log(ctx)
+
+	req := model.Request{
+		Req: util.NewMsgWithQuestion(hostname, qType),
+	}
+
+	rsp, err := b.resolver.Resolve(ctx, &req)
+	if err != nil {
+		return nil, fmt.Errorf("DNS query failed for %s (type %s): %w", hostname, qType, err)
+	}
+
+	if rsp.Res.Rcode != dns.RcodeSuccess {
+		return nil, nil
+	}
+
+	ips = make([]net.IP, 0, len(rsp.Res.Answer))
+
+	for _, a := range rsp.Res.Answer {
+		switch rr := a.(type) {
+		case *dns.A:
+			ips = append(ips, rr.A)
+		case *dns.AAAA:
+			ips = append(ips, rr.AAAA)
+		}
+	}
+
+	return ips, nil
+}
+
+// map of bootstraped resolvers to their hardcoded IPs
+type bootstrapedResolvers map[Resolver][]net.IP
+
+func newBootstrapedResolvers(
+	b *Bootstrap, cfg config.BootstrapDNS, upstreamsCfg config.Upstreams, logger *logrus.Entry,
+) (bootstrapedResolvers, error) {
+	upstreamIPs := make(bootstrapedResolvers, len(cfg))
+
+	var multiErr *multierror.Error
+
+	for i, upstreamCfg := range cfg {
+		i := i + 1 // user visible index should start at 1
+
+		if upstreamCfg.ResolvFile != "" {
+			if err := b.addResolvFileUpstreams(upstreamIPs, upstreamCfg, upstreamsCfg, logger); err != nil {
+				multiErr = multierror.Append(multiErr, fmt.Errorf("item %d: %w", i, err))
+			}
+
+			continue
+		}
+
+		upstream := upstreamCfg.Upstream
+
+		if upstream.IsDefault() {
+			multiErr = multierror.Append(
+				multiErr,
+				fmt.Errorf("item %d: upstream not configured (ips=%v)", i, upstreamCfg.IPs),
+			)
+
+			continue
+		}
+
+		// Capacity hint only: the sum of both lengths could overflow, so the
+		// slice grows on demand instead.
+		ips := make([]net.IP, 0, len(upstreamCfg.IPs))
+
+		if ip := net.ParseIP(upstream.Host); ip != nil {
+			ips = append(ips, ip)
+		} else if upstream.Net == config.NetProtocolTcpUdp {
+			multiErr = multierror.Append(
+				multiErr,
+				fmt.Errorf("item %d: '%s': protocol %s must use IP instead of hostname", i, upstream, upstream.Net),
+			)
+
+			continue
+		}
+
+		ips = append(ips, upstreamCfg.IPs...)
+
+		if len(ips) == 0 {
+			multiErr = multierror.Append(multiErr, fmt.Errorf("item %d: '%s': no IPs configured", i, upstream))
+
+			continue
+		}
+
+		resolver := newUpstreamResolverUnchecked(newUpstreamConfig(upstream, upstreamsCfg), b)
+
+		upstreamIPs[resolver] = ips
+	}
+
+	if multiErr != nil {
+		return nil, fmt.Errorf("invalid bootstrapDns configuration: %w", multiErr)
+	}
+
+	return upstreamIPs, nil
+}
+
+// defaultDNSPort is the fallback bootstrap port. resolv.conf(5) carries no
+// per-nameserver port, so dns.ClientConfigFromFile always reports "53"; we
+// still parse cc.Port defensively in case that ever changes.
+const defaultDNSPort uint16 = 53
+
+// addResolvFileUpstreams reads nameservers from a resolv.conf(5) file and adds
+// one plain-DNS bootstrap upstream per nameserver to upstreamIPs. This lets
+// systems whose DHCP-provided resolvers live outside /etc/resolv.conf (e.g.
+// OpenWrt's /tmp/resolv.conf.auto) point denyzer at the right file.
+func (b *Bootstrap) addResolvFileUpstreams(
+	upstreamIPs bootstrapedResolvers, upstreamCfg config.BootstrappedUpstream,
+	upstreamsCfg config.Upstreams, logger *logrus.Entry,
+) error {
+	if !upstreamCfg.Upstream.IsDefault() || len(upstreamCfg.IPs) > 0 {
+		return errors.New("resolvFile cannot be combined with upstream/ips in the same entry")
+	}
+
+	path := upstreamCfg.ResolvFile
+
+	cc, err := dns.ClientConfigFromFile(path)
+	if err != nil {
+		return fmt.Errorf("resolvFile '%s': %w", path, err)
+	}
+
+	port := defaultDNSPort
+	if p, err := strconv.ParseUint(cc.Port, 10, 16); err == nil {
+		port = uint16(p)
+	}
+
+	var added int
+
+	for _, server := range cc.Servers {
+		ip := net.ParseIP(server)
+		if ip == nil {
+			continue
+		}
+
+		upstream := config.Upstream{Net: config.NetProtocolTcpUdp, Host: server, Port: port}
+		resolver := newUpstreamResolverUnchecked(newUpstreamConfig(upstream, upstreamsCfg), b)
+		upstreamIPs[resolver] = []net.IP{ip}
+		added++
+	}
+
+	if added == 0 {
+		return fmt.Errorf("resolvFile '%s': no usable nameservers", path)
+	}
+
+	logger.Infof("loaded %d bootstrap nameserver(s) from resolvFile '%s'", added, path)
+
+	return nil
+}
+
+func (br bootstrapedResolvers) Resolvers() []Resolver {
+	return slices.Collect(maps.Keys(br))
+}
+
+type IPSet struct {
+	values []net.IP
+	index  uint32
+}
+
+func newIPSet(ips []net.IP) *IPSet {
+	return &IPSet{values: ips}
+}
+
+func (ips *IPSet) Current() net.IP {
+	idx := atomic.LoadUint32(&ips.index)
+
+	return ips.values[idx]
+}
+
+func (ips *IPSet) Next() {
+	oldIP := ips.index
+	newIP := uint32(int(ips.index+1) % len(ips.values)) //nolint:gosec // index and len are small practical values
+
+	// We don't care about the result: if the call fails,
+	// it means the value was incremented by another goroutine
+	_ = atomic.CompareAndSwapUint32(&ips.index, oldIP, newIP)
+}
