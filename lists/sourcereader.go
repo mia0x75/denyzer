@@ -1,0 +1,80 @@
+package lists
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/mia0x75/denyzer/config"
+)
+
+type SourceOpener interface {
+	fmt.Stringer
+
+	Open(ctx context.Context) (io.ReadCloser, error)
+}
+
+func NewSourceOpener(txtLocInfo string, source config.BytesSource, downloader FileDownloader) (SourceOpener, error) {
+	switch source.Type {
+	case config.BytesSourceTypeText:
+		return &textOpener{source: source, locInfo: txtLocInfo}, nil
+
+	case config.BytesSourceTypeHttp:
+		return &httpOpener{source: source, downloader: downloader}, nil
+
+	case config.BytesSourceTypeFile:
+		return &fileOpener{source: source}, nil
+	}
+
+	return nil, fmt.Errorf("cannot open %s", source)
+}
+
+type textOpener struct {
+	source  config.BytesSource
+	locInfo string
+}
+
+func (o *textOpener) Open(_ context.Context) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader(o.source.From)), nil
+}
+
+func (o *textOpener) String() string {
+	return fmt.Sprintf("%s: %s", o.locInfo, o.source)
+}
+
+type httpOpener struct {
+	source     config.BytesSource
+	downloader FileDownloader
+}
+
+func (o *httpOpener) Open(ctx context.Context) (io.ReadCloser, error) {
+	rc, err := o.downloader.DownloadFile(ctx, o.source.From)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download file from '%s': %w", o.source.From, err)
+	}
+
+	return rc, nil
+}
+
+func (o *httpOpener) String() string {
+	return o.source.String()
+}
+
+type fileOpener struct {
+	source config.BytesSource
+}
+
+func (o *fileOpener) Open(_ context.Context) (io.ReadCloser, error) {
+	file, err := os.Open(o.source.From)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file '%s': %w", o.source.From, err)
+	}
+
+	return file, nil
+}
+
+func (o *fileOpener) String() string {
+	return o.source.String()
+}

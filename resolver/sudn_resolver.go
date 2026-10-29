@@ -1,0 +1,256 @@
+package resolver
+
+import (
+	"context"
+	"net"
+	"strings"
+
+	"github.com/mia0x75/denyzer/config"
+	"github.com/mia0x75/denyzer/model"
+	"github.com/mia0x75/denyzer/util"
+	"github.com/miekg/dns"
+)
+
+const exampleDomain = "example.com."
+
+type sudnHandler = func(request *model.Request, cfg *config.SUDN) *model.Response
+
+//nolint:gochecknoglobals
+var (
+	loopbackV4 = net.ParseIP(loopbackIPv4Str)
+	loopbackV6 = net.IPv6loopback
+
+	// See Wikipedia for an up-to-date reference:
+	// https://en.wikipedia.org/wiki/Special-use_domain_name
+	sudnHandlers = map[string]sudnHandler{
+		// RFC 6598
+		// https://www.rfc-editor.org/rfc/rfc6598
+		//
+		// Section 4
+		"64.100.in-addr.arpa.":  sudnNXDomain,
+		"65.100.in-addr.arpa.":  sudnNXDomain,
+		"66.100.in-addr.arpa.":  sudnNXDomain,
+		"67.100.in-addr.arpa.":  sudnNXDomain,
+		"68.100.in-addr.arpa.":  sudnNXDomain,
+		"69.100.in-addr.arpa.":  sudnNXDomain,
+		"70.100.in-addr.arpa.":  sudnNXDomain,
+		"71.100.in-addr.arpa.":  sudnNXDomain,
+		"72.100.in-addr.arpa.":  sudnNXDomain,
+		"73.100.in-addr.arpa.":  sudnNXDomain,
+		"74.100.in-addr.arpa.":  sudnNXDomain,
+		"75.100.in-addr.arpa.":  sudnNXDomain,
+		"76.100.in-addr.arpa.":  sudnNXDomain,
+		"77.100.in-addr.arpa.":  sudnNXDomain,
+		"78.100.in-addr.arpa.":  sudnNXDomain,
+		"79.100.in-addr.arpa.":  sudnNXDomain,
+		"80.100.in-addr.arpa.":  sudnNXDomain,
+		"81.100.in-addr.arpa.":  sudnNXDomain,
+		"82.100.in-addr.arpa.":  sudnNXDomain,
+		"83.100.in-addr.arpa.":  sudnNXDomain,
+		"84.100.in-addr.arpa.":  sudnNXDomain,
+		"85.100.in-addr.arpa.":  sudnNXDomain,
+		"86.100.in-addr.arpa.":  sudnNXDomain,
+		"87.100.in-addr.arpa.":  sudnNXDomain,
+		"88.100.in-addr.arpa.":  sudnNXDomain,
+		"89.100.in-addr.arpa.":  sudnNXDomain,
+		"90.100.in-addr.arpa.":  sudnNXDomain,
+		"91.100.in-addr.arpa.":  sudnNXDomain,
+		"92.100.in-addr.arpa.":  sudnNXDomain,
+		"93.100.in-addr.arpa.":  sudnNXDomain,
+		"94.100.in-addr.arpa.":  sudnNXDomain,
+		"95.100.in-addr.arpa.":  sudnNXDomain,
+		"96.100.in-addr.arpa.":  sudnNXDomain,
+		"97.100.in-addr.arpa.":  sudnNXDomain,
+		"98.100.in-addr.arpa.":  sudnNXDomain,
+		"99.100.in-addr.arpa.":  sudnNXDomain,
+		"100.100.in-addr.arpa.": sudnNXDomain,
+		"101.100.in-addr.arpa.": sudnNXDomain,
+		"102.100.in-addr.arpa.": sudnNXDomain,
+		"103.100.in-addr.arpa.": sudnNXDomain,
+		"104.100.in-addr.arpa.": sudnNXDomain,
+		"105.100.in-addr.arpa.": sudnNXDomain,
+		"106.100.in-addr.arpa.": sudnNXDomain,
+		"107.100.in-addr.arpa.": sudnNXDomain,
+		"108.100.in-addr.arpa.": sudnNXDomain,
+		"109.100.in-addr.arpa.": sudnNXDomain,
+		"110.100.in-addr.arpa.": sudnNXDomain,
+		"111.100.in-addr.arpa.": sudnNXDomain,
+		"112.100.in-addr.arpa.": sudnNXDomain,
+		"113.100.in-addr.arpa.": sudnNXDomain,
+		"114.100.in-addr.arpa.": sudnNXDomain,
+		"115.100.in-addr.arpa.": sudnNXDomain,
+		"116.100.in-addr.arpa.": sudnNXDomain,
+		"117.100.in-addr.arpa.": sudnNXDomain,
+		"118.100.in-addr.arpa.": sudnNXDomain,
+		"119.100.in-addr.arpa.": sudnNXDomain,
+		"120.100.in-addr.arpa.": sudnNXDomain,
+		"121.100.in-addr.arpa.": sudnNXDomain,
+		"122.100.in-addr.arpa.": sudnNXDomain,
+		"123.100.in-addr.arpa.": sudnNXDomain,
+		"124.100.in-addr.arpa.": sudnNXDomain,
+		"125.100.in-addr.arpa.": sudnNXDomain,
+		"126.100.in-addr.arpa.": sudnNXDomain,
+		"127.100.in-addr.arpa.": sudnNXDomain,
+
+		// RFC 6761
+		// https://www.rfc-editor.org/rfc/rfc6761
+		//
+		// Section 6.1
+		"10.in-addr.arpa.":      sudnNXDomain,
+		"21.172.in-addr.arpa.":  sudnNXDomain,
+		"26.172.in-addr.arpa.":  sudnNXDomain,
+		"16.172.in-addr.arpa.":  sudnNXDomain,
+		"22.172.in-addr.arpa.":  sudnNXDomain,
+		"27.172.in-addr.arpa.":  sudnNXDomain,
+		"17.172.in-addr.arpa.":  sudnNXDomain,
+		"30.172.in-addr.arpa.":  sudnNXDomain,
+		"28.172.in-addr.arpa.":  sudnNXDomain,
+		"18.172.in-addr.arpa.":  sudnNXDomain,
+		"23.172.in-addr.arpa.":  sudnNXDomain,
+		"29.172.in-addr.arpa.":  sudnNXDomain,
+		"19.172.in-addr.arpa.":  sudnNXDomain,
+		"24.172.in-addr.arpa.":  sudnNXDomain,
+		"31.172.in-addr.arpa.":  sudnNXDomain,
+		"20.172.in-addr.arpa.":  sudnNXDomain,
+		"25.172.in-addr.arpa.":  sudnNXDomain,
+		"168.192.in-addr.arpa.": sudnNXDomain,
+		// Section 6.2
+		"test.": sudnNXDomain,
+		// Section 6.3
+		"localhost.": sudnLocalhost,
+		// Section 6.4
+		"invalid.": sudnNXDomain,
+		// Section 6.5
+		"example.":     nil,
+		exampleDomain:  nil,
+		"example.net.": nil,
+		"example.org.": nil,
+
+		// RFC 6762
+		// https://www.rfc-editor.org/rfc/rfc6762
+		//
+		// mDNS is not implemented, so just return NXDOMAIN
+		//
+		// Section 3
+		"local.": sudnNXDomain,
+		// Section 12
+		"254.169.in-addr.arpa.": sudnNXDomain, // also section 4
+		"8.e.f.ip6.arpa.":       sudnNXDomain,
+		"9.e.f.ip6.arpa.":       sudnNXDomain,
+		"a.e.f.ip6.arpa.":       sudnNXDomain,
+		"b.e.f.ip6.arpa.":       sudnNXDomain,
+		// Appendix G
+		"intranet.": sudnRFC6762AppendixG,
+		"internal.": sudnRFC6762AppendixG,
+		"private.":  sudnRFC6762AppendixG,
+		"corp.":     sudnRFC6762AppendixG,
+		"home.":     sudnRFC6762AppendixG,
+		"lan.":      sudnRFC6762AppendixG,
+
+		// RFC 7686
+		// https://www.rfc-editor.org/rfc/rfc7686
+		"onion.": sudnNXDomain,
+
+		// RFC 8375
+		// https://www.rfc-editor.org/rfc/rfc8375
+		//
+		// Section 4
+		"home.arpa.": sudnHomeArpa,
+
+		// RFC 9462 (Discovery of Designated Resolvers)
+		// https://www.rfc-editor.org/rfc/rfc9462
+		//
+		// Sections 4, 6.1 and 6.4: denyzer advertises no Designated Resolvers,
+		// so reply NODATA across the whole zone and never forward upstream
+		// (forwarded answers would fail the client's cert SAN check anyway
+		// and let stub resolvers bypass denyzer).
+		"resolver.arpa.": sudnNoData,
+	}
+)
+
+type SpecialUseDomainNamesResolver struct {
+	NextResolver
+	typed
+	configurable[*config.SUDN]
+}
+
+func NewSpecialUseDomainNamesResolver(cfg config.SUDN) *SpecialUseDomainNamesResolver {
+	return &SpecialUseDomainNamesResolver{
+		typed:        withType("special_use_domains"),
+		configurable: withConfig(&cfg),
+	}
+}
+
+func (r *SpecialUseDomainNamesResolver) Resolve(ctx context.Context, request *model.Request) (*model.Response, error) {
+	if !r.cfg.Enable {
+		return r.next.Resolve(ctx, request)
+	}
+
+	handler := r.handler(request)
+	if handler != nil {
+		resp := handler(request, r.cfg)
+		if resp != nil {
+			return resp, nil
+		}
+	}
+
+	return r.next.Resolve(ctx, request)
+}
+
+func (r *SpecialUseDomainNamesResolver) handler(request *model.Request) sudnHandler {
+	// DNS names are case-insensitive (RFC 4343); the sudnHandlers keys are lowercase
+	_, handler, _ := searchDomainOrParent(sudnHandlers, strings.ToLower(request.Req.Question[0].Name))
+
+	return handler
+}
+
+func newSUDNResponse(response *model.Request, rcode int) *model.Response {
+	return newResponse(response, rcode, model.ResponseTypeSPECIAL, "Special-Use Domain Name")
+}
+
+func sudnNXDomain(request *model.Request, _ *config.SUDN) *model.Response {
+	return newSUDNResponse(request, dns.RcodeNameError)
+}
+
+func sudnNoData(request *model.Request, _ *config.SUDN) *model.Response {
+	return newSUDNResponse(request, dns.RcodeSuccess)
+}
+
+func sudnLocalhost(request *model.Request, cfg *config.SUDN) *model.Response {
+	q := request.Req.Question[0]
+
+	var rr dns.RR
+
+	switch q.Qtype {
+	case dns.TypeA:
+		rr = &dns.A{A: loopbackV4}
+	case dns.TypeAAAA:
+		rr = &dns.AAAA{AAAA: loopbackV6}
+	default:
+		return sudnNXDomain(request, cfg)
+	}
+
+	*rr.Header() = util.CreateHeader(q, 0)
+
+	response := newSUDNResponse(request, dns.RcodeSuccess)
+	response.Res.Answer = []dns.RR{rr}
+
+	return response
+}
+
+func sudnRFC6762AppendixG(request *model.Request, cfg *config.SUDN) *model.Response {
+	if !cfg.RFC6762AppendixG {
+		return nil
+	}
+
+	return sudnNXDomain(request, cfg)
+}
+
+func sudnHomeArpa(request *model.Request, cfg *config.SUDN) *model.Response {
+	if request.Req.Question[0].Qtype == dns.TypeDS {
+		// DS queries must be forwarded
+		return nil
+	}
+
+	return sudnNXDomain(request, cfg)
+}

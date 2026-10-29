@@ -1,0 +1,8 @@
+# golang.org/x/crypto/openpgp is unmaintained and unsafe by design
+# (GO-2026-5932). The package is never imported: golang.org/x/crypto is only
+# required for golang.org/x/crypto/ssh (e2e tests via testcontainers-go) and
+# for the chacha20 and ssh/terminal helpers used by quic-go and the log
+# formatter. There is no fixed version ("Fixed in: N/A"), upstream marks the
+# package as deprecated and points to github.com/ProtonMail/go-crypto/openpgp
+# instead. govulncheck confirms: 0 vulnerabilities in imported packages.
+GO-2026-5932

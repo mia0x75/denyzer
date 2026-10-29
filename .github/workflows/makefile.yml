@@ -1,0 +1,74 @@
+name: Makefile
+
+on:
+  push:
+    paths:
+      - .github/workflows/makefile.yml
+      - Dockerfile
+      - Makefile
+      - "**.go"
+      - "go.*"
+      - "helpertest/data/**"
+  pull_request:
+
+permissions:
+  security-events: write
+  actions: read
+  contents: read
+
+env:
+  GINKGO_PROCS: --procs=1
+  # e2e specs are container/health-check-wait bound, not CPU bound, so we
+  # oversubscribe the runner's cores for better wall-clock time.
+  GINKGO_E2E_PROCS: --procs=8
+
+jobs:
+  make:
+    name: make
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        make: [build, test, race, docker-build, e2e-test, goreleaser, lint, generate-check]
+
+    steps:
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v7
+
+      - name: Setup Golang
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        if: matrix.make == 'build'
+        with:
+          bun-version: "1.4.2"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: make ${{ matrix.make }}
+        run: make ${{ matrix.make }}
+        if: matrix.make != 'goreleaser' && matrix.make != 'generate-check'
+        env:
+          GO_SKIP_GENERATE: 1
+
+      # Runs without GO_SKIP_GENERATE so generation actually happens and the
+      # committed generated files (mocks, enums, config schema) are diffed.
+      - name: make generate-check
+        run: make generate-check
+        if: matrix.make == 'generate-check'
+
+      - name: Upload results to codecov
+        uses: codecov/codecov-action@v7
+        if: matrix.make == 'test' && github.repository_owner == 'mia0x75'
+
+      - name: Check GoReleaser configuration
+        uses: goreleaser/goreleaser-action@v7
+        if: matrix.make == 'goreleaser'
+        with:
+          args: check

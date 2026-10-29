@@ -1,0 +1,38 @@
+# Mockery v3 configuration for denyzer
+# Run: make generate  OR  go tool mockery
+
+packages:
+  # API package
+  github.com/mia0x75/denyzer/api:
+    config:
+      all: true
+      inpackage: true
+      filename: "mocks_test.go"
+
+  # Cache package - ExpiringCache interface
+  # Note: Using non-test filename (mocks.go) to allow cross-package access from resolver tests
+  github.com/mia0x75/denyzer/cache:
+    interfaces:
+      ExpiringCache:
+        config:
+          inpackage: true
+          filename: "mocks.go"
+
+
+  # Lists package - FileDownloader interface
+  github.com/mia0x75/denyzer/lists:
+    interfaces:
+      FileDownloader:
+        config:
+          inpackage: true
+          filename: "mocks_test.go"
+
+  # Resolver package - ChainedResolver interface
+  # Note: Using non-test filename (mocks.go) to allow cross-package access from server tests
+  github.com/mia0x75/denyzer/resolver:
+    interfaces:
+      ChainedResolver:
+        config:
+          inpackage: true
+          filename: "mocks.go"
+

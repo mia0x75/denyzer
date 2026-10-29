@@ -1,0 +1,20 @@
+version: 2
+updates:
+- package-ecosystem: gomod
+  directory: "/"
+  schedule:
+    interval: daily
+  open-pull-requests-limit: 10
+  assignees:
+  - mia0x75
+  labels:
+  - "dependencies"
+  - "go"
+
+- package-ecosystem: github-actions
+  directory: "/"
+  schedule:
+    interval: daily
+  labels:
+  - "dependencies"
+  - "github-actions"

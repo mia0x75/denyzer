@@ -1,0 +1,410 @@
+package lists
+
+//go:generate go tool go-enum -f=$GOFILE --marshal --names
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"sync/atomic"
+
+	"github.com/sirupsen/logrus"
+
+	"github.com/ThinkChaos/parcour"
+	"github.com/ThinkChaos/parcour/jobgroup"
+	"github.com/mia0x75/denyzer/cache/stringcache"
+	"github.com/mia0x75/denyzer/config"
+	"github.com/mia0x75/denyzer/evt"
+	"github.com/mia0x75/denyzer/lists/parsers"
+	"github.com/mia0x75/denyzer/log"
+)
+
+const (
+	groupProducersBufferCap = 1000
+	regexWarningThreshold   = 500
+
+	logFieldGroup      = "group"
+	logFieldTotalCount = "total_count"
+)
+
+// ListCacheType represents the type of cached list ENUM(
+// denylist // is a list with blocked domains
+// allowlist // is a list with allowlisted domains / IPs
+// )
+type ListCacheType int
+
+// Matcher checks if a domain is in a list
+type Matcher interface {
+	// Match matches passed domain name against cached list entries.
+	// Returns a map of matching group -> the rule that matched, or nil/empty
+	// when the domain is not in any of the groups.
+	Match(domain string, groupsToCheck []string) (matches map[string]string)
+}
+
+// ListCache generic cache of strings divided in groups
+type ListCache struct {
+	groupedCache stringcache.GroupedStringCache
+	regexCache   stringcache.GroupedStringCache
+
+	cfg          config.SourceLoading
+	listType     ListCacheType
+	groupSources map[string][]config.BytesSource
+	downloader   FileDownloader
+
+	// refreshSem admits one refresh at a time. A caller waiting for its turn
+	// returns as soon as its context ends.
+	refreshSem chan struct{}
+}
+
+// LogConfig implements `config.Configurable`.
+func (b *ListCache) LogConfig(logger *logrus.Entry) {
+	total := 0
+	regexes := 0
+
+	for group := range b.groupSources {
+		count := b.groupedCache.ElementCount(group)
+		logger.Infof("%s: %d entries", group, count)
+		total += count
+		regexes += b.regexCache.ElementCount(group)
+	}
+
+	if regexes > regexWarningThreshold {
+		logger.Warnf(
+			"REGEXES: %d !! High use of regexes is not recommended: they use a lot of memory and are very slow to search",
+			regexes,
+		)
+	}
+
+	logger.Infof("TOTAL: %d entries", total)
+}
+
+// NewListCache creates new list instance
+func NewListCache(ctx context.Context,
+	t ListCacheType, cfg config.SourceLoading,
+	groupSources map[string][]config.BytesSource, downloader FileDownloader,
+) (*ListCache, error) {
+	regexCache := stringcache.NewInMemoryGroupedRegexCache()
+
+	c := &ListCache{
+		groupedCache: stringcache.NewChainedGroupedCache(
+			regexCache,
+			stringcache.NewInMemoryGroupedWildcardCache(), // must be after regex which can contain '*'
+			stringcache.NewInMemoryGroupedStringCache(),   // accepts all values, must be last
+		),
+		regexCache: regexCache,
+
+		cfg:          cfg,
+		listType:     t,
+		groupSources: groupSources,
+		downloader:   downloader,
+		refreshSem:   make(chan struct{}, 1),
+	}
+
+	if cfg.Strategy == config.InitStrategyFast {
+		c.seedFromDisk(ctx)
+	}
+
+	err := cfg.StartPeriodicRefresh(ctx, c.refresh, func(err error) {
+		logger().WithError(err).Errorf("could not init %s", t)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to start periodic refresh for %s: %w", t, err)
+	}
+
+	return c, nil
+}
+
+func logger() *logrus.Entry {
+	return log.PrefixedLog("list_cache")
+}
+
+// Match matches passed domain name against cached list entries.
+// Returns a map of matching group -> the rule that matched, or nil/empty when
+// the domain is not in any of the groups.
+func (b *ListCache) Match(domain string, groupsToCheck []string) (matches map[string]string) {
+	return b.groupedCache.Contains(domain, groupsToCheck)
+}
+
+// Counts returns the number of cached entries per group.
+func (b *ListCache) Counts() map[string]int {
+	counts := make(map[string]int, len(b.groupSources))
+
+	for group := range b.groupSources {
+		counts[group] = b.groupedCache.ElementCount(group) + b.regexCache.ElementCount(group)
+	}
+
+	return counts
+}
+
+// Refresh triggers the refresh of a list
+func (b *ListCache) Refresh(ctx context.Context) error {
+	return b.refresh(ctx)
+}
+
+// PublishGroupCounts re-emits a BlockingCacheGroupChanged event with the current
+// element count for every configured group. The initial counts are emitted while
+// the lists load during construction, before later-constructed subscribers (such
+// as the stats resolver) attach to the bus; re-publishing lets those subscribers
+// pick up the point-in-time counts without waiting for the next list refresh.
+func (b *ListCache) PublishGroupCounts() {
+	for group := range b.groupSources {
+		evt.Bus().Publish(evt.BlockingCacheGroupChanged, b.listType, group, b.groupedCache.ElementCount(group))
+	}
+}
+
+func (b *ListCache) refresh(ctx context.Context) error {
+	select {
+	case b.refreshSem <- struct{}{}:
+		defer func() { <-b.refreshSem }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	unlimitedGrp, _ := jobgroup.WithContext(ctx)
+	defer unlimitedGrp.Close()
+
+	producersGrp := jobgroup.WithMaxConcurrency(unlimitedGrp, b.cfg.Concurrency)
+	defer producersGrp.Close()
+
+	// Only one group retains a replacement cache and its parse buffers at a
+	// time. Producers and consumers remain outside this limit to avoid stalls.
+	groupsGrp := jobgroup.WithMaxConcurrency(unlimitedGrp, 1)
+	defer groupsGrp.Close()
+
+	for group, sources := range b.groupSources {
+		groupsGrp.Go(func(ctx context.Context) error {
+			err := b.createCacheForGroup(producersGrp, unlimitedGrp, group, sources)
+			if err != nil {
+				count := b.groupedCache.ElementCount(group)
+
+				logger := logger().WithFields(logrus.Fields{
+					logFieldGroup:      group,
+					logFieldTotalCount: count,
+				})
+
+				if count == 0 {
+					logger.Warn("Populating of group cache failed, cache will be empty until refresh succeeds")
+				} else {
+					logger.Warn("Populating of group cache failed, using existing cache, if any")
+				}
+
+				return fmt.Errorf("failed to create cache for group %s: %w", group, err)
+			}
+
+			count := b.groupedCache.ElementCount(group)
+
+			evt.Bus().Publish(evt.BlockingCacheGroupChanged, b.listType, group, count)
+
+			logger().WithFields(logrus.Fields{
+				logFieldGroup:      group,
+				logFieldTotalCount: count,
+			}).Info("group import finished")
+
+			return nil
+		})
+	}
+
+	if err := groupsGrp.Wait(); err != nil {
+		return fmt.Errorf("failed to refresh %s list cache: %w", b.listType, err)
+	}
+
+	return nil
+}
+
+func (b *ListCache) createCacheForGroup(
+	producersGrp, consumersGrp jobgroup.JobGroup, group string, sources []config.BytesSource,
+) error {
+	groupFactory := b.groupedCache.Refresh(group)
+
+	producers := parcour.NewProducersWithBuffer[string](producersGrp, consumersGrp, groupProducersBufferCap)
+	defer producers.Close()
+
+	for i, source := range sources {
+		producers.GoProduce(func(ctx context.Context, hostsChan chan<- string) error {
+			locInfo := fmt.Sprintf("item #%d of group %s", i, group)
+
+			opener, err := NewSourceOpener(locInfo, source, b.downloader)
+			if err != nil {
+				return fmt.Errorf("failed to create source opener for %s: %w", locInfo, err)
+			}
+
+			return b.parseFile(ctx, opener, hostsChan)
+		})
+	}
+
+	var hasEntries atomic.Bool
+
+	producers.GoConsume(func(ctx context.Context, ch <-chan string) error {
+		for host := range ch {
+			if groupFactory.AddEntry(host) {
+				hasEntries.Store(true)
+			} else {
+				logger().WithField("host", host).Warn("no list cache was able to use host")
+			}
+		}
+
+		return nil
+	})
+
+	err := producers.Wait()
+	if err != nil && !hasEntries.Load() {
+		// Only fail the group if no entries were parsed at all
+		// If we have entries from some sources, proceed even if other sources had errors
+		// Transient errors will be retried on the next refresh cycle
+		return fmt.Errorf("failed to parse any entries for group %s: %w", group, err)
+	}
+
+	groupFactory.Finish()
+
+	return nil
+}
+
+// seedFromDisk pre-populates each group's cache from locally-available sources, so
+// denyzer can answer queries before the first network refresh completes. HTTP sources
+// are seeded from their on-disk download copy (when present); inline and file sources
+// are already local and seeded directly. It reuses the same parallel import path as a
+// normal refresh and is best-effort: groups or sources without local data are skipped
+// and a seed failure never aborts startup.
+func (b *ListCache) seedFromDisk(ctx context.Context) {
+	dir := b.cfg.Downloads.CachePath
+	if dir == "" {
+		return
+	}
+
+	localSources := b.localSeedSources(dir)
+	if len(localSources) == 0 {
+		return
+	}
+
+	unlimitedGrp, _ := jobgroup.WithContext(ctx)
+	defer unlimitedGrp.Close()
+
+	producersGrp := jobgroup.WithMaxConcurrency(unlimitedGrp, b.cfg.Concurrency)
+	defer producersGrp.Close()
+
+	groupsGrp := jobgroup.WithMaxConcurrency(unlimitedGrp, 1)
+	defer groupsGrp.Close()
+
+	for group, sources := range localSources {
+		groupsGrp.Go(func(ctx context.Context) error {
+			if err := b.createCacheForGroup(producersGrp, unlimitedGrp, group, sources); err != nil {
+				logger().WithError(err).WithField(logFieldGroup, group).Debug("disk seed: skipping group with no usable local data")
+
+				return nil // best-effort: never fail startup on a seed error
+			}
+
+			logger().WithFields(logrus.Fields{
+				logFieldGroup:      group,
+				logFieldTotalCount: b.groupedCache.ElementCount(group),
+			}).Debug("seeded group cache from disk")
+
+			return nil
+		})
+	}
+
+	_ = groupsGrp.Wait()
+}
+
+// localSeedSources maps each group's configured sources to the ones loadable without
+// the network at startup: an HTTP source is replaced by its on-disk cache copy when one
+// exists, while inline and file sources are kept as-is. Groups with no locally-available
+// source are omitted.
+func (b *ListCache) localSeedSources(dir string) map[string][]config.BytesSource {
+	out := make(map[string][]config.BytesSource, len(b.groupSources))
+
+	for group, sources := range b.groupSources {
+		local := make([]config.BytesSource, 0, len(sources))
+
+		for _, source := range sources {
+			if source.Type != config.BytesSourceTypeHttp {
+				local = append(local, source) // inline/file sources are already local
+
+				continue
+			}
+
+			path := cacheFilePath(dir, source.From)
+			if _, err := os.Stat(path); err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					logger().WithError(err).WithField("path", path).Debug("disk seed: cannot stat cache file")
+				}
+
+				continue // no cached copy yet
+			}
+
+			local = append(local, config.BytesSource{Type: config.BytesSourceTypeFile, From: path})
+		}
+
+		if len(local) > 0 {
+			out[group] = local
+		}
+	}
+
+	return out
+}
+
+// downloads file (or reads local file) and writes each line in the file to the result channel
+func (b *ListCache) parseFile(ctx context.Context, opener SourceOpener, resultCh chan<- string) error {
+	count := 0
+
+	logger := func() *logrus.Entry {
+		return logger().WithFields(logrus.Fields{
+			"source": opener.String(),
+			"count":  count,
+		})
+	}
+
+	logger().Debug("starting processing of source")
+
+	r, err := opener.Open(ctx)
+	if err != nil {
+		logger().Error("cannot open source: ", err)
+
+		return fmt.Errorf("failed to open list source %s: %w", opener, err)
+	}
+	defer r.Close()
+
+	p := parsers.AllowErrors(parsers.Hosts(r), b.cfg.MaxErrorsPerSource)
+	p.OnErr(func(err error) {
+		logger().Warnf("parse error: %s, trying to continue", err)
+	})
+
+	err = parsers.ForEach[*parsers.HostsIterator](ctx, p, func(hosts *parsers.HostsIterator) error {
+		return hosts.ForEach(func(host string) error {
+			count++
+
+			// For IPs, we want to ensure the string is the Go representation so that when
+			// we compare responses, a same IP matches, even if it was written differently
+			// in the list. The cheap MightBeIP pre-check avoids calling net.ParseIP on
+			// the vast majority of entries, which are domain names.
+			if parsers.MightBeIP(host) {
+				if ip := net.ParseIP(host); ip != nil {
+					host = ip.String()
+				}
+			}
+
+			resultCh <- host
+
+			return nil
+		})
+	})
+	if err != nil {
+		// Don't log cancelation: it was caused by another goroutine failing
+		if !errors.Is(err, context.Canceled) {
+			logger().Error("parse error: ", err)
+		}
+
+		// Only propagate the error if no entries were parsed
+		// If the file was partially parsed, we'll settle for that
+
+		if count == 0 {
+			return fmt.Errorf("failed to parse list source %s (no entries parsed): %w", opener, err)
+		}
+
+		return nil
+	}
+
+	logger().Info("import succeeded")
+
+	return nil
+}

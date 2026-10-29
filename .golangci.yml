@@ -1,0 +1,160 @@
+version: "2"
+linters:
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - decorder
+    - dogsled
+    - dupl
+    - durationcheck
+    - embeddedstructfieldcheck
+    - errchkjson
+    - errorlint
+    - exhaustive
+    - dupword
+    - errname
+    - exptostd
+    - fatcontext
+    - forcetypeassert
+    - funlen
+    - ginkgolinter
+    - gocheckcompilerdirectives
+    - gochecknoglobals
+    - gochecknoinits
+    - gochecksumtype
+    - gomoddirectives
+    - goprintffuncname
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godox
+    - gomodguard_v2
+    - gosec
+    - grouper
+    - importas
+    - iface
+    - inamedparam
+    - interfacebloat
+    - intrange
+    - lll
+    - loggercheck
+    - makezero
+    - misspell
+    - mirror
+    - modernize
+    - mnd
+    - musttag
+    - nakedret
+    - nestif
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - nlreturn
+    - noctx
+    - nolintlint
+    - nosprintfhostport
+    - perfsprint
+    - prealloc
+    - predeclared
+    - protogetter
+    - reassign
+    - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - staticcheck
+    - tagalign
+    - testableexamples
+    - testifylint
+    - thelper
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+    - whitespace
+    - zerologlint
+  disable:
+    - forbidigo
+    - gosmopolitan
+    - recvcheck
+    - wrapcheck
+  settings:
+    ginkgolinter:
+      forbid-focus-container: true
+    mnd:
+      ignored-numbers:
+        - "0666"
+        - "2"
+        - "5"
+    revive:
+      rules:
+        - name: dot-imports
+          disabled: true
+    staticcheck:
+      dot-import-whitelist:
+        - github.com/onsi/ginkgo/v2
+        - github.com/onsi/gomega
+        - github.com/mia0x75/denyzer/config/migration
+        - github.com/mia0x75/denyzer/helpertest
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - dupl
+          - fatcontext
+          - funlen
+          - goconst
+          - gochecknoglobals
+          - gochecknoinits
+          - gosec
+          - forcetypeassert
+          - wrapcheck
+          - lll
+        path: _test\.go
+      # The storage package owns its context: a batch write, a rollup rebuild or
+      # a cleanup must survive the request that triggered it. Callers therefore
+      # never forward r.Context() (or a worker context) into the store, which is
+      # deliberate and not a bug. Passing a fresh context where an inherited one
+      # is available is still reported.
+      - linters:
+          - contextcheck
+        path: ^(server|querylog)/
+        text: should pass the context parameter
+      - linters:
+          - staticcheck
+        path: _test\.go
+        text: "SA1012:"
+      - linters:
+          - lll
+          - wrapcheck
+        path: e2e
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - frontend/node_modules
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - frontend/node_modules

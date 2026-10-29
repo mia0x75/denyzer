@@ -1,0 +1,42 @@
+package resolver
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/mia0x75/denyzer/config"
+	"github.com/mia0x75/denyzer/log"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+const (
+	timeout = 50 * time.Millisecond
+)
+
+var defaultUpstreamsConfig config.Upstreams
+
+func init() {
+	log.Silence()
+
+	var err error
+
+	defaultUpstreamsConfig, err = config.WithDefaults[config.Upstreams]()
+	if err != nil {
+		panic(err)
+	}
+
+	// Shorter timeout for tests
+	defaultUpstreamsConfig.Timeout = config.Duration(timeout)
+}
+
+func TestResolver(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Resolver Suite")
+}
+
+type NoLogs struct{}
+
+func (l NoLogs) Printf(_ context.Context, _ string, _ ...any) {}

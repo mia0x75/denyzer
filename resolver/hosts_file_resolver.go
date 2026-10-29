@@ -1,0 +1,345 @@
+package resolver
+
+import (
+	"context"
+	"fmt"
+	"net"
+
+	"github.com/ThinkChaos/parcour"
+	"github.com/ThinkChaos/parcour/jobgroup"
+	"github.com/mia0x75/denyzer/config"
+	"github.com/mia0x75/denyzer/lists"
+	"github.com/mia0x75/denyzer/lists/parsers"
+	"github.com/mia0x75/denyzer/model"
+	"github.com/mia0x75/denyzer/util"
+	"github.com/miekg/dns"
+	"github.com/sirupsen/logrus"
+)
+
+const (
+	// reduce initial capacity so we don't waste memory if there are less entries than before
+	memReleaseFactor = 2
+
+	producersBuffCap = 1000
+)
+
+type HostsFileEntry = parsers.HostsFileEntry
+
+type HostsFileResolver struct {
+	configurable[*config.HostsFile]
+	NextResolver
+	typed
+
+	hosts      splitHostsFileData
+	downloader lists.FileDownloader
+}
+
+func NewHostsFileResolver(ctx context.Context,
+	cfg config.HostsFile,
+	bootstrap *Bootstrap,
+) (*HostsFileResolver, error) {
+	r := HostsFileResolver{
+		configurable: withConfig(&cfg),
+		typed:        withType("hosts_file"),
+
+		downloader: lists.NewDownloader(cfg.Loading.Downloads, bootstrap.NewHTTPTransport()),
+	}
+
+	err := cfg.Loading.StartPeriodicRefresh(ctx, r.loadSources, func(err error) {
+		_, logger := r.log(ctx)
+		logger.WithError(err).Errorf("could not load hosts files")
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to start periodic refresh for hosts files: %w", err)
+	}
+
+	return &r, nil
+}
+
+// LogConfig implements `config.Configurable`.
+func (r *HostsFileResolver) LogConfig(logger *logrus.Entry) {
+	r.cfg.LogConfig(logger)
+
+	logger.Infof("cache entries = %d", r.hosts.len())
+}
+
+func (r *HostsFileResolver) handleReverseDNS(request *model.Request) *model.Response {
+	question := request.Req.Question[0]
+	if question.Qtype != dns.TypePTR {
+		return nil
+	}
+
+	questionIP, err := util.ParseIPFromArpaAddr(question.Name)
+	if err != nil {
+		// ignore the parse error, and pass the request down the chain
+		return nil
+	}
+
+	hostNames := r.lookupHostNames(questionIP)
+	if len(hostNames) == 0 {
+		return nil
+	}
+
+	hdr := util.CreateHeader(question, r.cfg.HostsTTL.SecondsU32())
+	answers := make([]dns.RR, 0, len(hostNames))
+
+	for _, name := range hostNames {
+		ptr := new(dns.PTR)
+		ptr.Ptr = dns.Fqdn(name)
+		ptr.Hdr = hdr
+		answers = append(answers, ptr)
+	}
+
+	return model.NewResponseWithAnswers(request, answers, model.ResponseTypeHOSTSFILE, "HOSTS FILE")
+}
+
+// lookupHostNames returns the host name and its aliases mapped to the given IP by the
+// loaded hosts files, or nil if there is no match. Loopback addresses are skipped when
+// FilterLoopback is enabled. Only in-memory data is consulted (no network I/O).
+func (r *HostsFileResolver) lookupHostNames(ip net.IP) []string {
+	if r.cfg.FilterLoopback && ip.IsLoopback() {
+		// skip the search: we won't find anything
+		return nil
+	}
+
+	// search only in the hosts with an IP version that matches the question
+	hostsData := r.hosts.v4
+	if ip.To4() == nil {
+		hostsData = r.hosts.v6
+	}
+
+	for host, hostData := range hostsData.hosts {
+		if hostData.IP.Equal(ip) {
+			names := make([]string, 0, len(hostData.Aliases)+1)
+			names = append(names, host)
+			names = append(names, hostData.Aliases...)
+
+			return names
+		}
+	}
+
+	return nil
+}
+
+// LookupReverse returns the host names mapped to the given IP by the loaded hosts
+// files, consulting only in-memory data (no network I/O). Returns nil if there is no match.
+func (r *HostsFileResolver) LookupReverse(ip net.IP) []string {
+	return r.lookupHostNames(ip)
+}
+
+func (r *HostsFileResolver) Resolve(ctx context.Context, request *model.Request) (*model.Response, error) {
+	if !r.IsEnabled() {
+		return r.next.Resolve(ctx, request)
+	}
+
+	ctx, logger := r.log(ctx)
+
+	reverseResp := r.handleReverseDNS(request)
+	if reverseResp != nil {
+		return reverseResp, nil
+	}
+
+	question := request.Req.Question[0]
+	domain := util.ExtractDomain(question)
+
+	response := r.resolve(question, domain)
+	if response != nil {
+		logger.WithFields(logrus.Fields{
+			logFieldAnswer: util.Obfuscate(util.AnswerToString(response)),
+			logFieldDomain: util.Obfuscate(domain),
+		}).Debugf("returning hosts file entry")
+
+		return model.NewResponseWithAnswers(request, response, model.ResponseTypeHOSTSFILE, "HOSTS FILE"), nil
+	}
+
+	logger.WithField("next_resolver", Name(r.next)).Trace("go to next resolver")
+
+	return r.next.Resolve(ctx, request)
+}
+
+func (r *HostsFileResolver) resolve(question dns.Question, domain string) []dns.RR {
+	ip := r.hosts.getIP(dns.Type(question.Qtype), domain)
+	if ip == nil {
+		return nil
+	}
+
+	rr, _ := util.CreateAnswerFromQuestion(question, ip, r.cfg.HostsTTL.SecondsU32())
+
+	return []dns.RR{rr}
+}
+
+func (r *HostsFileResolver) loadSources(ctx context.Context) error {
+	if !r.IsEnabled() {
+		return nil
+	}
+
+	ctx, logger := r.log(ctx)
+
+	logger.Debug("loading hosts files")
+
+	//nolint:ineffassign,staticcheck,wastedassign // keep `ctx :=` so if we use ctx in the future, we use the correct one
+	consumersGrp, ctx := jobgroup.WithContext(ctx)
+	defer consumersGrp.Close()
+
+	producersGrp := jobgroup.WithMaxConcurrency(consumersGrp, r.cfg.Loading.Concurrency)
+	defer producersGrp.Close()
+
+	producers := parcour.NewProducersWithBuffer[*HostsFileEntry](producersGrp, consumersGrp, producersBuffCap)
+	defer producers.Close()
+
+	for i, source := range r.cfg.Sources {
+		producers.GoProduce(func(ctx context.Context, hostsChan chan<- *HostsFileEntry) error {
+			locInfo := fmt.Sprintf("item #%d", i)
+
+			opener, err := lists.NewSourceOpener(locInfo, source, r.downloader)
+			if err != nil {
+				return fmt.Errorf("failed to create source opener for %s: %w", locInfo, err)
+			}
+
+			err = r.parseFile(ctx, opener, hostsChan)
+			if err != nil {
+				return fmt.Errorf("error parsing %s: %w", opener, err) // err is parsers.ErrTooManyErrors
+			}
+
+			return nil
+		})
+	}
+
+	newHosts := newSplitHostsDataWithSameCapacity(r.hosts)
+
+	producers.GoConsume(func(ctx context.Context, ch <-chan *HostsFileEntry) error {
+		for entry := range ch {
+			newHosts.add(entry)
+		}
+
+		return nil
+	})
+
+	err := producers.Wait()
+	if err != nil {
+		return fmt.Errorf("failed to load hosts file sources: %w", err)
+	}
+
+	r.hosts = newHosts
+
+	return nil
+}
+
+func (r *HostsFileResolver) parseFile(
+	ctx context.Context, opener lists.SourceOpener, hostsChan chan<- *HostsFileEntry,
+) error {
+	reader, err := opener.Open(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to open hosts file source %s: %w", opener, err)
+	}
+	defer reader.Close()
+
+	p := parsers.AllowErrors(parsers.HostsFile(reader), r.cfg.Loading.MaxErrorsPerSource)
+	p.OnErr(func(err error) {
+		_, logger := r.log(ctx)
+
+		logger.Warnf("error parsing %s: %s, trying to continue", opener, err)
+	})
+
+	return parsers.ForEach[*HostsFileEntry](ctx, p, func(entry *HostsFileEntry) error {
+		if len(entry.Interface) != 0 {
+			// Ignore entries with a specific interface: we don't restrict what clients/interfaces we serve entries to,
+			// so this avoids returning entries that can't be accessed by the client.
+			return nil
+		}
+
+		// Ignore loopback, if so configured
+		if r.cfg.FilterLoopback && (entry.IP.IsLoopback() || entry.Name == localhostName) {
+			return nil
+		}
+
+		hostsChan <- entry
+
+		return nil
+	})
+}
+
+// stores hosts file data for IP versions separately
+//
+// Makes finding an IP for a question faster.
+// Especially reverse lookups where we have to iterate through
+// all the known hosts.
+type splitHostsFileData struct {
+	v4 hostsFileData
+	v6 hostsFileData
+}
+
+func newSplitHostsDataWithSameCapacity(other splitHostsFileData) splitHostsFileData {
+	return splitHostsFileData{
+		v4: newHostsDataWithSameCapacity(other.v4),
+		v6: newHostsDataWithSameCapacity(other.v6),
+	}
+}
+
+func (d splitHostsFileData) isEmpty() bool {
+	return d.len() == 0
+}
+
+func (d splitHostsFileData) len() int {
+	return d.v4.len() + d.v6.len()
+}
+
+func (d splitHostsFileData) getIP(qType dns.Type, domain string) net.IP {
+	switch uint16(qType) {
+	case dns.TypeA:
+		return d.v4.getIP(domain)
+	case dns.TypeAAAA:
+		return d.v6.getIP(domain)
+	}
+
+	return nil
+}
+
+func (d splitHostsFileData) add(entry *parsers.HostsFileEntry) {
+	if entry.IP.To4() != nil {
+		d.v4.add(entry)
+	} else {
+		d.v6.add(entry)
+	}
+}
+
+type hostsFileData struct {
+	hosts   map[string]hostData
+	aliases map[string]net.IP
+}
+
+type hostData struct {
+	IP      net.IP
+	Aliases []string
+}
+
+func newHostsDataWithSameCapacity(other hostsFileData) hostsFileData {
+	return hostsFileData{
+		hosts:   make(map[string]hostData, len(other.hosts)/memReleaseFactor),
+		aliases: make(map[string]net.IP, len(other.aliases)/memReleaseFactor),
+	}
+}
+
+func (d hostsFileData) len() int {
+	return len(d.hosts) + len(d.aliases)
+}
+
+func (d hostsFileData) getIP(hostname string) net.IP {
+	if hostData, ok := d.hosts[hostname]; ok {
+		return hostData.IP
+	}
+
+	if ip, ok := d.aliases[hostname]; ok {
+		return ip
+	}
+
+	return nil
+}
+
+func (d hostsFileData) add(entry *parsers.HostsFileEntry) {
+	d.hosts[entry.Name] = hostData{entry.IP, entry.Aliases}
+
+	for _, alias := range entry.Aliases {
+		d.aliases[alias] = entry.IP
+	}
+}
