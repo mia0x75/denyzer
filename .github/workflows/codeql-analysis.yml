@@ -34,7 +34,7 @@ jobs:
           bun-version: "1.4.2"
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4.37.9
+        uses: github/codeql-action/init@v4.39.1
         with:
           languages: go
 
@@ -42,4 +42,4 @@ jobs:
         run: make build
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4.37.9
+        uses: github/codeql-action/analyze@v4.39.1
