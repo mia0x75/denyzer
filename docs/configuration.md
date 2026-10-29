@@ -1,0 +1,1920 @@
+# Configuration
+
+This chapter describes all configuration options in `config.yaml`. You can download a reference file with all
+configuration properties as [YAML](config.yml). A matching [JSON schema](config.schema.json) is also available for
+editor autocomplete and validation (see [Editor support and validation](#editor-support-and-validation)).
+
+??? example "reference configuration file"
+
+    ```yaml
+    --8<-- "config.yml"
+    ```
+
+## Editor support and validation
+
+Denyzer ships a [JSON schema](https://raw.githubusercontent.com/mia0x75/denyzer/main/docs/config.schema.json)
+generated from its configuration types. Editors with the
+[YAML Language Server](https://github.com/redhat-developer/yaml-language-server)
+(for example VS Code with the *YAML* extension) use it for autocomplete,
+inline documentation and validation. Add this modeline to the top of your
+`config.yml`:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/mia0x75/denyzer/main/docs/config.schema.json
+```
+
+The same schema is used by `denyzer validate`, which reports unknown keys and
+invalid values with their field path. Schema validation is a structural
+first pass; denyzer still performs its full semantic checks when loading the
+configuration.
+
+## Multiple configuration files
+
+Instead of a single file, `--config` can point to a **folder**. Denyzer then loads every `*.yml` and `*.yaml`
+file in that folder (subfolders included) and merges them into one configuration:
+
+- Files are applied in **lexical (alphabetical) path order** — use number prefixes like `00_base.yml`,
+  `10_local.yml` to make the order explicit. Denyzer logs the merge order at startup.
+- **Mappings merge recursively**: keys from later files are added; keys present on both sides merge field by
+  field.
+- **Everything else is replaced**: when several files set the same scalar or list, the last file wins,
+  wholesale. Lists are never concatenated.
+- Duplicate keys *within one file* are still an error, and each file must be valid YAML on its own
+  (YAML anchors and aliases work within a file, but not across files). A file may contain multiple
+  `---`-separated documents; they merge in document order, like separate files.
+
+!!! example
+
+    `config/00_base.yml` — checked into your repo:
+
+    ```yaml
+    upstreams:
+      groups:
+        default:
+          - 9.9.9.9
+      strategy: parallel_best
+    ```
+
+    `config/10_local.yml` — host-specific overlay:
+
+    ```yaml
+    upstreams:
+      groups:
+        192.168.0.0/16:
+          - 1.1.1.1
+    ```
+
+    Effective configuration:
+
+    ```yaml
+    upstreams:
+      groups:
+        default:
+          - 9.9.9.9
+        192.168.0.0/16:
+          - 1.1.1.1
+      strategy: parallel_best
+    ```
+
+## Basic configuration
+
+| Parameter          | Type                | Mandatory | Default value | Description                                                                                                |
+| ------------------ | ------------------- | --------- | ------------- | ---------------------------------------------------------------------------------------------------------- |
+| certFile           | path                | no        |               | Path to cert and key file for SSL encryption (DoH and DoT); if empty, self-signed certificate is generated |
+| keyFile            | path                | no        |               | Path to cert and key file for SSL encryption (DoH and DoT); if empty, self-signed certificate is generated |
+| minTlsServeVersion | string              | no        | 1.2           | Minimum TLS version that the DoT and DoH server use to serve those encrypted DNS requests                  |
+| connectIPVersion   | enum (dual, v4, v6) | no        | dual          | IP version to use for outgoing connections (dual, v4, v6)                                                  |
+
+!!! example
+
+    ```yaml
+    minTlsServeVersion: 1.1
+    connectIPVersion: v4
+    ```
+
+## Ports & addresses configuration
+
+All values in this section are optional.
+
+| Parameter     | Type                  | Default value | Description                                                                                                                                       |
+|---------------|-----------------------|---------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
+| ports.dns     | One or more [IP]:Port | 53            | Listen address for DNS (TCP and UDP). Example: `53`, `:53`, `192.168.0.1:53`, `[53, "[::1]:53"]`                                                  |
+| ports.tls     | One or more [IP]:Port |               | Listen address for DoT (DNS-over-TLS). Example: `83`, `:853`, `192.168.0.1:853`, `[853, "[::1]:853"]`                                             |
+| ports.http    | One or more [IP]:Port |               | Listen address for HTTP used for pprof, REST API, dashboard, DoH... Example: `4000`, `:4000`, `192.168.0.1:4000`, `[4000, "[::1]:4000"]` |
+| ports.https   | One or more [IP]:Port |               | Listen address for HTTPS used for pprof, REST API, dashboard, DoH... Example: `443`, `:443`, `192.168.0.1:443`, `[443, "[::1]:443"]`     |
+| ports.dohPath | string                | /dns-query    | URL path for DoH queries.                                                                                                                         |
+| ports.freeBind | bool                 | false         | Allow binding the DNS/DoT listeners to addresses not yet assigned to an interface (Linux only, via `IP_FREEBIND`; e.g. Tailscale/WireGuard/VRRP). No effect on wildcard binds; ignored with a warning on non-Linux. |
+| ports.proxyProtocol | list | _empty_ | TCP listener families (any of `dns`, `http`, `https`, `tls`) that must require a HAProxy PROXY protocol header. Enable only when the listener is reachable only through a trusted proxy. |
+
+!!! example
+
+    ```yaml
+    ports:
+      dns: 53
+      tls: [853, "[::1]:853"]
+      http:
+        - 80
+        - 4000
+      https: 443
+      dohPath: /my-custom-dns-query
+      proxyProtocol:
+        - https
+        - tls
+    ```
+
+## Logging configuration
+
+All logging options are optional.
+
+| Parameter           | Type                                   | Default value | Description                                                                                                                                       |
+| ------------------- | -------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| log.level           | enum (trace, debug, info, warn, error) | info          | Log level                                                                                                                                         |
+| log.format          | enum (text, json)                      | text          | Log format (text or json).                                                                                                                        |
+| log.target          | enum (stdout, stderr, syslog)          | stdout        | Where log entries are written. `syslog` logs each entry at the priority matching its level.                                                       |
+| log.syslog.network  | string                                 |               | Empty for the local syslog socket, otherwise `udp` or `tcp`.                                                                                      |
+| log.syslog.address  | string                                 |               | `host:port` of the syslog server. Requires `network`.                                                                                             |
+| log.syslog.tag      | string                                 | denyzer       | Tag each entry is logged under.                                                                                                                   |
+| log.syslog.facility | enum (daemon, user, local0-local7)     | daemon        | Syslog facility.                                                                                                                                  |
+| log.timestamp       | bool                                   | true          | Log timestamps (true or false).                                                                                                                   |
+| log.privacy         | bool                                   | false         | Obfuscate log output (replace all alphanumeric characters with \*) for user sensitive data like request domains or responses to increase privacy. |
+
+!!! example
+
+    ```yaml
+    log:
+      level: debug
+      format: json
+      timestamp: false
+      privacy: true
+    ```
+
+!!! example "logging to syslog"
+
+    ```yaml
+    log:
+      target: syslog
+      syslog:
+        tag: denyzer
+        facility: daemon
+    ```
+
+    Entries are mapped to syslog priorities: `error` to `err`, `warn` to `warning`,
+    `info` to `info`, `debug` and `trace` to `debug`, and `fatal` and `panic` to `crit`.
+    Each record carries the message alone: syslog supplies the timestamp and the
+    severity itself, so `log.timestamp` is ignored and the level is not repeated in
+    the text. Use `format: json` if you want the level in the message as well.
+    Only the server logs to syslog: CLI commands such as `denyzer query` still print
+    to the terminal.
+
+## Init Strategy
+
+A couple of features use an "init/loading strategy" which configures behavior at Denyzer startup.
+This applies to all of them. The default strategy is blocking.
+
+| strategy    | Description                                                                                                                                                     |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| blocking    | Initialization happens before DNS resolution starts. Any errors are logged, but Denyzer continues running if possible.                                           |
+| failOnError | Like blocking but Denyzer will exit with an error if initialization fails.                                                                                       |
+| fast        | Denyzer starts serving DNS immediately and initialization happens in the background. The feature requiring initialization will enable later on (if it succeeds). |
+
+## Upstreams configuration
+
+| Parameter               | Type                                 | Mandatory | Default value | Description                                    |
+| ----------------------- | ------------------------------------ | --------- | ------------- | ---------------------------------------------- |
+| upstreams.groups        | map of name to upstream              | yes       |               | Upstream DNS servers to use, in groups.        |
+| upstreams.init.strategy | enum (blocking, failOnError, fast)   | no        | blocking      | See [Init Strategy](#init-strategy) and below. |
+| upstreams.strategy      | enum (parallel_best, random, strict) | no        | parallel_best | Upstream server usage strategy.                |
+| upstreams.timeout              | duration                             | no        | 2s            | Upstream connection timeout.                          |
+| upstreams.userAgent            | string                               | no        |               | HTTP User Agent when connecting to upstreams.         |
+| upstreams.quic.maxIdleTimeout  | duration                             | no        | 30s           | QUIC maximum idle timeout before closing connection.  |
+| upstreams.quic.keepAlivePeriod | duration                             | no        | 15s           | QUIC keep-alive interval to maintain connection.      |
+
+For `init.strategy`, the "init" is testing the given resolvers for each group. The potentially fatal error, depending on the strategy, is if a group has no functional resolvers.
+
+### Upstream Groups
+
+To resolve a DNS query, denyzer needs external public or private DNS resolvers. Denyzer supports DNS resolvers with
+following network protocols (net part of the resolver URL):
+
+- tcp+udp (UDP and TCP, dependent on query type)
+- https (aka DoH)
+- tcp-tls (aka DoT)
+- quic (aka DoQ, DNS-over-QUIC per RFC 9250)
+
+!!! hint
+
+    You can (and should!) configure multiple DNS resolvers.
+    Per default denyzer uses the `parallel_best` upstream strategy where denyzer picks 2 random resolvers from the list for each query and
+    returns the answer from the fastest one.
+
+Each resolver must be defined as a string in following format: `[net:]host[:port][/path][#commonName]`.
+
+| Parameter  | Type                             | Mandatory | Default value                                     |
+| ---------- | -------------------------------- | --------- | ------------------------------------------------- |
+| net        | enum (tcp+udp, tcp-tls, https or quic) | no        | tcp+udp                                                          |
+| host       | IP or hostname                         | yes       |                                                                  |
+| port       | int (1 - 65535)                        | no        | 53 for udp/tcp, 853 for tcp-tls and quic, 443 for https         |
+| path       | string                                 | no        | only relevant for https (DoH); ignored for other protocols       |
+| commonName | string                           | no        | the host value                                    |
+
+The `commonName` parameter overrides the expected certificate common name value used for verification.
+
+The `path` parameter is only used by the `https` (DoH) protocol, where it is the URL path of the
+DNS endpoint (for example `/dns-query`). It is accepted but ignored for all other protocols.
+
+#### DNS Stamp Format
+
+As an alternative to the traditional format, Denyzer supports **DNS Stamps** (`sdns://...`), which encode all connection parameters in a compact, shareable format.
+
+DNS Stamps are standardized URIs (following IETF draft-denis-dns-stamps) that include protocol, address, hostname, path, and optional certificate hashes in a single string.
+
+**Format:** `sdns://base64url(payload)`
+
+**Supported Protocols:**
+
+- Plain DNS (`sdns://AA...`)
+- DNS-over-HTTPS (`sdns://Ag...`)
+- DNS-over-TLS (`sdns://Aw...`)
+- DNS-over-QUIC (`sdns://BA...`)
+
+**Benefits:**
+
+- **Compact**: Single string encodes all parameters
+- **Portable**: Easy to share and copy
+- **Secure**: Includes certificate hashes for automatic certificate pinning
+- **Standardized**: Following IETF specification
+
+**Examples:**
+
+```yaml
+upstreams:
+  groups:
+    default:
+      # Traditional format
+      - 8.8.8.8
+      - https://dns.google/dns-query
+      - tcp-tls:1.1.1.1:853
+      # DNS-over-QUIC (also accepts quic://dns.adguard.com for AdGuard compatibility)
+      - quic:dns.adguard.com
+
+      # DNS Stamp format (equivalent servers)
+      - sdns://AAcAAAAAAAAABzguOC44Ljg  # Google DNS
+      - sdns://AgcAAAAAAAAADTE4NS45NS4yMTguNDKg9_WvKIAeh31986K-KP4UnzJ0p-0p8Tb9UDzjmMuoCw2g9XV9eG8XP2q1MZfsnCKQisBtKuTqoqW29Y678AOXod-gs14FlQz72CWfk3W6EBhwuMPEwOxaUpdX5jFn6d4mqeig7PBiC_ww1ETe9Xetxlw3UFpzui0v2eb_QcPtOtDWWg-gouMnQ2N22OdkBavp_siMtB3i1NA1DU6CkqUxGMS431ugkHjSGlbA4IkdkGIhtpkjMb3RcXLrDzPdoH1cZcbhTDmg1q1wTTQXThIIyVKqq5g16xwGaw3No7Ta1A9FE-jhglqgsl8vNpZ_c5TwmTeIWzM_qjVtcZ_qzzjM6fA1UADz4XSg5kS6aWPjNf52XLmXaxKxDrVClLQkd3ZMyzo6zKOssvygKq4_t78F5MgcQZTcpEUR1PmvMEeG7BrnIYQJz2Kgg1Wg1h2W6_s_oZCW4sAC42A79_2q77InBNqGaAYrvobtS5MgnUgyu0yNdyB7Jd4XWSaC78PKRfV53GZKDtXySPXJM5gcZG5zLmRpZ2l0YWxlLWdlc2VsbHNjaGFmdC5jaAovZG5zLXF1ZXJ5  # Digitale Gesellschaft DoH
+```
+
+**Certificate Pinning:**
+
+DNS stamps can include SHA256 certificate hashes for enhanced security. When present, Denyzer automatically validates the server's certificate against these hashes, preventing MITM attacks even if a Certificate Authority is compromised.
+
+This is transparent to the user - if a DNS stamp includes certificate hashes, pinning is automatically enabled.
+
+**Creating DNS Stamps:**
+
+Use the [DNS Stamp Calculator](https://dnscrypt.info/stamps/) to create stamps for your DNS servers.
+
+!!! note
+    - DNSCrypt protocol is not yet supported
+    - Traditional and DNS stamp formats can be mixed in the same configuration
+    - DNS stamps with certificate hashes provide additional security through automatic certificate pinning
+
+!!! note
+    Denyzer needs at least the configuration of the **default** group with at least one upstream DNS server. This group will be used as a fallback, if no client
+    specific resolver configuration is available.
+
+    See [List of public DNS servers](additional_information.md#list-of-public-dns-servers) if you need some ideas, which public free DNS server you could use.
+
+You can specify multiple upstream groups (additional to the `default` group) to use different upstream servers for different clients, based on client name (see [Client name lookup](#client-name-lookup)), client IP address or client subnet (as CIDR).
+
+!!! tip
+
+    You can use `*` as wildcard for the sequence of any character or `[0-9]` as number range
+
+!!! example
+
+    ```yaml
+    upstreams:
+      groups:
+        default:
+          - 5.9.164.112
+          - 1.1.1.1
+          - tcp-tls:fdns1.dismail.de:853
+          - https://dns.digitale-gesellschaft.ch/dns-query
+        laptop*:
+          - 123.123.123.123
+        10.43.8.67/28:
+          - 1.1.1.1
+          - 9.9.9.9
+    ```
+
+The above example results in:
+
+- `123.123.123.123` as the only upstream DNS resolver for clients with a name starting with "laptop"
+- `1.1.1.1` and `9.9.9.9` for all clients in the subnet `10.43.8.67/28`
+- 4 resolvers (default) for all others clients.
+
+The logic determining what group a client belongs to follows a strict order: IP, client name, CIDR
+
+If a client matches multiple client name or CIDR groups, a warning is logged and the first found group is used.
+
+### Upstream connection timeout
+
+Denyzer will wait 2 seconds (default value) for the response from the external upstream DNS server. You can change this
+value by setting the `timeout` configuration parameter (in **duration format**).
+
+!!! example
+
+    ```yaml
+    upstreams:
+      timeout: 5s
+      groups:
+        default:
+          - 46.182.19.48
+          - 80.241.218.68
+    ```
+
+### Upstream strategy
+
+Denyzer supports different upstream strategies (default `parallel_best`) that determine how and to which upstream DNS servers requests are forwarded.
+
+Currently available strategies:
+
+- `parallel_best`: denyzer picks 2 random (weighted) resolvers from the upstream group for each query and returns the answer from the fastest one.
+  If an upstream failed to answer within the last hour, it is less likely to be chosen for the race.
+  This improves your network speed and increases your privacy - your DNS traffic will be distributed over multiple providers.
+  (When using 10 upstream servers, each upstream will get on average 20% of the DNS requests)
+- `random`: denyzer picks one random (weighted) resolver from the upstream group for each query and if successful, returns its response.
+  If the selected resolver fails to respond, a second one is picked to which the query is sent.
+  The weighting is identical to the `parallel_best` strategy.
+  Although the `random` strategy might be slower than the `parallel_best` strategy, it offers more privacy since each request is sent to a single upstream.
+- `strict`: denyzer forwards the request in a strict order. If the first upstream does not respond, the second is asked, and so on.
+
+!!! example
+
+    ```yaml
+    upstreams:
+      strategy: strict
+      groups:
+        default:
+          - 1.2.3.4
+          - 9.8.7.6
+    ```
+
+## Bootstrap DNS configuration
+
+These DNS servers are used to resolve upstream DoH and DoT servers that are specified as host names, and list domains.
+It is useful if no system DNS resolver is configured, and/or to encrypt the bootstrap queries.
+
+| Parameter  | Type                 | Mandatory                   | Default value | Description                                                                  |
+| ---------- | -------------------- | --------------------------- | ------------- | ---------------------------------------------------------------------------- |
+| upstream   | Upstream (see above) | no                          |               |                                                                              |
+| ips        | List of IPs          | yes, if upstream is DoT/DoH |               | Only valid if upstream is DoH or DoT                                         |
+| resolvFile | string (file path)   | no                          |               | Read nameservers from a `resolv.conf`(5) file and use them as bootstrap DNS. Cannot be combined with `upstream`/`ips` in the same entry |
+
+When using an upstream specified by IP, and not by hostname, you can write only the upstream and skip `ips`.
+
+If `bootstrapDns` is not set, denyzer uses the operating system's resolver (`/etc/resolv.conf` on Linux). On systems where the
+DHCP-provided resolvers live elsewhere (for example OpenWrt writes them to `/tmp/resolv.conf.auto`), use a `resolvFile` entry to
+point denyzer at the right file. The file is parsed once at startup; its `nameserver` entries are used as plain-DNS bootstrap servers.
+
+!!! note
+
+    Works only on Linux/\*nix OS due to golang limitations under Windows.
+
+!!! example
+
+    ```yaml
+        bootstrapDns:
+          - upstream: tcp-tls:dns.example.com
+            ips:
+            - 123.123.123.123
+          - upstream: https://234.234.234.234/dns-query
+          # read the DHCP-provided resolvers from a file (e.g. OpenWrt)
+          - resolvFile: /tmp/resolv.conf.auto
+    ```
+
+## Filtering
+
+Under certain circumstances, it may be useful to filter some types of DNS queries. You can define one or more DNS query
+types, all queries with these types will be dropped (empty answer will be returned).
+
+!!! example
+
+    ```yaml
+    filtering:
+      queryTypes:
+        - AAAA
+    ```
+
+This configuration will drop all 'AAAA' (IPv6) queries.
+
+When `AAAA` is filtered, Denyzer additionally strips the `ipv6hint` SvcParam from `HTTPS` and `SVCB`
+(RFC 9460) answers. Without this, clients could still discover and connect to IPv6 endpoints
+advertised in those records, bypassing the `AAAA` filter. Other SvcParams (e.g. `alpn`, `ipv4hint`)
+are left untouched. Because stripping a hint changes the record, any DNSSEC signature on the
+affected `HTTPS`/`SVCB` record is removed and the `AD` (authenticated data) flag is cleared for
+that response.
+
+## DNS rebinding protection
+
+In a DNS rebinding attack, an attacker-controlled domain first resolves to a public IP, then
+re-resolves to a private address, letting a victim's browser reach devices on the local network
+under the attacker's origin. When this protection is enabled, denyzer drops any answer from the
+general upstream resolvers that contains a non-public IP address — in `A`/`AAAA` records or in
+`ipv4hint`/`ipv6hint` SvcParams of `HTTPS`/`SVCB` records, in any section of the response
+(answer, authority or additional) — and returns an empty `NOERROR` response instead (visible as
+response type `REBIND` with reason `REBIND (rebinding protection)` in query logs and metrics;
+the offending IP is logged at debug level). Rebinding hits count as **blocked** in the
+[statistics](#statistics), and are reported to clients as Extended DNS Error `15 (Blocked)`.
+**Disabled by default.**
+
+!!! note "Upgrading"
+
+    Rebinding hits previously used the `FILTERED` response type. Query log rows written before
+    the upgrade keep the old value, so a dashboard grouping by response type shows `FILTERED` and
+    `REBIND` side by side for the retention period.
+
+The following ranges are considered non-public:
+
+| Range                                           | Description             |
+| ----------------------------------------------- | ----------------------- |
+| `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` | IPv4 private (RFC 1918) |
+| `fc00::/7`                                      | IPv6 unique local       |
+| `127.0.0.0/8`, `::1`                            | loopback                |
+| `169.254.0.0/16`, `fe80::/10`                   | link-local              |
+| `0.0.0.0`, `::`                                 | unspecified             |
+
+Answers from [conditional upstreams](#conditional-dns-resolution), custom DNS and the hosts file
+are never inspected, so internal zones served by trusted internal resolvers keep working without
+any extra configuration. One exception: a `customDNS` entry of type `CNAME` resolves its target
+through the regular chain (see [CNAME resolution](#cname-resolution)), so if the target resolves
+to a private IP via the general upstreams (e.g. a DDNS name pointing into the LAN), that lookup
+is inspected and the entry silently loses its address records — add the CNAME **target** name to
+the allowlist to keep it working. Note that all `upstreams.groups` — **including client-specific
+groups** — count as general upstream resolvers and are inspected; to serve an internal zone from
+an internal resolver, use a conditional mapping instead of a client-keyed group. Lookups denyzer
+performs for its own operation (e.g. resolving `blocking.clientGroupsBlock` FQDN client
+identifiers) are exempt from the protection.
+
+For split-horizon domains that legitimately resolve to private IPs via the public upstreams, add
+them to the allowlist. Entries match the domain itself and all of its subdomains; matching is
+done on the name of the inspected query, so a `CNAME` inside an upstream answer pointing at an
+allowlisted name does not bypass the protection (for `customDNS` `CNAME` entries the inspected
+query is the lookup of the CNAME target, so allowlist the **target** name, not the entry's
+name). Rewrite rules do not affect matching: a `customDNS.rewrite` or `conditional.rewrite`
+target is used only for that resolver's own lookup and is never handed down the chain, so
+allowlist the name the client asks for. Entries must be plain domain names: wildcards
+(`*.example.com`), regexes and whitespace are rejected at startup, and internationalized domains
+must be given in punycode (`xn--…`) form.
+
+!!! example
+
+    ```yaml
+    rebindingProtection:
+      enable: true
+      allowedDomains:
+        - intranet.example.com
+    ```
+
+!!! note
+
+    The protection runs above the cache: the upstream answer is cached unchanged for its
+    regular TTL, and every cache hit is re-inspected, so repeat queries for a blocked domain
+    keep showing `REBIND`. Answers from trusted local sources (conditional upstreams,
+    special-use domains) are never written to the cache, so they cannot resurface as cached
+    upstream answers and become subject to inspection.
+
+    The protection does not cover NAT64/DNS64 setups: an IPv6 answer embedding a private IPv4
+    address under a NAT64 prefix (e.g. `64:ff9b::192.168.1.1`) is not detected, and answers
+    synthesized by denyzer's own [DNS64](#dns64) resolver are not inspected at all (the internal
+    `A` lookup they are derived from enters the resolver chain below the protection). On
+    networks with a NAT64 gateway, DNS rebinding via synthesized IPv6 answers is therefore not
+    prevented.
+
+## Rate limiting per client IP
+
+Denyzer can enforce a per-client query rate limit at the head of the resolver chain. **Disabled by default.** This is _not_ a DDoS defense — for that, run [fail2ban](https://www.fail2ban.org/) or [crowdsec](https://www.crowdsec.net/) at the firewall, which can drop traffic before it reaches Denyzer. The limiter is intended for misbehaving clients, runaway scripts, and the kind of low-volume amplification that can enroll a public Denyzer instance in someone else's DNS reflection attack ([issue #1135](https://github.com/mia0x75/denyzer/issues/1135)).
+
+When a client exceeds its bucket, the query is **dropped silently** (no UDP response, no DNS error) so that amplification ratio against a spoofed-source attacker is zero. A WARN log line is emitted (throttled to ≤ 1 line per bucket per second) so fail2ban can match against it.
+
+### Configuration
+
+```yaml
+rateLimit:
+  enable: true
+  rate: 50           # avg queries per second per client
+  burst: 100         # optional, default rate × 2; must be >= rate
+  ipv4Prefix: 32     # default: aggregate by /32 (one IP = one client)
+  ipv6Prefix: 64     # default: aggregate by /64 (one subscriber prefix)
+  allowlist:
+    - 127.0.0.1/32   # localhost (recommended if /api/query is used)
+    - ::1/128
+    - 10.0.0.0/8
+    - 192.168.0.0/16
+```
+
+The limiter is a **token bucket** per client. Tokens refill at `rate` per second, capped at `burst`. Each query consumes one token. When the bucket is empty, the query is dropped.
+
+- `rate` is the long-run sustained limit in queries/second.
+- `burst` is the bucket capacity — how many queries an idle client may spend at once before being throttled to `rate`. Optional; defaults to `rate × 2` if omitted or set to 0.
+- `ipv6Prefix` defaults to `/64` because residential IPv6 typically allocates a `/64` per subscriber; aggregating by `/64` keeps an attacker from cheaply rotating source addresses within their own subnet.
+
+**Example — `rate: 100, burst: 200`:**
+
+| Time | Bucket | Client sends | Result |
+|------|--------|--------------|--------|
+| 0.00 s | 200 (full) | 200 queries instantly | all 200 allowed, bucket drained |
+| 0.00 s | 0 | 1 more query | **dropped** |
+| 0.50 s | 50 (refilled at 100/s) | 50 queries | all 50 allowed |
+| 0.50 s | 0 | 1 more query | **dropped** |
+| 2.50 s | 200 (capped) | 200 queries instantly | all 200 allowed (burst recovered after 2 s idle) |
+
+Pick `burst == rate` for a strict steady-state limiter with no spike tolerance. Pick `burst` 2–10× `rate` to let typical browser page loads through (a single page can trigger 30–80 DNS lookups in well under a second) while still capping long-running abusers at `rate` qps.
+
+### Sample fail2ban filter
+
+`/etc/fail2ban/filter.d/denyzer-ratelimit.conf`:
+
+```ini
+[Definition]
+failregex = ^.*rate-limiting: dropped query.*client_ip=<HOST>.*$
+ignoreregex =
+```
+
+This filter assumes `logFormat: text` (the default); with `logFormat: json` the field becomes `"client_ip":"<HOST>"` and the regex must be adjusted accordingly.
+
+## FQDN only
+
+In domain environments, it may be useful to only respond to FQDN requests. If this option is enabled denyzer will respond immediately
+with NXDOMAIN if the request is not a valid FQDN. The request is therefore not processed further by other options like custom or conditional.
+Please be aware that by enabling this your resolution will break unless every query is for a fully qualified domain name.
+
+!!! example
+
+    ```yaml
+    fqdnOnly:
+      enable: true
+    ```
+
+## Custom DNS
+
+You can define your own domain name mappings for local DNS resolution. This is useful for creating user-friendly names for network devices, defining domain names for local services, or creating your own DNS zone.
+
+Custom DNS supports multiple record types (A, AAAA, CNAME, TXT, SRV) and provides automatic reverse DNS lookups for defined IP addresses.
+
+| Parameter           | Type                                                   | Mandatory | Default value | Description                                                                                |
+| ------------------- | ------------------------------------------------------ | --------- | ------------- | ------------------------------------------------------------------------------------------ |
+| customTTL           | duration used for simple mappings (no unit is minutes) | no        | 1h            | Time-to-live for DNS records defined in the mapping section                                |
+| rewrite             | string: string (domain: domain)                        | no        |               | Domain rewriting rules applied before DNS resolution                                       |
+| mapping             | string: string (hostname: address list)                | no        |               | Simple domain to IP mappings                                                               |
+| zone                | string containing a DNS Zone                           | no        |               | DNS zone file content for more complex configurations                                      |
+| filterUnmappedTypes | boolean                                                | no        | true          | Whether to filter query types that aren't defined for a domain or forward them to upstream |
+
+### Simple Mapping
+
+The `mapping` parameter allows you to define simple domain-to-IP mappings. You can specify multiple IP addresses for a single domain by separating them with commas.
+
+!!! example
+
+    ```yaml
+    customDNS:
+      customTTL: 1h
+      mapping:
+        printer.lan: 192.168.178.3
+        otherdevice.lan: 192.168.178.15,2001:0db8:85a3:08d3:1319:8a2e:0370:7344
+    ```
+
+This configuration will resolve:
+- `printer.lan` to IPv4 address `192.168.178.3`
+- `otherdevice.lan` to both IPv4 address `192.168.178.15` and IPv6 address `2001:0db8:85a3:08d3:1319:8a2e:0370:7344`
+
+### Subdomain Resolution
+
+Custom DNS automatically resolves subdomains of defined domains. For example, with the above configuration, queries for `my.printer.lan` or `any.subdomain.of.printer.lan` will also resolve to `192.168.178.3`.
+
+### Domain Rewriting
+
+With the optional `rewrite` parameter, you can replace part of a domain query with another string before resolution is performed:
+
+!!! example
+
+    ```yaml
+    customDNS:
+      rewrite:
+        home: lan
+        example.com: example-rewrite.com
+      mapping:
+        printer.lan: 192.168.178.3
+        example-rewrite.com: 1.2.3.4
+    ```
+
+With this configuration:
+- A query for `printer.home` will be rewritten to `printer.lan` and return `192.168.178.3`
+- A query for `sub.example.com` will be rewritten to `sub.example-rewrite.com` and return `1.2.3.4`
+
+### Zone File
+
+For more complex configurations, you can use the `zone` parameter to define a DNS zone file:
+
+!!! example
+
+    ```yaml
+    customDNS:
+      zone: |
+        $ORIGIN example.com.
+        www 3600 A 1.2.3.4
+        www 3600 AAAA 2001:db8:85a3::8a2e:370:7334
+        @ 3600 CNAME www
+    ```
+
+The zone file supports standard DNS zone file syntax including:
+- `$ORIGIN` - sets the origin for relative domain names
+- `$TTL` - sets the default TTL for records in the zone
+- `$INCLUDE` - includes another zone file relative to the denyzer executable
+- `$GENERATE` - generates a range of records
+
+For records defined using the `zone` parameter, the `customTTL` parameter is unused. Instead, the TTL is defined in the zone directly.
+
+custom DNS answers queries for `A`, `AAAA`, `CNAME`, `TXT` and `SRV` records. Other record types
+that are valid in a zone file (for example `SOA`, `NS`, `MX`, `CAA`, `HTTPS`/`SVCB` or the DNSSEC
+records of a signed zone) may be present in the zone, but they are not answered by custom DNS: a
+query for such a type gets the same response as a query for a type that is not defined for the name
+(an empty answer, or the query is forwarded upstream when `filterUnmappedTypes` is `false`).
+
+### CNAME Resolution
+
+When a CNAME record is defined and a query matches that record, denyzer will:
+1. Return the CNAME record in the answer
+2. Additionally resolve the target of the CNAME and include those records in the answer
+3. Protect against CNAME loops (where CNAMEs point to each other in a loop)
+
+The target resolution in step 2 goes through the regular resolver chain. If
+[rebinding protection](#dns-rebinding-protection) is enabled and the target resolves to a
+private IP via the general upstreams, add the target name to its allowlist.
+
+### Reverse DNS
+
+Denyzer automatically creates reverse DNS (PTR) records for all defined A and AAAA records. This allows reverse lookups from IP addresses to domain names.
+
+### Filtering Unmapped Types
+
+With `filterUnmappedTypes = true` (default), denyzer will filter all queries with unmapped types. For example, if you only define an A record for `printer.lan`, an AAAA query for the same domain will return an empty result.
+
+With `filterUnmappedTypes = false`, unmapped type queries will be forwarded to the upstream DNS server. For example, an AAAA query for `printer.lan` (when only an A record is defined) will be sent to the upstream resolver.
+
+## Conditional DNS resolution
+
+You can define, which DNS resolver(s) should be used for queries for the particular domain (with all subdomains). This
+is for example useful, if you want to reach devices in your local network by the name. Since only your router know which
+hostname belongs to which IP address, all DNS queries for the local network should be redirected to the router.
+
+The optional parameter `rewrite` behaves the same as with custom DNS.
+
+The optional parameter `fallbackUpstream`, if false (default), return empty result if after rewrite, the mapped resolver returned an empty answer. If true, the original query will be sent to the upstream resolver.
+It only has an effect together with `rewrite`; without any rewrite rules it is ignored.
+
+**Usage:** One usecase when having split DNS for internal and external (internet facing) users, but not all subdomains are listed in the internal domain
+
+!!! example
+
+    ```yaml
+    conditional:
+      fallbackUpstream: false
+      rewrite:
+        example.com: fritz.box
+        replace-me.com: with-this.com
+      mapping:
+        fritz.box: 192.168.178.1
+        lan.net: 192.170.1.2,192.170.1.3
+        # for reverse DNS lookups of local devices
+        178.168.192.in-addr.arpa: 192.168.178.1
+        # for all unqualified hostnames
+        .: 168.168.0.1
+    ```
+
+!!! tip
+
+    You can use `.` as wildcard for all non full qualified domains (domains without dot)
+
+In this example, a DNS query "client.fritz.box" will be redirected to the router's DNS server at 192.168.178.1 and client.lan.net to 192.170.1.2 and 192.170.1.3.
+The query "client.example.com" will be rewritten to "client.fritz.box" and also redirected to the resolver at 192.168.178.1.
+
+If not found and if `fallbackUpstream` was set to `true`, the original query "blog.example.com" will be sent upstream.
+
+All unqualified host names (e.g. "test") will be redirected to the DNS server at 168.168.0.1.
+
+One usecase for `fallbackUpstream` is when having split DNS for internal and external (internet facing) users, but not all subdomains are listed in the internal domain.
+
+## Client name lookup
+
+Denyzer can try to resolve a user-friendly client name from the IP address or server URL (DoT and DoH). This is useful
+for defining of blocking groups, since IP address can change dynamically.
+
+### Resolving client name from URL/Host
+
+If DoT or DoH is enabled, you can use a subdomain prefixed with `id-` to provide a client name (wildcard ssl certificate
+recommended).
+
+Example: domain `example.com`
+
+DoT Host: `id-bob.example.com` -> request's client name is `bob`
+DoH URL: `https://id-bob.example.com/dns-query` -> request's client name is `bob`
+
+For DoH you can also pass the client name as url parameter:
+
+DoH URL: `https://denyzer.example.com/dns-query/alice` -> request's client name is `alice`
+
+### Resolving client name from IP address
+
+Denyzer resolves a client's name from its IP address using the first of the following sources that yields a match:
+
+1. **Custom client name mapping** – names defined manually via `clientLookup.clients` (see below).
+2. **Local in-memory sources** – reverse (IP → name) entries already known to Denyzer from your
+   [custom DNS](#custom-dns) records and [hosts files](#hosts-file). This works automatically, requires no
+   `clientLookup.upstream`, and performs no network lookup. For example, a hosts file entry `192.168.1.11 unifi`
+   makes the client name of `192.168.1.11` resolve to `unifi`.
+3. **rDNS upstream** – a reverse DNS lookup against the DNS server configured in `clientLookup.upstream`
+   (typically your router).
+
+If none of these returns a name, the IP address is used as the client name.
+
+!!! note
+
+    Because client names are also used for [blocking groups](#blocking-and-allowlisting) and
+    [client-specific upstream groups](#upstreams-configuration), enabling local sources (custom DNS / hosts files) can change which
+    group a client matches if a group is keyed on a name now resolved from those sources.
+
+#### Single name order
+
+Some routers return multiple names for the client (host name and user defined name). With
+parameter `clientLookup.singleNameOrder` you can specify, which of retrieved names should be used.
+
+#### Custom client name mapping
+
+You can also map a particular client name to one (or more) IP (ipv4/ipv6) addresses. Parameter `clientLookup.clients`
+contains a map of client name and multiple IP addresses.
+
+!!! example
+
+    ```yaml
+    clientLookup:
+      upstream: 192.168.178.1
+      singleNameOrder:
+        - 2
+        - 1
+      clients:
+        laptop:
+          - 192.168.178.29
+    ```
+
+    Use `192.168.178.1` for rDNS lookup. Take second name if present, if not take first name. IP address `192.168.178.29` is mapped to `laptop` as client name.
+
+## Blocking and allowlisting
+
+Denyzer can use lists of domains and IPs to block (e.g. advertisement, malware,
+trackers, adult sites). You can group several list sources together and define the blocking behavior per client.
+Blocking uses the [DNS sinkhole](https://en.wikipedia.org/wiki/DNS_sinkhole) approach. For each DNS query, the domain name from
+the request, IP address from the response, and any CNAME records will be checked to determine whether to block the query or not.
+
+To avoid over-blocking, you can use allowlists.
+
+You can also activate list groups only during configured time windows by using schedules.
+
+### Definition allow/denylists
+
+Lists are defined in groups. This allows using different sets of lists for different clients.
+
+Each list in a group is a "source" and can be downloaded, read from a file, or inlined in the config. See [Sources](#sources) for details and configuring how those are loaded and reloaded/refreshed.
+
+The supported list formats are:
+
+1. the well-known [Hosts format](<https://en.wikipedia.org/wiki/Hosts_(file)>)
+2. one domain per line (plain domain list)
+3. one wildcard per line
+4. one regex per line
+
+!!! example
+
+    ```yaml
+    blocking:
+      denylists:
+        ads:
+          - https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt
+          - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+          - |
+            # inline definition using YAML literal block scalar style
+            # content is in plain domain list format
+            someadsdomain.com
+            anotheradsdomain.com
+            *.wildcard.example.com # blocks wildcard.example.com and all subdomains
+          - |
+            # inline definition with a regex
+            /^banners?[_.-]/
+        special:
+          - https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews/hosts
+      allowlists:
+        ads:
+          - allowlist.txt
+          - /path/to/file.txt
+          - |
+            # inline definition with YAML literal block scalar style
+            allowlistdomain.com
+    ```
+
+    In this example you can see 2 groups: **ads** and **special** with one list. The **ads** group includes 2 inline lists.
+
+!!! warning
+
+    Allowlists take precedence over denylists: if a domain is both blocked and allowed, it will be allowed.
+    This holds across **all** groups assigned to a client, so an allowlist in one group also excepts a domain that another of the client's groups denies. That is how you add client-specific exceptions to a shared denylist without duplicating it.
+
+    If **every** group assigned to a client has only allowlist entries, that client switches to exclusive allow mode: only the domains on those allowlists are resolved, everything else is blocked. Giving the client at least one group with denylist entries keeps the normal behavior, where allowlists are exceptions.
+
+!!! warning
+    You must also define a client group mapping, otherwise the allow/denylist definitions will have no effect.
+
+#### Wildcard support
+
+You can use wildcards to block a domain and all its subdomains.
+Example: `*.example.com` will block `example.com` and `any.subdomains.example.com`.
+
+#### Regex support
+
+You can use regex to define patterns to block. A regex entry must start and end with the slash character (`/`). Some
+Examples:
+
+- `/baddomain/` will block `www.baddomain.com`, `baddomain.com`, but also `mybaddomain-sometext.com`
+- `/^baddomain/` will block `baddomain.com`, but not `www.baddomain.com`
+- `/^apple\.(de|com)$/` will only block `apple.de` and `apple.com`
+
+!!! warning
+    Regexes use more a lot more memory and are much slower than wildcards, you should use them as a last resort.
+
+### Client groups
+
+In this configuration section, you can define, which blocking group(s) should be used for which client in your network.
+Example: All clients should use the **ads** group, which blocks advertisement and kids devices should use the **adult**
+group, which denyzer adult sites.
+
+Clients without an explicit group assignment will use the **default** group.
+
+You can use the client name (see [Client name lookup](#client-name-lookup)), client's IP address, client's full-qualified domain name
+or a client subnet as CIDR notation.
+
+If full-qualified domain name is used (for example "myclient.ddns.org"), denyzer will try to resolve the IP address (A and AAAA records) of this domain.
+If client's IP address matches with the result, the defined group will be used.
+
+!!! example
+
+    ```yaml
+    blocking:
+      clientGroupsBlock:
+      # default will be used, if no special definition for a client name exists
+        default:
+          - ads
+          - special
+        laptop*:
+          - ads
+        192.168.178.1/24:
+          - special
+        kid-laptop:
+          - ads
+          - adult
+    ```
+
+    All queries from network clients, whose device name starts with `laptop`, will be filtered against the **ads** group's lists. All devices from the subnet `192.168.178.1/24` against the **special** group and `kid-laptop` against **ads** and **adult**. All other clients: **ads** and **special**.
+
+!!! tip
+
+    You can use `*` as wildcard for the sequence of any character or `[0-9]` as number range
+
+### Schedule-based blocking
+
+You can define named schedules and assign them to list groups. A list group is active only when at least one assigned schedule is active.
+
+Rules:
+
+1. If a list group has no schedule mapping, it is always active.
+2. If a list group has multiple schedules, they are combined with OR logic (any active schedule enables the list).
+3. Schedules use local server time. During daylight-saving transitions, only the specific skipped minutes are unobservable (a window overlapping the gap fires for its non-skipped portion); windows in the repeated hour fire twice.
+4. Scheduling an allowlist-only group (a group that has allowlist entries but no denylist entries) time-gates that group's allowlist enforcement: outside the schedule, that allowlist is not consulted. Other active groups for the client (denylists or other allowlist-only groups) are still evaluated normally.
+5. Whether a client is in exclusive allow mode (see [Definition allow/denylists](#definition-allowdenylists)) follows from its configured groups, not from which of them are currently active. A schedule that deactivates the client's denylist group therefore never turns the client's remaining allowlists into a whitelist.
+
+Each schedule supports:
+
+- `weekdays`: required, list of `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`
+- `start` and `end`: optional `HH:MM` times
+
+Time behavior:
+
+1. Omit both `start` and `end` for full-day schedule on selected weekdays.
+2. Set both `start` and `end` for a bounded window (`start <= now < end`).
+3. If `start > end`, the schedule is overnight (for example `22:00` to `06:00`).
+4. Do not set only one of `start` or `end`.
+
+!!! example
+
+    ```yaml
+    blocking:
+      denylists:
+        ads:
+          - https://example.org/ads.txt
+        social:
+          - https://example.org/social.txt
+
+      schedules:
+        workhours:
+          weekdays: [mon, tue, wed, thu, fri]
+          start: "08:00"
+          end: "18:00"
+        nights:
+          weekdays: [sun, mon, tue, wed, thu]
+          start: "22:00"
+          end: "06:00"
+        weekend-all-day:
+          weekdays: [sat, sun]
+
+      listSchedules:
+        social: [workhours, nights]
+
+      clientGroupsBlock:
+        default:
+          - ads
+          - social
+    ```
+
+    In this example, `ads` is always active (no schedule mapping), while `social` is active during work hours or night window.
+
+### Block type
+
+You can configure, which response should be sent to the client, if a requested query is blocked. The `zeroIP` and
+custom IP modes answer only A and AAAA queries and return NXDOMAIN for other types, while `nxDomain` and `refused`
+apply to every query type:
+
+| blockType  | Example                                                 | Description                                                                                                                                                                            |
+| ---------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| zeroIP     | zeroIP                                                  | This is the default block type. Server returns 0.0.0.0 (or :: for IPv6) as result for A and AAAA queries                                                                               |
+| nxDomain   | nxDomain                                                | return NXDOMAIN as return code                                                                                                                                                         |
+| refused    | refused                                                 | return REFUSED as return code for every query type, with no answer or authority records. **Caveat:** stub resolvers and forwarders commonly treat REFUSED as a server failure and fall back to another configured DNS server, which bypasses blocking. |
+| custom IPs | 192.100.100.15, 2001:0db8:85a3:08d3:1319:8a2e:0370:7344 | comma separated list of destination IP addresses. Should contain ipv4 and ipv6 to cover all query types. Useful with running web server on this address to display the "blocked" page. |
+
+!!! example
+
+    ```yaml
+    blocking:
+      blockType: nxDomain
+    ```
+
+### Block TTL
+
+TTL for answers to blocked domains can be set to customize the time (in **duration format**) clients ask for those
+domains again. Default Block TTL is **6 hours**. It applies to every blocking mode that returns records (`zeroIP`,
+`nxDomain` and custom IPs) and will affect how much time it could take for a client to be able to see the real IP
+address for a domain after receiving the blocked response.
+
+**For `zeroIP` and custom IP modes:** The TTL is applied to the returned A/AAAA records in the answer section.
+
+**For `nxDomain` mode:** The TTL is applied to the SOA record in the authority section. Per [RFC 2308](https://www.rfc-editor.org/rfc/rfc2308),
+Denyzer includes an SOA record in NXDOMAIN responses to enable proper negative caching by stub resolvers.
+The blockTTL value is used for both the SOA's TTL and its MINIMUM field, ensuring clients cache the
+NXDOMAIN response for the configured duration.
+
+**For `refused` mode:** The response carries no answer or authority records, so blockTTL has no effect. An OPT
+record may still be present in the additional section for EDNS0 queries.
+
+!!! example
+
+    ```yaml
+    blocking:
+      blockType: 192.100.100.15, 2001:0db8:85a3:08d3:1319:8a2e:0370:7344
+      blockTTL: 10s
+    ```
+
+### Lists Loading
+
+See [Sources Loading](#sources-loading).
+
+## Caching
+
+Each DNS response has a TTL (Time-to-live) value. This value defines, how long is the record valid in seconds. The
+values are maintained by domain owners, server administrators etc. Denyzer caches the answers from all resolved queries
+in own cache in order to avoid repeated requests. This reduces the DNS traffic and increases the network speed, since
+denyzer can serve the result immediately from the cache.
+
+With following parameters you can tune the caching behavior:
+
+!!! warning
+
+    Wrong values can significantly increase external DNS traffic or memory consumption.
+
+| Parameter                     | Type            | Mandatory | Default value | Description                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------- | --------------- | --------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| caching.minTime               | duration format | no        | 0 (use TTL)   | How long a response must be cached (min value). If <=0, use response's TTL, if >0 use this value, if TTL is smaller                                                                                                                                                                                                                                                                                            |
+| caching.maxTime               | duration format | no        | 0 (use TTL)   | How long a response must be cached (max value). If <0, do not cache responses. If 0, use TTL. If > 0, use this value, if TTL is greater                                                                                                                                                                                                                                                                        |
+| caching.maxItemsCount         | int             | no        | 0 (unlimited) | Max number of cache entries (responses) to be kept in cache (soft limit). Default (0): unlimited. Useful on systems with limited amount of RAM.                                                                                                                                                                                                                                                                |
+| caching.prefetching           | bool            | no        | false         | if true, denyzer will preload DNS results for often used queries (default: names queried more than 5 times in a 2 hour time window). Results in cache will be loaded again on their expire (TTL). This improves the response time for often used queries, but significantly increases external traffic. It is recommended to increase "minTime" to reduce the number of prefetch queries to external resolvers. |
+| caching.prefetchExpires       | duration format | no        | 2h            | Prefetch track time window                                                                                                                                                                                                                                                                                                                                                                                     |
+| caching.prefetchThreshold     | int             | no        | 5             | Name queries threshold for prefetch                                                                                                                                                                                                                                                                                                                                                                            |
+| caching.prefetchMaxItemsCount | int             | no        | 0 (unlimited) | Max number of domains to be kept in cache for prefetching (soft limit). Default (0): unlimited. Useful on systems with limited amount of RAM.                                                                                                                                                                                                                                                                  |
+| caching.cacheTimeNegative     | duration format | no        | 30m           | Time how long negative results (NXDOMAIN response or empty result) are cached. A value of -1 will disable caching for negative results.                                                                                                                                                                                                                                                                        |
+| caching.exclude               | Regex list      | no        |               | Exclusions rules as regex expressions of domains that won't be cached at all. Such as: /lan$/ or /^.*\.host\.com$/                                                                                                                                                                                                                                                                                                 |
+
+!!! example
+
+    ```yaml
+    caching:
+      minTime: 5m
+      maxTime: 30m
+      exclude:
+        - /.*\.lan$/
+        - /.*\.local$/
+        - /.*\.host\.com\.(jp|fr)$/
+    ```
+
+## Loading secrets from files
+
+A configuration value can be loaded from a file instead of being written inline. Currently
+`queryLog.target` supports this. Set the value to `file:` followed by an absolute path:
+
+```yaml
+queryLog:
+  target: file:/run/secrets/querylog_path
+```
+
+The file's contents become the value (a single trailing newline is stripped). This suits
+Docker/Kubernetes secrets and lets you restrict access to each secret with file permissions.
+
+## Statistics
+
+Denyzer can collect in-memory statistics over a rolling 24h window and serve them as JSON at
+`GET /api/stats`. To
+use this feature, the HTTP listener must be enabled (see [Basic Configuration](#basic-configuration)).
+
+The endpoint returns curated totals (`summary`), raw per-type breakdowns (response type, query type
+and response code), a per-hour time series, top-20 domains / blocked-domains / clients, and current
+list and cache gauges. Disabled by default; when disabled,
+`GET /api/stats` returns HTTP 503.
+
+| Parameter         | Mandatory | Default value | Description                                                       |
+| ----------------- | --------- | ------------- | ----------------------------------------------------------------- |
+| statistics.enable | no        | false         | If true, enables in-memory statistics and the /api/stats endpoint |
+
+!!! example
+
+    ```yaml
+    statistics:
+      enable: true
+    ```
+
+!!! note
+
+    Clients are identified by their resolved name (see [client name lookup](#client-name-lookup)) and fall
+    back to their IP when no name is available. Queries dropped by the
+    [rate limiter](#rate-limiting-per-client-ip) are always attributed to the client IP: the limiter
+    runs before the client name lookup, so that its bucket key stays the connection's source IP.
+
+## HTTP/3 (DoH3) {#http3}
+
+Serve DNS-over-HTTPS over HTTP/3 (RFC 9114). When enabled, Denyzer
+listens on UDP at the same addresses as `ports.https` and answers the
+same endpoints as the HTTPS listener (DoH `/dns-query`, REST API,
+web UI).
+
+| Parameter    | Type    | Mandatory | Default value | Description                                                   |
+| ------------ | ------- | --------- | ------------- | ------------------------------------------------------------- |
+| http3.enable | boolean | no        | false         | Enable the HTTP/3 listener. Requires `ports.https` to be set. |
+
+**Notes:**
+
+- The HTTP/3 listener uses TLS 1.3 (mandated by RFC 9001). The
+  `minTlsServeVersion` config does not affect it.
+- If `http3.enable` is true but `ports.https` is empty, Denyzer logs a
+  warning at startup and does not open any UDP listeners.
+- If `ports.proxyProtocol` includes `https`, HTTP/3 is disabled because
+  QUIC/UDP cannot carry a PROXY protocol header.
+- When HTTP/3 is enabled, HTTPS responses include an `Alt-Svc: h3=...`
+  header so capable clients can switch transports automatically.
+
+**Example:**
+
+```yaml
+ports:
+  https: 443
+http3:
+  enable: true
+```
+
+## Query logging
+
+You can enable the logging of DNS queries (question, answer, client, duration etc.) to a local embedded
+[SQLite](https://sqlite.org) database or the console.
+
+!!! warning
+
+    Query database contains sensitive information. Please ensure to inform users, if you log their queries.
+
+### Query log types
+
+You can select one of following query log types:
+
+- `sqlite`: log each query in a local embedded SQLite database file (no external database needed). This is the default when `type` is omitted.
+- `console`: log into console output. The dashboard has no data in this mode.
+- `none`: do not log any queries
+
+The dashboard reads the SQLite metrics, so only the `sqlite` type feeds it. Because `sqlite` is the default, a minimal
+configuration only needs `queryLog.target`:
+
+```yaml
+queryLog:
+  target: /var/lib/denyzer/querylog.db
+```
+
+`queryLog.target` is required for the `sqlite` type. If it is left empty, Denyzer falls back to console logging
+instead of creating a database.
+
+#### SQLite query log
+
+The `sqlite` target stores the query log and the dashboard metrics in a single local SQLite database (set via
+`queryLog.target`, e.g. `/var/lib/denyzer` or `/var/lib/denyzer/denyzer.db`) — no external database is required. Denyzer
+creates the database and its parent directory automatically.
+
+`queryLog.target` accepts either a database file path or a directory. When it points at a directory (or ends with a
+path separator), the database is stored as `<directory>/denyzer.db`, which keeps a mounted Docker volume or systemd
+state directory working without naming the file.
+
+Set `queryLog.target` to a **plain filesystem path**. Do **not** prefix it with `file:` — for query-log targets that
+prefix means "read the target value from this file" (see the [secrets tip](#loading-secrets-from-files)), so
+`file:/var/lib/denyzer/querylog.db` would be treated as a file to read the path *from*, not as the database itself.
+
+When running in Docker, mount the **directory** (not just the database file) as a volume so the database persists, and
+include the whole directory in any backup. The database uses WAL mode, so a consistent backup must include
+`denyzer.db`, `denyzer.db-wal` and `denyzer.db-shm` (copy them while Denyzer is stopped, or use
+`VACUUM INTO 'backup.db'`).
+
+Retention (`queryLog.retention.historyMonths`) keeps the query history for a number of months. The default is 1 month
+and the supported range is 1 to 12 months. The cleanup removes the query log rows and the short-lived metric buckets
+(minute, hour, and the per-entity daily buckets) that are older than the selected cutoff. The all-time counters and the
+global daily metrics are always preserved, so the totals and the long-term history survive a cleanup.
+
+!!! hint
+    The retention window is also used by the **Purge Logs** button in the dashboard's *Operations* card, which lets you
+    pick the cutoff at runtime.
+
+The dashboard keeps the 7-day and 30-day Top lists in two internal per-entity rollups inside the same metrics table.
+They are maintained incrementally by the query log writer (once at start-up and then hourly), so no configuration is
+needed. Right after an upgrade from an older database the rollups are rebuilt once by scanning the daily buckets; until
+that one-off rebuild finishes the Top lists fall back to the daily buckets, which is slower but returns the same
+numbers. The rollup rows are never removed by the retention cleanup.
+
+### Query log fields
+
+You can choose which information from processed DNS request and response should be logged in the target system. You can define one or more of following fields:
+
+- `clientIP`: origin IP address from the request
+- `clientName`: resolved client name(s) from the origins request
+- `responseReason`: reason for the response (e.g. from which upstream resolver), response type and code. For blocked
+  queries the reason also names the matched rule per group, e.g. `BLOCKED (ads: *.docler.com)`, so you can tell which
+  denylist entry caused the block
+- `responseAnswer`: returned DNS answer
+- `question`: DNS question from the request
+- `duration`: request processing time in milliseconds
+
+!!! hint
+    If not defined, denyzer will log all available information.
+
+Configuration parameters:
+
+| Parameter                 | Type                                                                                 | Mandatory | Default value | Description                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------ | --------- | ------------- | --------------------------------------------------------------------------------------------- |
+| queryLog.type             | enum (sqlite, console, none (see above))                                             | no        | sqlite        | Type of logging target; `sqlite` when omitted                                                 |
+| queryLog.target           | string                                                                               | no        |               | SQLite database file path, or a directory that stores it as `denyzer.db` (supports `file:` — see [Loading secrets from files](#loading-secrets-from-files)) |
+| queryLog.retention.historyMonths | int                                                                            | no        | 1             | delete the query logs and the short-lived metrics older than N months (1-12); the all-time counters and the global daily metrics are preserved |
+| queryLog.creationAttempts | int                                                                                  | no        | 3             | Max attempts to create specific query log writer                                              |
+| queryLog.creationCooldown | duration format                                                                      | no        | 2s            | Time between the creation attempts                                                            |
+| queryLog.fields           | list enum (clientIP, clientName, responseReason, responseAnswer, question, duration) | no        | all           | which information should be logged                                                            |
+| queryLog.flushInterval    | duration format                                                                      | no        | 30s           | Interval to write buffered entries in bulk to the database                                    |
+| queryLog.batchSize        | int                                                                                  | no        | 100           | Max entries buffered before a flush is triggered                                              |
+| queryLog.ignore.sudn      | bool                                                                                 | no        | false         | if true, queries answered as Special Use Domain Names (SUDN) are not logged                   |
+| queryLog.ignore.domains   | list of string                                                                       | no        |               | domains excluded from the query log; each entry is matched against the query name as an exact domain, a `*.wildcard`, or a `/regex/` |
+
+!!! hint
+
+    Please ensure, that the database directory is writable. If you use docker, please ensure, that the directory is properly
+    mounted (e.g. volume)
+
+### Examples
+
+!!! example
+    **SQLite database with limited logging information**
+
+    ```yaml
+    queryLog:
+      target: /var/lib/denyzer/querylog.db
+      retention:
+        historyMonths: 1
+      fields:
+      - clientIP
+      - duration
+      flushInterval: 30s
+    ```
+
+!!! example
+    **Ignore noisy domains**
+
+    ```yaml
+    queryLog:
+      target: /var/lib/denyzer/querylog.db
+      ignore:
+        sudn: true
+        domains:
+          - "*._dns-sd._udp.home"
+          - "db._dns-sd._udp.home"
+          - "/\\.in-addr\\.arpa$/"
+          - "apple.com"
+    ```
+
+## Hosts file
+
+You can enable resolving of entries, located in local hosts file.
+
+Configuration parameters:
+
+| Parameter                | Type                           | Mandatory | Default value | Description                                     |
+| ------------------------ | ------------------------------ | --------- | ------------- | ----------------------------------------------- |
+| hostsFile.sources        | list of string                 | no        |               | Host files (e.g. /etc/hosts on Linux)           |
+| hostsFile.hostsTTL       | duration (no units is minutes) | no        | 1h            | TTL                                             |
+| hostsFile.filterLoopback | bool                           | no        | false         | Filter loopback addresses (127.0.0.0/8 and ::1) |
+| hostsFile.loading        |                                | no        |               | See [Sources Loading](#sources-loading)         |
+
+!!! example
+
+    ```yaml
+    hostsFile:
+      sources:
+        - /etc/hosts
+      hostsTTL: 1h
+      loading:
+        refreshPeriod: 30m
+        strategy: fast
+    ```
+
+## Deliver EDE codes as EDNS0 option
+
+DNS responses can be extended with EDE codes according to [RFC8914](https://datatracker.ietf.org/doc/rfc8914/).
+
+For blocked queries the EDE extra text carries the same reason as the query log, including the matched group and rule
+(e.g. `BLOCKED CNAME (ads: *.docler.com)`), so a client that requests EDE information learns which denylist entry caused
+the block.
+
+Configuration parameters:
+
+| Parameter  | Type | Mandatory | Default value | Description                                         |
+| ---------- | ---- | --------- | ------------- | --------------------------------------------------- |
+| ede.enable | bool | no        | false         | If true, DNS responses are delivered with EDE codes |
+
+!!! example
+
+    ```yaml
+    ede:
+      enable: true
+    ```
+
+## EDNS Client Subnet options
+
+EDNS Client Subnet (ECS) configuration parameters:
+
+| Parameter       | Type | Mandatory | Default value | Description                                                                                   |
+| --------------- | ---- | --------- | ------------- | --------------------------------------------------------------------------------------------- |
+| ecs.useAsClient | bool | no        | false         | Use ECS information if it is present with a netmask is 32 for IPv4 or 128 for IPv6 as CientIP |
+| ecs.forward     | bool | no        | false         | Forward ECS option to upstream                                                                |
+| ecs.ipv4Mask    | int  | no        | 0             | Add ECS option for IPv4 requests if mask is greater than zero (max value 32)                  |
+| ecs.ipv6Mask    | int  | no        | 0             | Add ECS option for IPv6 requests if mask is greater than zero (max value 128)                 |
+
+!!! example
+
+    ```yaml
+    ecs:
+      ipv4Mask: 32
+      ipv6Mask: 128
+    ```
+
+## Special Use Domain Names
+
+SUDN (Special Use Domain Names) are always enabled by default as they are required by various RFCs.
+Some RFCs have optional recommendations, which are configurable as described below.
+However, you can completely deactivate the blocking of SUDN by setting enable to false.
+Warning! You should only disable this if your upstream DNS server is local, as it shouldn't be disabled for remote upstreams.
+
+This also covers [RFC 9462 (Discovery of Designated Resolvers)](https://www.rfc-editor.org/rfc/rfc9462): queries
+for any name in `resolver.arpa.` (e.g. `_dns.resolver.arpa.`) are answered locally with NODATA and never
+forwarded upstream. Without this, stub resolvers (notably recent iOS/Android) can pick up a DDR answer from the
+upstream and silently upgrade to that upstream, bypassing denyzer.
+
+Configuration parameters:
+
+| Parameter                           | Type | Mandatory | Default value | Description                                                                                   |
+| ----------------------------------- | ---- | --------- | ------------- | --------------------------------------------------------------------------------------------- |
+| specialUseDomains.rfc6762-appendixG | bool | no        | true          | Block TLDs listed in [RFC 6762 Appendix G](https://www.rfc-editor.org/rfc/rfc6762#appendix-G) |
+| enable                              | bool | no        | true          | completely disable or enable SUDN blocking                                                    |
+
+!!! example
+
+    ```yaml
+    specialUseDomains:
+      rfc6762-appendixG: true
+    ```
+
+!!! example
+
+    ```yaml
+    specialUseDomains:
+      enable: false
+    ```
+
+## DNSSEC validation
+
+DNSSEC (Domain Name System Security Extensions) provides cryptographic authentication of DNS data to protect against cache poisoning, man-in-the-middle attacks, and DNS spoofing. When enabled, Denyzer validates DNSSEC signatures on DNS responses and ensures the chain of trust from the root zone to the queried domain.
+
+### Overview
+
+When DNSSEC validation is enabled, Denyzer will:
+
+- Set the DNSSEC OK (DO) bit on all upstream queries to request DNSSEC records
+- Validate cryptographic signatures (RRSIG records) in DNS responses
+- Verify the chain of trust from root to the queried domain using DNSKEY and DS records
+- Validate authenticated denial of existence using NSEC/NSEC3 records for NXDOMAIN and NODATA responses
+- Validate wildcard expansions according to RFC 4035 §5.3.4
+- Return SERVFAIL for responses with invalid DNSSEC signatures (Bogus)
+- Set the Authenticated Data (AD) flag only after successful validation
+- Add Extended DNS Error (EDE) codes per RFC 8914 when validation fails
+
+Independently of this setting, Denyzer normalizes every response against the DNSSEC-related bits of the query it answers, because the client's DO bit is not necessarily the one used towards the upstream:
+
+- The DNSSEC records (RRSIG, DNSKEY, DS, NSEC, NSEC3) are stripped from the response of a client that did not set the DO bit, unless that client explicitly queried for one of those types or sent an ANY query (RFC 4035 §3.2.1, RFC 3225 §3). Validation is unaffected: the DO bit is still set towards the upstream
+- The DO bit of the query is copied into the response (RFC 3225 §3)
+- The AD flag is only reported to clients that asked for the validation result by setting the DO or AD bit (RFC 6840 §5.8)
+
+### RFC Compliance
+
+Denyzer's DNSSEC implementation complies with the following RFCs:
+
+- **RFC 4033/4034/4035** (DNSSEC core specifications): Fully implemented
+- **RFC 5155** (NSEC3): Implemented with configurable iteration limits
+- **RFC 6840** (DNSSEC clarifications): Implemented including algorithm downgrade protection
+- **RFC 8624** (Algorithm implementation requirements): Supports recommended algorithms
+- **RFC 8914** (Extended DNS Errors): Provides detailed error information
+
+### Security Benefits
+
+DNSSEC validation protects against:
+
+- **Cache poisoning attacks**: Prevents attackers from injecting false DNS records into the cache
+- **Man-in-the-middle attacks**: Ensures DNS responses haven't been tampered with in transit
+- **DNS spoofing**: Verifies that DNS responses come from authoritative sources
+- **Forged denial-of-existence**: Validates that NXDOMAIN responses are authentic
+
+### Configuration Parameters
+
+| Parameter                 | Type          | Mandatory | Default value | Description                                                                                       |
+| ------------------------- | ------------- | --------- | ------------- | ------------------------------------------------------------------------------------------------- |
+| dnssec.validate           | bool          | no        | false         | Enable DNSSEC validation                                                                          |
+| dnssec.maxChainDepth      | uint          | no        | 10            | Maximum domain label depth for chain of trust validation (DoS protection)                         |
+| dnssec.cacheExpirationHours | uint        | no        | 1             | How long to cache validation results in hours                                                     |
+| dnssec.maxUpstreamQueries | uint          | no        | 30            | Maximum upstream DNS queries per validation request (DoS protection)                              |
+| dnssec.maxNSEC3Iterations | uint          | no        | 150           | Maximum NSEC3 hash iterations allowed (DoS protection, per RFC 5155 §10.3)                        |
+| dnssec.clockSkewToleranceSec | uint       | no        | 3600          | Clock skew tolerance in seconds for signature validation (per RFC 6781 §4.1.2)                    |
+| dnssec.trustAnchors       | string array  | no        | []            | Custom trust anchors (DNSKEY or DS records). Empty array uses built-in root trust anchors         |
+
+### DoS Protection
+
+DNSSEC validation can be computationally expensive and requires additional DNS queries. Denyzer includes several protections against DoS attacks:
+
+- **maxChainDepth**: Limits validation depth for deeply nested domains (e.g., prevents validation of `a.b.c.d.e.f.g.h.i.j.example.com`)
+- **maxUpstreamQueries**: Limits the number of upstream queries (DNSKEY/DS lookups) per validation to prevent query amplification
+- **maxNSEC3Iterations**: Limits NSEC3 hash iterations to prevent CPU exhaustion attacks
+- **Validation caching**: Caches validation results to avoid repeated expensive validations
+
+### Clock Skew Tolerance
+
+DNSSEC signatures have inception and expiration timestamps. Denyzer validates that the current time falls within this validity window. However, in real-world deployments, system clocks may not be perfectly synchronized, which can cause valid signatures to be rejected.
+
+The `clockSkewToleranceSec` parameter (default: 3600 seconds = 1 hour) allows validation to succeed even if the system clock is off by the specified amount. This matches the behavior of industry-standard validators like Unbound and BIND.
+
+**Common scenarios where clock skew tolerance is important:**
+
+- **Virtual machines**: Clock drift after suspend/resume or snapshot restore operations
+- **Containers**: Clock synchronization issues with the host system
+- **IoT/embedded devices**: Systems without NTP or with battery-backed RTCs that lose time
+- **Systems during NTP sync**: Time adjustment in progress when DNSSEC validation is needed
+- **Raspberry Pi and similar SBCs**: Devices that lose time on power loss
+
+**Recommended values:**
+
+- **300 seconds (5 minutes)**: Conservative setting, handles typical NTP drift
+- **3600 seconds (1 hour)**: Default, handles timezone/DST issues and matches Unbound/BIND
+- **7200 seconds (2 hours)**: Lenient setting for systems with significant clock problems
+
+!!! warning "Security vs. Robustness Tradeoff"
+    Larger clock skew tolerance values increase the risk of accepting signatures that are actually expired or not yet valid. Smaller values increase the risk of false negatives from clock drift. For production deployments, ensure NTP or systemd-timesyncd is properly configured and use the default 1-hour tolerance.
+
+### Validation Results
+
+Denyzer classifies DNSSEC validation results into four categories:
+
+| Result          | Description                                                          | Response Handling                        |
+| --------------- | -------------------------------------------------------------------- | ---------------------------------------- |
+| **Secure**      | Valid DNSSEC signatures and complete chain of trust                  | AD flag set, response returned           |
+| **Insecure**    | Domain is not signed with DNSSEC (no RRSIG records)                  | AD flag cleared, response returned       |
+| **Bogus**       | Invalid DNSSEC signatures or broken chain of trust                   | SERVFAIL returned with EDE code `6 (DNSSEC Bogus)`, response type `BOGUS` |
+| **Indeterminate** | Validation could not be completed (e.g., network errors, budget exceeded) | AD flag cleared, response returned |
+
+A `BOGUS` result means denyzer could not obtain a trustworthy answer, so it counts as an **error**
+in the [statistics](#statistics) — not as a block. A domain whose operator has misconfigured DNSSEC
+is not something denyzer blocked, and never appears in `topBlockedDomains`.
+
+!!! note "Upgrading"
+
+    Validation failures previously used the `BLOCKED` response type, which counted them as blocks
+    and reported them to clients as Extended DNS Error `15 (Blocked)` instead of `6 (DNSSEC
+    Bogus)`. Query log rows written before the upgrade keep the old value, so a dashboard grouping
+    by response type shows `BLOCKED` and `BOGUS` side by side for the retention period.
+
+### Trust Anchors
+
+By default, Denyzer uses the latest IANA root trust anchors (KSK-2017 and KSK-2024) for DNSSEC validation. These are the same trust anchors used by major DNS resolvers and are embedded in the Denyzer binary.
+
+#### Custom Trust Anchors
+
+You can override the default trust anchors for:
+
+- Testing DNSSEC in lab environments
+- Validating private/internal DNSSEC-signed zones
+- Using specific trust anchors for organizational requirements
+
+Trust anchors can be specified in two formats:
+
+1. **DNSKEY format**: Full DNSKEY record in zone file format
+2. **DS format**: DS record pointing to a DNSKEY in the child zone
+
+!!! warning
+    Specifying custom trust anchors **replaces** the default root trust anchors. If you need to validate both public domains and private zones, you must include both the root trust anchors and your custom anchors.
+
+### Supported Algorithms
+
+Denyzer supports the following DNSSEC algorithms per RFC 8624:
+
+| Algorithm | ID | Status | Security Level |
+| --------- | -- | ------ | -------------- |
+| RSASHA1   | 5  | Deprecated (still supported) | Weak |
+| RSASHA256 | 8  | Recommended | Moderate |
+| RSASHA512 | 10 | Recommended | Moderate |
+| ECDSAP256SHA256 | 13 | Recommended | Strong |
+| ECDSAP384SHA384 | 14 | Recommended | Strong |
+| ED25519   | 15 | Recommended | Very Strong |
+| ED448     | 16 | Recommended | Strongest |
+
+Denyzer automatically selects the strongest available algorithm when multiple signatures are present, providing protection against algorithm downgrade attacks per RFC 6840 §5.11.
+
+### Performance Considerations
+
+DNSSEC validation adds overhead to DNS resolution:
+
+- **Additional queries**: Each validation may require 2-4 additional queries for DNSKEY and DS records
+- **Cryptographic operations**: Signature verification requires CPU time
+- **Caching helps significantly**: The validation cache reduces overhead for frequently queried domains
+
+Recommendations:
+
+- Start with `cacheExpirationHours: 1` and increase if validation overhead is acceptable
+- Consider disabling for high-volume recursive resolvers if performance is critical
+
+### Examples
+
+!!! example "Basic DNSSEC validation"
+
+    ```yaml
+    dnssec:
+      validate: true
+    ```
+
+    This enables DNSSEC validation with all default settings. Denyzer will validate all DNSSEC-signed domains using the built-in root trust anchors.
+
+!!! example "DNSSEC validation with custom DoS protection"
+
+    ```yaml
+    dnssec:
+      validate: true
+      maxChainDepth: 15
+      maxUpstreamQueries: 50
+      maxNSEC3Iterations: 100
+      cacheExpirationHours: 2
+    ```
+
+    This configuration increases the allowed chain depth and upstream queries for complex delegation scenarios, while reducing NSEC3 iterations for better DoS protection and doubling the cache duration.
+
+!!! example "DNSSEC validation with clock skew tolerance for embedded systems"
+
+    ```yaml
+    dnssec:
+      validate: true
+      clockSkewToleranceSec: 7200  # 2 hours tolerance for systems with clock drift
+    ```
+
+    This configuration is suitable for embedded devices, Raspberry Pi, or systems without reliable NTP. The 2-hour tolerance allows validation to succeed even with significant clock drift, while still providing DNSSEC security.
+
+!!! example "DNSSEC validation with custom trust anchor for private zone"
+
+    ```yaml
+    dnssec:
+      validate: true
+      trustAnchors:
+        # Root KSK-2024 (required for public domains)
+        - ". 172800 IN DNSKEY 257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3..."
+        # Custom DNSKEY for internal zone
+        - "corp.internal. 86400 IN DNSKEY 257 3 13 mdsswUyr3DPW132mOi8V9xESWE8jTo0dxCjjnopKl+GqJxpVXckHAeF..."
+    ```
+
+    This configuration validates both public internet domains (using the root trust anchor) and a private `corp.internal` zone using a custom trust anchor.
+
+!!! example "Testing DNSSEC validation"
+
+    ```yaml
+    dnssec:
+      validate: true
+    log:
+      level: debug
+    ```
+
+    Enable debug logging to see detailed DNSSEC validation information for troubleshooting.
+
+### Troubleshooting
+
+**Problem**: All DNSSEC-signed domains return SERVFAIL
+
+- Check that your upstream DNS servers support DNSSEC and return DNSSEC records
+- Verify the DO bit is being set on upstream queries (check logs with `log.level: debug`)
+- Ensure your upstream servers are not stripping DNSSEC records
+
+**Problem**: Specific domain fails DNSSEC validation
+
+- Check if the domain's DNSSEC is properly configured using online validators like [DNSViz](https://dnsviz.net/) or [Verisign DNSSEC Debugger](https://dnssec-debugger.verisignlabs.com/)
+- Enable debug logging to see detailed validation failure reasons
+- Check for expired RRSIG records or missing DNSKEY records
+
+**Problem**: High CPU usage after enabling DNSSEC
+
+- Increase `cacheExpirationHours` to reduce validation frequency
+- Lower `maxNSEC3Iterations` if validating many NSEC3-signed zones
+- Consider disabling DNSSEC validation for internal-only resolvers
+
+**Problem**: Validation fails with "budget exhausted"
+
+- Increase `maxUpstreamQueries` for domains with complex delegation chains
+- Check if upstream servers are slow to respond (may require multiple retries)
+- Increase `maxChainDepth` for deeply nested subdomains
+
+**Problem**: Signatures rejected as "expired" or "not yet valid" despite being valid
+
+- Check your system clock is synchronized with NTP (`timedatectl status` on Linux)
+- Increase `clockSkewToleranceSec` if your system has known clock drift issues (VMs, containers, embedded devices)
+- Verify RRSIG inception/expiration times are reasonable using online validators
+- For systems without NTP, consider using a larger tolerance (e.g., 7200 seconds = 2 hours)
+
+## DNS64
+
+DNS64 (RFC 6147) enables IPv6-only clients to access IPv4-only services by synthesizing AAAA (IPv6) records from A (IPv4) records. This technology is critical for IPv6-only networks such as cellular networks, IoT deployments, modern datacenters, and enterprise networks transitioning to IPv6.
+
+### Overview
+
+When DNS64 is enabled, Denyzer will:
+
+- Intercept AAAA queries and check if native IPv6 records exist
+- If no native AAAA records are found, query for A records
+- Synthesize AAAA records by embedding IPv4 addresses into configured IPv6 prefixes
+- Return synthesized AAAA records with proper TTL and DNSSEC handling
+- Preserve CNAME/DNAME chains in synthesized responses
+- Skip synthesis if AAAA records already exist (unless they're in the exclusion set)
+
+!!! warning "NAT64 Required"
+    DNS64 **requires** a NAT64 gateway in your network. DNS64 alone won't enable IPv6-only clients to reach IPv4 destinations.
+    The DNS64 prefix must match your NAT64 gateway's configuration.
+
+### RFC Compliance
+
+Denyzer's DNS64 implementation complies with:
+
+- **RFC 6147** (DNS64 specification): Non-validating mode implementation
+- **RFC 6052** (IPv4-to-IPv6 address embedding): All six prefix lengths supported (/32, /40, /48, /56, /64, /96)
+- **RFC 8914** (Extended DNS Errors): Synthesized responses include EDE code 4 (Forged Answer)
+
+### Configuration Parameters
+
+| Parameter          | Type           | Mandatory | Default value                                        | Description                                                                                           |
+| ------------------ | -------------- | --------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| dns64.enable       | bool           | no        | false                                                | Enable DNS64 synthesis                                                                                |
+| dns64.prefixes     | array of CIDR  | no        | [64:ff9b::/96]                                       | IPv6 prefixes for synthesis. Valid lengths: /32, /40, /48, /56, /64, /96 (per RFC 6052)              |
+| dns64.exclusionSet | array of CIDR  | no        | [::ffff:0:0/96, ::1/128, fe80::/10] + prefixes      | Custom exclusion set. Advanced use only - overrides default exclusion behavior              |
+
+### DNS64 Prefixes
+
+DNS64 uses IPv6 prefixes to embed IPv4 addresses. RFC 6052 defines six valid prefix lengths, each with different bit layouts:
+
+| Prefix Length | Bits Used | IPv4 Position | Example Prefix     | Example Synthesis                              |
+| ------------- | --------- | ------------- | ------------------ | ---------------------------------------------- |
+| /96           | 96        | bits 96-127   | `64:ff9b::/96`     | `192.0.2.1` → `64:ff9b::192.0.2.1`             |
+| /64           | 64        | bits 72-103   | `2001:db8::/64`    | `192.0.2.1` → `2001:db8::c000:201`             |
+| /56           | 56        | bits 56-63, 72-95 | `2001:db8::/56` | `192.0.2.1` → `2001:db8:c0:0:201::`            |
+| /48           | 48        | bits 48-63, 72-87 | `2001:db8::/48` | `192.0.2.1` → `2001:db8:0:c000:2:100::`        |
+| /40           | 40        | bits 40-63, 72-79 | `2001:db8::/40` | `192.0.2.1` → `2001:db8:c0:2:1::`              |
+| /32           | 32        | bits 32-63    | `2001:db8::/32`    | `192.0.2.1` → `2001:db8:c000:201::`            |
+
+**Well-known prefix (default)**: `64:ff9b::/96` is the RFC 6052 well-known prefix, recommended for most deployments.
+
+**Multiple prefixes**: You can configure multiple prefixes for load balancing across multiple NAT64 gateways. DNS64 will synthesize one AAAA record per prefix per A record.
+
+!!! warning "Prefix Overlap Validation"
+    Denyzer validates that configured prefixes do not overlap. Overlapping prefixes will cause startup failure.
+
+### Exclusion Set
+
+DNS64 will **not** synthesize AAAA records if the response already contains AAAA records that are **not** in the exclusion set. This prevents synthesizing for domains that already have native IPv6 support.
+
+#### Default Exclusion Set (Recommended)
+
+If `dns64.exclusionSet` is not configured, Denyzer uses the default exclusion set:
+
+- **IPv4-mapped IPv6 addresses** (`::ffff:0:0/96`) - RFC 6147 requirement
+- **Loopback address** (`::1/128`) - RFC 6147 recommendation
+- **Link-local addresses** (`fe80::/10`) - RFC 6147 recommendation
+- **Unspecified address** (`::/128`) - Special case
+- **Configured DNS64 prefixes** - Automatically added to prevent synthesis loops
+
+**Example**: If a domain returns AAAA record `2001:db8::1` (not in exclusion set), DNS64 will **not** synthesize. If a domain returns only `::1` (in exclusion set), DNS64 **will** synthesize from A records.
+
+#### Custom Exclusion Set (Advanced)
+
+!!! warning "Advanced Configuration"
+    Configuring a custom exclusion set is an **advanced feature** and should only be used if you understand DNS64 synthesis behavior. Most users should use the default exclusion set.
+
+You can configure a custom exclusion set using the `dns64.exclusionSet` parameter:
+
+!!! example
+    ```yaml
+    dns64:
+      enable: true
+      prefixes:
+        - 64:ff9b::/96
+      exclusionSet:
+        - ::ffff:0:0/96  # IPv4-mapped (REQUIRED by RFC)
+        - ::1/128        # Loopback (recommended)
+        - fe80::/10      # Link-local (recommended)
+        - 64:ff9b::/96   # Your configured prefix (recommended to prevent loops)
+        - 2001:db8::/32  # Custom exclusion range
+    ```
+
+!!! danger "Important: No Automatic Prefix Addition"
+    When using a custom exclusion set, **configured DNS64 prefixes are NOT automatically added**. You must explicitly include your configured prefixes in the exclusion set to prevent synthesis loops.
+
+    **Bad configuration** (will cause synthesis loops):
+    ```yaml
+    dns64:
+      prefixes:
+        - 64:ff9b::/96
+      exclusionSet:
+        - ::ffff:0:0/96  # Missing configured prefix!
+    ```
+
+    **Good configuration**:
+    ```yaml
+    dns64:
+      prefixes:
+        - 64:ff9b::/96
+      exclusionSet:
+        - ::ffff:0:0/96
+        - 64:ff9b::/96   # Includes configured prefix
+    ```
+
+### DNSSEC Handling (Non-Validating Mode)
+
+DNS64 operates in **non-validating mode** and handles DNSSEC as follows:
+
+- **DO bit**: Copied from original AAAA query to A query (preserves client's DNSSEC request)
+- **CD bit**: Copied from original AAAA query to A query (preserves checking-disabled flag)
+- **AD bit**: Always **cleared** in synthesized responses (synthesis breaks authentication)
+- **Extended DNS Error**: Synthesized responses include EDE code 4 (Forged Answer)
+
+!!! info "Future: DNSSEC-Aware DNS64"
+    Future enhancement may implement RFC 6147 Section 3 (DNSSEC-aware operation), where DNS64 can validate DNSSEC signatures and set the AD bit appropriately for synthesized responses. The current non-validating mode is suitable for most deployments.
+
+### Performance Considerations
+
+DNS64 adds overhead to DNS resolution:
+
+- **Additional A query**: Every AAAA query that requires synthesis triggers an additional A query
+- **Caching is critical**: Enable caching to minimize upstream query load
+- **Cache hit rate**: With caching, most AAAA queries hit the cache and avoid synthesis overhead
+
+!!! warning "Enable Caching for DNS64"
+    DNS64 without caching will **double** upstream query load (one AAAA + one A per query). Denyzer will log a warning if DNS64 is enabled without caching.
+
+## Healthcheck
+
+Denyzer responds to a dedicated `healthcheck.denyzer` DNS query that is
+designed for container liveness probes. The handler is registered on
+the DNS listeners created by Denyzer (UDP, TCP, DoT) and responds to any
+query type with `NOERROR` and an empty answer section. It does **not**
+go through the resolver chain, so it stays cheap and is unaffected by
+upstream health.
+
+!!! example
+
+    ```sh
+    dig @<denyzer-host> -p <dns-port> healthcheck.denyzer A +short
+    ```
+
+    Returns no answer records but `status: NOERROR` — probes should
+    test for `status: NOERROR`, not for any record content.
+
+!!! tip "Docker / Kubernetes liveness probe"
+
+    A liveness probe should treat a `NOERROR` response as healthy.
+    The image ships no `dig`, so use the built-in `healthcheck` command
+    instead of shelling out to a DNS client.
+    Example for Docker Compose:
+
+    ```yaml
+    healthcheck:
+      test: ["CMD", "/app/denyzer", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    ```
+
+    The same command works as a Kubernetes liveness probe:
+
+    ```yaml
+    livenessProbe:
+      exec:
+        command: ["/app/denyzer", "healthcheck"]
+      initialDelaySeconds: 10
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 3
+    ```
+
+## SSL certificate configuration (DoH / TLS listener)
+
+See [Wiki - Configuration of HTTPS](https://github.com/mia0x75/denyzer/wiki/Configuration-of-HTTPS-for-DoH-and-Rest-API)
+for detailed information, how to create and configure SSL certificates.
+
+DoH url: `https://host:port/dns-query`
+
+## Sources
+
+Sources are a concept shared by the blocking and hosts file resolvers. They represent where to load the files for each resolver.
+
+The supported source types are:
+
+- HTTP(S) URL (any source starting with `http`)
+- inline configuration (any source containing a newline)
+- local file path (any source not matching the above rules)
+
+!!! note
+
+    The format/content of the sources depends on the context: lists and hosts files have different, but overlapping, supported formats.
+
+!!! example
+
+    ```yaml
+    - https://example.com/a/source # denyzer will download and parse the file
+    - /a/file/path # denyzer will read the local file
+    - | # denyzer will parse the content of this multi-line string
+      # inline configuration
+    ```
+
+### Sources Loading
+
+This sections covers `loading` configuration that applies to both the blocking and hosts file resolvers.
+These settings apply only to the resolver under which they are nested.
+
+!!! example
+
+    ```yaml
+    blocking:
+      loading:
+        # only applies to allow/denylists
+
+    hostsFile:
+      loading:
+        # only applies to hostsFile sources
+    ```
+
+#### Refresh / Reload
+
+To keep source contents up-to-date, denyzer can periodically refresh and reparse them. Default period is
+**4 hours**. You can configure this by setting the `refreshPeriod` parameter to a value in **duration format**.
+A value of zero or less will disable this feature.
+
+!!! example
+
+    ```yaml
+    loading:
+      refreshPeriod: 1h
+    ```
+
+    Refresh every hour.
+
+### Downloads
+
+Configures how HTTP(S) sources are downloaded:
+
+| Parameter    | Type     | Mandatory | Default value | Description                                    |
+| ------------ | -------- | --------- | ------------- | ---------------------------------------------- |
+| timeout      | duration | no        | 5s            | Download attempt timeout                       |
+| writeTimeout | duration | no        | 20s           | File write attempt timeout                     |
+| readTimeout  | duration | no        | 20s           | Download request read timeout                  |
+| readHeaderTimeout | duration | no        | 20s           | Download request header read timeout           |
+| attempts     | int      | no        | 3             | How many download attempts should be performed |
+| cooldown     | duration | no        | 500ms         | Time between the download attempts             |
+| cachePath    | path     | no        | (empty)       | Directory for an on-disk cache of downloaded sources (see below) |
+
+`cachePath` (default: empty): directory for an on-disk cache of downloaded sources. When set, denyzer sends HTTP
+conditional requests (`If-None-Match` / `If-Modified-Since`) and skips re-downloading unchanged lists, serves a source
+from disk when its host is temporarily unreachable, and — with `loading.strategy: fast` — seeds lists from disk on
+startup so it can answer queries immediately. Validators are kept in memory and reset on restart, so the first refresh
+after a restart re-downloads each source. When unset, downloads are fully stateless (nothing is written to disk).
+Mount this directory on a persistent volume in containerized setups.
+Note: when you remove or change a source URL, its previous cache file is left on disk — denyzer does not delete orphaned cache files automatically. They are harmless and bounded; clear the cache directory manually if you want to reclaim the space.
+
+!!! warning "The directory must be writable by denyzer"
+
+    If denyzer cannot write to `cachePath`, it logs
+    `cannot create temp cache file in <path>, serving without caching` and keeps
+    resolving normally — only the on-disk cache is disabled, so this degrades
+    performance rather than breaking DNS.
+
+    In Docker, denyzer runs as **UID 100**. Use the pre-created `/app/cache` directory
+    with a named volume, or make your own path writable by UID 100. See
+    [writable mounts and file permissions](installation.md#run-denyzer).
+
+!!! example
+
+    ```yaml
+    loading:
+      downloads:
+        timeout: 4m
+        attempts: 5
+        cooldown: 10s
+        cachePath: /var/cache/denyzer/lists
+    ```
+
+    In a container, prefer the pre-created cache directory and mount a named volume
+    over it (`-v denyzer_cache:/app/cache`):
+
+    ```yaml
+    loading:
+      downloads:
+        cachePath: /app/cache
+    ```
+
+### Strategy
+
+See [Init Strategy](#init-strategy).
+In this context, "init" is loading and parsing each source, and an error is a single source failing to load/parse.
+
+!!! example
+
+    ```yaml
+    loading:
+      strategy: failOnError
+    ```
+
+### Max Errors per Source
+
+Number of errors allowed when parsing a source before it is considered invalid and parsing stops.
+A value of -1 disables the limit.
+
+!!! example
+
+    ```yaml
+    loading:
+      maxErrorsPerSource: 10
+    ```
+
+### Concurrency
+
+Denyzer downloads and processes sources concurrently. This allows limiting how many can be processed in the same time.
+Larger values can reduce the overall list refresh time at the cost of using more RAM. Please consider reducing this value on systems with limited memory.
+Default value is 4.
+
+!!! example
+
+    ```yaml
+    loading:
+      concurrency: 10
+    ```
+
+!!! note
+
+    As with other settings under `loading`, the limit applies to the blocking and hosts file resolvers separately.
+    The total number of concurrent sources concurrently processed can reach the sum of both values.
+    For example if blocking has a limit set to 8 and hosts file's is 4, there could be up to 12 concurrent jobs.

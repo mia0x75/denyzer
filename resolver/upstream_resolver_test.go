@@ -1,0 +1,1380 @@
+package resolver
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/mia0x75/denyzer/config"
+	. "github.com/mia0x75/denyzer/helpertest"
+	"github.com/mia0x75/denyzer/log"
+	. "github.com/mia0x75/denyzer/model"
+	"github.com/mia0x75/denyzer/util"
+	"github.com/miekg/dns"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+// dohTestURL is the upstream URL for DoH specs that answer at the transport
+// layer, where nothing ever dials it.
+const dohTestURL = "https://example.com/dns-query"
+
+// replyWithRR builds a reply to req whose answer section holds the single given record.
+func replyWithRR(req *dns.Msg, rr string) *dns.Msg {
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+
+	parsed, err := dns.NewRR(rr)
+	Expect(err).Should(Succeed())
+	resp.Answer = []dns.RR{parsed}
+
+	return resp
+}
+
+var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
+	var (
+		sut       *UpstreamResolver
+		sutConfig upstreamConfig
+
+		ctx      context.Context
+		cancelFn context.CancelFunc
+	)
+
+	BeforeEach(func() {
+		ctx, cancelFn = context.WithCancel(context.Background())
+		DeferCleanup(cancelFn)
+
+		sutConfig = newUpstreamConfig(config.Upstream{Host: "localhost"}, defaultUpstreamsConfig)
+	})
+
+	JustBeforeEach(func() {
+		sut = newUpstreamResolverUnchecked(sutConfig, systemResolverBootstrap)
+	})
+
+	Describe("Type", func() {
+		It("follows conventions", func() {
+			expectValidResolverType(sut)
+		})
+	})
+
+	Describe("IsEnabled", func() {
+		It("is true", func() {
+			Expect(sut.IsEnabled()).Should(BeTrue())
+		})
+	})
+
+	Describe("LogConfig", func() {
+		It("should log something", func() {
+			logger, hook := log.NewMockEntry()
+
+			sut.LogConfig(logger)
+
+			Expect(hook.Calls).ShouldNot(BeEmpty())
+		})
+
+		When("certificate pinning is configured", func() {
+			It("logs the number of pinned hashes", func() {
+				logger, hook := log.NewMockEntry()
+
+				cfg := newUpstreamConfig(config.Upstream{
+					Net: config.NetProtocolTcpTls, Host: "localhost",
+					CertificateFingerprints: []config.CertificateFingerprint{make([]byte, sha256.Size)},
+				}, defaultUpstreamsConfig)
+
+				cfg.LogConfig(logger)
+
+				Expect(hook.Calls).ShouldNot(BeEmpty())
+			})
+		})
+	})
+
+	Describe("Using DNS upstream", func() {
+		When("Configured DNS resolver can resolve query", func() {
+			It("should return answer from DNS upstream", func() {
+				mockUpstream := NewMockUDPUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(
+						SatisfyAll(
+							BeDNSRecord("example.com.", A, "123.124.122.122"),
+							HaveResponseType(ResponseTypeRESOLVED),
+							HaveReturnCode(dns.RcodeSuccess),
+							HaveTTL(BeNumerically("==", 123)),
+							HaveReason(fmt.Sprintf("RESOLVED (%s)", sutConfig.Upstream))),
+					)
+			})
+		})
+		When("Configured DNS resolver can't resolve query", func() {
+			It("should return response code from DNS upstream", func() {
+				mockUpstream := NewMockUDPUpstreamServer().WithAnswerError(dns.RcodeNameError)
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(
+						SatisfyAll(
+							HaveNoAnswer(),
+							HaveResponseType(ResponseTypeRESOLVED),
+							HaveReturnCode(dns.RcodeNameError),
+							HaveReason(fmt.Sprintf("RESOLVED (%s)", sutConfig.Upstream))),
+					)
+			})
+		})
+		When("Configured DNS resolver fails", func() {
+			It("should return error", func() {
+				mockUpstream := NewMockUDPUpstreamServer().WithAnswerFn(func(request *dns.Msg) (response *dns.Msg) {
+					return nil
+				})
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+			})
+		})
+		When("Configured DNS resolver returns ServFail", func() {
+			It("should return error", func() {
+				mockUpstream := NewMockUDPUpstreamServer().WithAnswerError(dns.RcodeServerFailure)
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+
+				var servErr *UpstreamServerError
+				Expect(errors.As(err, &servErr)).Should(BeTrue())
+			})
+		})
+		When("Timeout occurs", func() {
+			var counter atomic.Int32
+			var attemptsWithTimeout atomic.Int32
+			BeforeEach(func() {
+				resolveFn := func(request *dns.Msg) *dns.Msg {
+					// timeout on first x attempts
+					if counter.Add(1) <= attemptsWithTimeout.Load() {
+						time.Sleep(2 * timeout)
+					}
+
+					response, err := util.NewMsgWithAnswer("example.com", 123, A, "123.124.122.122")
+					Expect(err).Should(Succeed())
+
+					return response
+				}
+
+				mockUpstream := NewMockUDPUpstreamServer().WithAnswerFn(resolveFn)
+
+				sutConfig.Upstream = mockUpstream.Start()
+			})
+
+			It("should perform a retry with 3 attempts", func() {
+				By("2 attempts with timeout -> should resolve with third attempt", func() {
+					counter.Store(0)
+					attemptsWithTimeout.Store(2)
+
+					Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+						Should(
+							SatisfyAll(
+								BeDNSRecord("example.com.", A, "123.124.122.122"),
+								HaveResponseType(ResponseTypeRESOLVED),
+								HaveReturnCode(dns.RcodeSuccess),
+								HaveTTL(BeNumerically("==", 123)),
+							))
+				})
+
+				By("3 attempts with timeout -> should return error", func() {
+					counter.Store(0)
+					attemptsWithTimeout.Store(3)
+					_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+					Expect(err).Should(HaveOccurred())
+					Expect(err.Error()).Should(ContainSubstring("i/o timeout"))
+				})
+			})
+		})
+
+		When("user request is TCP", func() {
+			When("TCP upstream connection fails", func() {
+				BeforeEach(func() {
+					mockUpstream := NewMockUDPUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+
+					sutConfig.Upstream = mockUpstream.Start()
+				})
+
+				It("should also try with UDP", func() {
+					req := newRequest("example.com.", A)
+					req.Protocol = RequestProtocolTCP
+
+					Expect(sut.Resolve(ctx, req)).
+						Should(
+							SatisfyAll(
+								BeDNSRecord("example.com.", A, "123.124.122.122"),
+								HaveResponseType(ResponseTypeRESOLVED),
+								HaveReturnCode(dns.RcodeSuccess),
+								HaveTTL(BeNumerically("==", 123)),
+							))
+				})
+			})
+		})
+	})
+
+	Describe("Plain DNS UDP-first with TCP fallback", func() {
+		// The suite-wide upstream timeout is tiny (50ms). These specs add small handler delays to
+		// make the UDP-vs-TCP ordering deterministic, so raise the timeout comfortably above them.
+		const handlerDelay = 30 * time.Millisecond
+
+		BeforeEach(func() {
+			sutConfig.Timeout = config.Duration(time.Second)
+		})
+
+		When("the UDP answer is clean (not truncated, question matches)", func() {
+			It("returns the UDP answer and never dials TCP", func() {
+				mockUpstream := newMockTCPUDPUpstreamServer(
+					func(req *dns.Msg) *dns.Msg {
+						// Delay UDP so a speculative TCP race (the old behavior) would win if started.
+						time.Sleep(handlerDelay)
+
+						return replyWithRR(req, "example.com. 123 IN A 1.2.3.4")
+					},
+					func(req *dns.Msg) *dns.Msg {
+						return replyWithRR(req, "example.com. 123 IN A 5.6.7.8")
+					},
+				)
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(BeDNSRecord("example.com.", A, "1.2.3.4"))
+
+				Expect(mockUpstream.UDPCallCount()).Should(Equal(1))
+				Expect(mockUpstream.TCPCallCount()).Should(Equal(0))
+			})
+		})
+
+		When("the UDP answer is truncated", func() {
+			It("falls back to TCP and returns the TCP answer", func() {
+				mockUpstream := newMockTCPUDPUpstreamServer(
+					func(req *dns.Msg) *dns.Msg {
+						resp := new(dns.Msg)
+						resp.SetReply(req)
+						resp.Truncated = true
+
+						return resp
+					},
+					func(req *dns.Msg) *dns.Msg {
+						return replyWithRR(req, "example.com. 123 IN A 5.6.7.8")
+					},
+				)
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(BeDNSRecord("example.com.", A, "5.6.7.8"))
+
+				Expect(mockUpstream.UDPCallCount()).Should(Equal(1))
+				Expect(mockUpstream.TCPCallCount()).Should(Equal(1))
+			})
+		})
+
+		When("the UDP handler simulates a broken upstream (returns nil)", func() {
+			It("falls back to TCP and returns the TCP answer", func() {
+				mockUpstream := newMockTCPUDPUpstreamServer(
+					func(req *dns.Msg) *dns.Msg {
+						return nil // the mock answers with garbage the client can't parse
+					},
+					func(req *dns.Msg) *dns.Msg {
+						return replyWithRR(req, "example.com. 123 IN A 5.6.7.8")
+					},
+				)
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(BeDNSRecord("example.com.", A, "5.6.7.8"))
+
+				Expect(mockUpstream.UDPCallCount()).Should(Equal(1))
+				Expect(mockUpstream.TCPCallCount()).Should(Equal(1))
+			})
+		})
+
+		When("UDP is unreachable but TCP works", func() {
+			It("falls back to TCP and returns the TCP answer", func() {
+				mockUpstream := newMockTCPUDPUpstreamServer(
+					nil, // UDP queries are refused, the handler is never reached
+					func(req *dns.Msg) *dns.Msg {
+						return replyWithRR(req, "example.com. 123 IN A 5.6.7.8")
+					},
+				)
+
+				sutConfig.Upstream = mockUpstream.StartTCPOnly()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(BeDNSRecord("example.com.", A, "5.6.7.8"))
+
+				Expect(mockUpstream.TCPCallCount()).Should(Equal(1))
+			})
+		})
+
+		When("the UDP answer's question section doesn't match the request", func() {
+			It("treats it as unusable and falls back to TCP", func() {
+				mockUpstream := newMockTCPUDPUpstreamServer(
+					func(req *dns.Msg) *dns.Msg {
+						resp := new(dns.Msg)
+						resp.SetReply(req)
+						// A mismatched question section — some buggy/limited upstreams do this over UDP.
+						resp.Question = []dns.Question{{
+							Name: "wrong.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET,
+						}}
+
+						parsed, err := dns.NewRR("wrong.example. 123 IN A 1.2.3.4")
+						Expect(err).Should(Succeed())
+						resp.Answer = []dns.RR{parsed}
+
+						return resp
+					},
+					func(req *dns.Msg) *dns.Msg {
+						// Delay TCP so the (old) racing UDP answer would win and be returned if it could.
+						time.Sleep(handlerDelay)
+
+						return replyWithRR(req, "example.com. 123 IN A 5.6.7.8")
+					},
+				)
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(BeDNSRecord("example.com.", A, "5.6.7.8"))
+
+				Expect(mockUpstream.TCPCallCount()).Should(Equal(1))
+			})
+		})
+
+		When("the UDP answer's question section doesn't match and TCP is unreachable", func() {
+			It("returns an error instead of the mismatched answer", func() {
+				mockUpstream := newMockTCPUDPUpstreamServer(
+					func(req *dns.Msg) *dns.Msg {
+						resp := new(dns.Msg)
+						resp.SetReply(req)
+						resp.Question = []dns.Question{{
+							Name: "wrong.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET,
+						}}
+
+						parsed, err := dns.NewRR("wrong.example. 123 IN A 1.2.3.4")
+						Expect(err).Should(Succeed())
+						resp.Answer = []dns.RR{parsed}
+
+						return resp
+					},
+					nil, // TCP connections are refused, the handler is never reached
+				)
+
+				sutConfig.Upstream = mockUpstream.StartUDPOnly()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+			})
+		})
+	})
+
+	Describe("EDNS0 UDP buffer floor for upstream queries", func() {
+		When("the client did not request EDNS0", func() {
+			It("advertises the buffer floor upstream but returns no OPT to the client", func() {
+				var advertised atomic.Int32
+
+				mockUpstream := newMockTCPUDPUpstreamServer(
+					func(req *dns.Msg) *dns.Msg {
+						if opt := req.IsEdns0(); opt != nil {
+							advertised.Store(int32(opt.UDPSize()))
+						}
+
+						resp := replyWithRR(req, "example.com. 123 IN A 1.2.3.4")
+						resp.SetEdns0(upstreamUDPBufferFloor, false) // a real upstream echoes EDNS0
+
+						return resp
+					},
+					func(req *dns.Msg) *dns.Msg {
+						return replyWithRR(req, "example.com. 123 IN A 5.6.7.8")
+					},
+				)
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				req := newRequest("example.com.", A)
+				Expect(req.Req.IsEdns0()).Should(BeNil())
+
+				resp, err := sut.Resolve(ctx, req)
+				Expect(err).Should(Succeed())
+				Expect(resp).Should(BeDNSRecord("example.com.", A, "1.2.3.4"))
+
+				Expect(advertised.Load()).Should(BeNumerically(">=", int32(upstreamUDPBufferFloor)))
+				Expect(resp.Res.IsEdns0()).Should(BeNil())
+			})
+		})
+
+		When("the client requests a larger EDNS0 buffer than the floor", func() {
+			It("does not lower it to the floor", func() {
+				const clientBuffer = 4096
+
+				var advertised atomic.Int32
+
+				mockUpstream := newMockTCPUDPUpstreamServer(
+					func(req *dns.Msg) *dns.Msg {
+						if opt := req.IsEdns0(); opt != nil {
+							advertised.Store(int32(opt.UDPSize()))
+						}
+
+						return replyWithRR(req, "example.com. 123 IN A 1.2.3.4")
+					},
+					func(req *dns.Msg) *dns.Msg {
+						return replyWithRR(req, "example.com. 123 IN A 5.6.7.8")
+					},
+				)
+
+				sutConfig.Upstream = mockUpstream.Start()
+				sut := newUpstreamResolverUnchecked(sutConfig, nil)
+
+				req := newRequest("example.com.", A)
+				req.Req.SetEdns0(clientBuffer, false)
+
+				Expect(sut.Resolve(ctx, req)).Should(BeDNSRecord("example.com.", A, "1.2.3.4"))
+				Expect(advertised.Load()).Should(Equal(int32(clientBuffer)))
+			})
+		})
+	})
+
+	Describe("Using DNS over HTTPS (DoH) upstream", func() {
+		var (
+			respFn           func(request *dns.Msg) (response *dns.Msg)
+			modifyHTTPRespFn func(w http.ResponseWriter)
+		)
+
+		BeforeEach(func() {
+			respFn = func(_ *dns.Msg) *dns.Msg {
+				response, err := util.NewMsgWithAnswer("example.com", 123, A, "123.124.122.122")
+
+				Expect(err).Should(Succeed())
+
+				return response
+			}
+		})
+
+		transport := func() *http.Transport {
+			upstreamClient := sut.upstreamClient.(*httpUpstreamClient)
+
+			return upstreamClient.client.Transport.(*http.Transport)
+		}
+
+		JustBeforeEach(func() {
+			sutConfig.Upstream = newTestDOHUpstream(respFn, modifyHTTPRespFn)
+			sut = newUpstreamResolverUnchecked(sutConfig, nil)
+
+			// use insecure certificates for test DoH upstream
+			transport().TLSClientConfig.InsecureSkipVerify = true
+		})
+
+		When("a proxy is configured", func() {
+			It("should use it", func() {
+				proxy := TestHTTPProxy()
+
+				transport().Proxy = proxy.ReqURL
+
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+
+				upstreamHostPort := net.JoinHostPort(sutConfig.Host, strconv.FormatUint(uint64(sutConfig.Port), 10))
+				Expect(proxy.RequestTarget()).Should(Equal(upstreamHostPort))
+			})
+		})
+		When("Configured DoH resolver can resolve query", func() {
+			It("should return answer from DNS upstream", func() {
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(
+						SatisfyAll(
+							BeDNSRecord("example.com.", A, "123.124.122.122"),
+							HaveResponseType(ResponseTypeRESOLVED),
+							HaveReturnCode(dns.RcodeSuccess),
+							HaveTTL(BeNumerically("==", 123)),
+							HaveReason(fmt.Sprintf("RESOLVED (%s)", sutConfig.Upstream)),
+						))
+			})
+		})
+		When("Configured DoH resolver returns wrong http status code", func() {
+			BeforeEach(func() {
+				modifyHTTPRespFn = func(w http.ResponseWriter) {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			})
+			It("should return error", func() {
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("http return code should be 200, but received 500"))
+			})
+		})
+		When("Configured DoH resolver returns wrong content type", func() {
+			BeforeEach(func() {
+				modifyHTTPRespFn = func(w http.ResponseWriter) {
+					w.Header().Set("Content-Type", "text")
+				}
+			})
+			It("should return error", func() {
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(
+					ContainSubstring("http return content type should be 'application/dns-message', but was 'text'"))
+			})
+		})
+		When("Configured DoH resolver returns a body larger than a DNS message", func() {
+			BeforeEach(func() {
+				modifyHTTPRespFn = func(w http.ResponseWriter) {
+					_, err := w.Write(make([]byte, dns.MaxMsgSize+1))
+					Expect(err).Should(Succeed())
+				}
+			})
+			It("should return error", func() {
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring(
+					fmt.Sprintf("response body is larger than %d bytes", dns.MaxMsgSize)))
+			})
+		})
+		When("Configured DoH resolver closes the connection mid-body", func() {
+			BeforeEach(func() {
+				modifyHTTPRespFn = func(w http.ResponseWriter) {
+					// declare more body bytes than the handler writes, so reading the body fails
+					w.Header().Set("Content-Length", "4096")
+				}
+			})
+			It("should return error", func() {
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("can't read response body"))
+			})
+		})
+		When("Configured DoH resolver returns wrong content", func() {
+			BeforeEach(func() {
+				modifyHTTPRespFn = func(w http.ResponseWriter) {
+					_, _ = w.Write([]byte("wrongcontent"))
+				}
+			})
+			It("should return error", func() {
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("can't unpack message"))
+			})
+		})
+		When("Configured DoH resolver does not respond", func() {
+			JustBeforeEach(func() {
+				sutConfig.Upstream = config.Upstream{
+					Net:  config.NetProtocolHttps,
+					Host: "wronghost.example.com",
+				}
+
+				sut = newUpstreamResolverUnchecked(sutConfig, systemResolverBootstrap)
+			})
+			It("should return error", func() {
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(Or(
+					ContainSubstring("no such host"),
+					ContainSubstring("i/o timeout"),
+					ContainSubstring("Temporary failure in name resolution")))
+			})
+		})
+	})
+
+	Describe("Using DNS over QUIC (DoQ) upstream", func() {
+		When("Configured DoQ resolver can resolve query", func() {
+			It("should return answer from DoQ upstream", func() {
+				mockUpstream := NewMockDoQUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+				upstream := mockUpstream.Start()
+
+				sutConfig.Upstream = upstream
+				sut = newUpstreamResolverUnchecked(sutConfig, nil)
+
+				// Override TLS config to skip certificate verification for test server
+				quicClient := sut.upstreamClient.(*quicUpstreamClient)
+				quicClient.tlsConfig.InsecureSkipVerify = true
+
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(
+						SatisfyAll(
+							BeDNSRecord("example.com.", A, "123.124.122.122"),
+							HaveResponseType(ResponseTypeRESOLVED),
+							HaveReturnCode(dns.RcodeSuccess),
+							HaveTTL(BeNumerically("==", 123)),
+						))
+			})
+		})
+
+		When("DoQ upstream returns error code", func() {
+			It("should return error response", func() {
+				mockUpstream := NewMockDoQUpstreamServer().WithAnswerError(dns.RcodeServerFailure)
+				upstream := mockUpstream.Start()
+
+				sutConfig.Upstream = upstream
+				sut = newUpstreamResolverUnchecked(sutConfig, nil)
+
+				quicClient := sut.upstreamClient.(*quicUpstreamClient)
+				quicClient.tlsConfig.InsecureSkipVerify = true
+
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(HaveReturnCode(dns.RcodeServerFailure))
+			})
+		})
+
+		When("DoQ upstream is not reachable", func() {
+			It("should return error", func() {
+				sutConfig.Upstream = config.Upstream{
+					Net:  config.NetProtocolQuic,
+					Host: "127.0.0.1",
+					Port: 1, // nothing listening here
+				}
+				sut = newUpstreamResolverUnchecked(sutConfig, systemResolverBootstrap)
+
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+			})
+		})
+
+		When("Multiple queries are sent", func() {
+			It("should reuse the QUIC connection", func() {
+				mockUpstream := NewMockDoQUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+				upstream := mockUpstream.Start()
+
+				sutConfig.Upstream = upstream
+				sut = newUpstreamResolverUnchecked(sutConfig, nil)
+
+				quicClient := sut.upstreamClient.(*quicUpstreamClient)
+				quicClient.tlsConfig.InsecureSkipVerify = true
+
+				for range 3 {
+					Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+						Should(
+							SatisfyAll(
+								BeDNSRecord("example.com.", A, "123.124.122.122"),
+								HaveResponseType(ResponseTypeRESOLVED),
+								HaveReturnCode(dns.RcodeSuccess),
+							))
+				}
+
+				Expect(mockUpstream.GetCallCount()).Should(Equal(3))
+				// Verify only a single QUIC connection was established (not one per query)
+				Expect(mockUpstream.GetConnCount()).Should(Equal(1))
+			})
+		})
+	})
+
+	Describe("Certificate Pinning", Label("certificatePinning"), func() {
+		var (
+			testCert        *x509.Certificate
+			testCertHash    [32]byte
+			testCertHashB64 config.CertificateFingerprint
+			wrongHash       [32]byte
+			wrongHashB64    config.CertificateFingerprint
+		)
+
+		BeforeEach(func() {
+			// Create a test certificate with TBSCertificate data
+			// DNS stamps hash the RawTBSCertificate (To-Be-Signed Certificate), not the full certificate
+			tbsData := []byte("test certificate data for pinning validation")
+			testCert = &x509.Certificate{
+				RawTBSCertificate: tbsData,
+			}
+			testCertHash = sha256.Sum256(testCert.RawTBSCertificate)
+			testCertHashB64 = config.CertificateFingerprint(testCertHash[:])
+
+			wrongHash = sha256.Sum256([]byte("wrong certificate data"))
+			wrongHashB64 = config.CertificateFingerprint(wrongHash[:])
+		})
+
+		When("Certificate matches pinned hash", func() {
+			It("should accept the certificate", func() {
+				verifier := createCertificatePinningVerifier([]config.CertificateFingerprint{testCertHashB64})
+				chains := [][]*x509.Certificate{{testCert}}
+
+				err := verifier(nil, chains)
+				Expect(err).ShouldNot(HaveOccurred())
+			})
+		})
+
+		When("Certificate does not match pinned hash", func() {
+			It("should reject the certificate", func() {
+				verifier := createCertificatePinningVerifier([]config.CertificateFingerprint{wrongHashB64})
+				chains := [][]*x509.Certificate{{testCert}}
+
+				err := verifier(nil, chains)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("certificate pinning failed"))
+			})
+		})
+
+		When("Certificate chain contains pinned intermediate", func() {
+			It("should accept the chain", func() {
+				// DNS stamps hash RawTBSCertificate, not the full certificate
+				leafCert := &x509.Certificate{RawTBSCertificate: []byte("leaf certificate")}
+				intermediateCert := &x509.Certificate{RawTBSCertificate: []byte("intermediate certificate")}
+				rootCert := &x509.Certificate{RawTBSCertificate: []byte("root certificate")}
+
+				intermediateHash := sha256.Sum256(intermediateCert.RawTBSCertificate)
+				intermediateHashB64 := config.CertificateFingerprint(intermediateHash[:])
+
+				verifier := createCertificatePinningVerifier([]config.CertificateFingerprint{intermediateHashB64})
+				chains := [][]*x509.Certificate{{leafCert, intermediateCert, rootCert}}
+
+				err := verifier(nil, chains)
+				Expect(err).ShouldNot(HaveOccurred())
+			})
+		})
+
+		When("No verified chains are provided", func() {
+			It("should reject", func() {
+				verifier := createCertificatePinningVerifier([]config.CertificateFingerprint{testCertHashB64})
+				chains := [][]*x509.Certificate{}
+
+				err := verifier(nil, chains)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("no verified certificate chains"))
+			})
+		})
+
+		When("Pinned hashes contain invalid lengths", func() {
+			It("should pre-filter and only use valid hashes", func() {
+				invalidHash := config.CertificateFingerprint([]byte("invalid short hash"))
+				verifier := createCertificatePinningVerifier([]config.CertificateFingerprint{
+					invalidHash,     // Invalid (too short)
+					testCertHashB64, // Valid (32 bytes)
+				})
+				chains := [][]*x509.Certificate{{testCert}}
+
+				// Should succeed because the valid hash matches
+				err := verifier(nil, chains)
+				Expect(err).ShouldNot(HaveOccurred())
+			})
+		})
+
+		When("Multiple valid hashes are pinned", func() {
+			It("should accept if any hash matches", func() {
+				// DNS stamps hash RawTBSCertificate
+				cert1 := &x509.Certificate{RawTBSCertificate: []byte("certificate 1")}
+				cert2 := &x509.Certificate{RawTBSCertificate: []byte("certificate 2")}
+
+				hash1 := sha256.Sum256(cert1.RawTBSCertificate)
+				hash2 := sha256.Sum256(cert2.RawTBSCertificate)
+
+				verifier := createCertificatePinningVerifier([]config.CertificateFingerprint{
+					config.CertificateFingerprint(hash1[:]),
+					config.CertificateFingerprint(hash2[:]),
+				})
+
+				// Should accept cert1
+				chains1 := [][]*x509.Certificate{{cert1}}
+				err := verifier(nil, chains1)
+				Expect(err).ShouldNot(HaveOccurred())
+
+				// Should also accept cert2
+				chains2 := [][]*x509.Certificate{{cert2}}
+				err = verifier(nil, chains2)
+				Expect(err).ShouldNot(HaveOccurred())
+			})
+		})
+
+		When("Multiple chains are provided", func() {
+			It("should accept if any chain contains a pinned certificate", func() {
+				// DNS stamps hash RawTBSCertificate
+				cert1 := &x509.Certificate{RawTBSCertificate: []byte("certificate 1")}
+				cert2 := &x509.Certificate{RawTBSCertificate: []byte("certificate 2")}
+
+				hash2 := sha256.Sum256(cert2.RawTBSCertificate)
+				hash2B64 := config.CertificateFingerprint(hash2[:])
+
+				verifier := createCertificatePinningVerifier([]config.CertificateFingerprint{hash2B64})
+
+				// First chain has cert1 (no match), second chain has cert2 (match)
+				chains := [][]*x509.Certificate{
+					{cert1},
+					{cert2},
+				}
+
+				err := verifier(nil, chains)
+				Expect(err).ShouldNot(HaveOccurred())
+			})
+		})
+
+		When("Enhanced error messages for pinning failures", func() {
+			It("should provide detailed information when pinning fails", func() {
+				// Create multiple certificates in a chain
+				cert1 := &x509.Certificate{Raw: []byte("certificate 1")}
+				cert2 := &x509.Certificate{Raw: []byte("certificate 2")}
+				cert3 := &x509.Certificate{Raw: []byte("certificate 3")}
+
+				// Wrong hash that won't match any certificate
+				wrongHash := sha256.Sum256([]byte("wrong certificate"))
+				wrongHashB64 := config.CertificateFingerprint(wrongHash[:])
+
+				verifier := createCertificatePinningVerifier([]config.CertificateFingerprint{wrongHashB64})
+
+				// Multiple chains with multiple certs
+				chains := [][]*x509.Certificate{
+					{cert1, cert2},
+					{cert1, cert3},
+				}
+
+				err := verifier(nil, chains)
+
+				// Should fail with detailed error message
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("certificate pinning failed"))
+				// Should mention certificate count
+				Expect(err.Error()).Should(ContainSubstring("checked 4 certificates"))
+				// Should mention chain count
+				Expect(err.Error()).Should(ContainSubstring("across 2 chains"))
+				// Should mention pinned hash count
+				Expect(err.Error()).Should(ContainSubstring("1 pinned hash"))
+				// Should suggest updating DNS stamp
+				Expect(err.Error()).Should(ContainSubstring("try updating DNS stamp"))
+			})
+		})
+	})
+})
+
+var _ = Describe("UpstreamResolver connection pooling", Label("upstreamResolver", "connPool"), func() {
+	var (
+		ctx      context.Context
+		cancelFn context.CancelFunc
+	)
+
+	BeforeEach(func() {
+		ctx, cancelFn = context.WithCancel(context.Background())
+		DeferCleanup(cancelFn)
+	})
+
+	Describe("TLS session cache (Fix A)", func() {
+		It("is enabled for DoT upstreams", func() {
+			cfg := newUpstreamConfig(
+				config.Upstream{Net: config.NetProtocolTcpTls, Host: "localhost", Port: 853},
+				defaultUpstreamsConfig,
+			)
+
+			client, ok := createUpstreamClient(cfg).(*dnsUpstreamClient)
+			Expect(ok).Should(BeTrue())
+			Expect(client.tcpClient.TLSConfig.ClientSessionCache).ShouldNot(BeNil())
+		})
+
+		It("is enabled for DoH upstreams", func() {
+			cfg := newUpstreamConfig(
+				config.Upstream{Net: config.NetProtocolHttps, Host: "localhost", Port: 443, Path: "/dns-query"},
+				defaultUpstreamsConfig,
+			)
+
+			client, ok := createUpstreamClient(cfg).(*httpUpstreamClient)
+			Expect(ok).Should(BeTrue())
+
+			transport, ok := client.client.Transport.(*http.Transport)
+			Expect(ok).Should(BeTrue())
+			Expect(transport.TLSClientConfig.ClientSessionCache).ShouldNot(BeNil())
+		})
+
+		It("is enabled for DoQ upstreams", func() {
+			cfg := newUpstreamConfig(
+				config.Upstream{Net: config.NetProtocolQuic, Host: "localhost", Port: 853},
+				defaultUpstreamsConfig,
+			)
+
+			client, ok := createUpstreamClient(cfg).(*quicUpstreamClient)
+			Expect(ok).Should(BeTrue())
+			Expect(client.tlsConfig.ClientSessionCache).ShouldNot(BeNil())
+		})
+	})
+
+	Describe("TLS session resumption with certificate pinning (Fix #1)", func() {
+		// Go does not invoke VerifyPeerCertificate (our pinning check) on resumed
+		// TLS sessions, so resumption must be disabled when a cert is pinned —
+		// otherwise pooled re-dials would silently skip the pin.
+		pinnedFingerprint := []config.CertificateFingerprint{make([]byte, sha256.Size)}
+
+		It("is disabled for cert-pinned DoT upstreams", func() {
+			cfg := newUpstreamConfig(
+				config.Upstream{
+					Net: config.NetProtocolTcpTls, Host: "localhost", Port: 853,
+					CertificateFingerprints: pinnedFingerprint,
+				},
+				defaultUpstreamsConfig,
+			)
+
+			client, ok := createUpstreamClient(cfg).(*dnsUpstreamClient)
+			Expect(ok).Should(BeTrue())
+			Expect(client.tcpClient.TLSConfig.ClientSessionCache).Should(BeNil())
+		})
+
+		It("is disabled for cert-pinned DoH upstreams", func() {
+			cfg := newUpstreamConfig(
+				config.Upstream{
+					Net: config.NetProtocolHttps, Host: "localhost", Port: 443, Path: "/dns-query",
+					CertificateFingerprints: pinnedFingerprint,
+				},
+				defaultUpstreamsConfig,
+			)
+
+			client, ok := createUpstreamClient(cfg).(*httpUpstreamClient)
+			Expect(ok).Should(BeTrue())
+
+			transport, ok := client.client.Transport.(*http.Transport)
+			Expect(ok).Should(BeTrue())
+			Expect(transport.TLSClientConfig.ClientSessionCache).Should(BeNil())
+		})
+
+		It("is disabled for cert-pinned DoQ upstreams", func() {
+			cfg := newUpstreamConfig(
+				config.Upstream{
+					Net: config.NetProtocolQuic, Host: "localhost", Port: 853,
+					CertificateFingerprints: pinnedFingerprint,
+				},
+				defaultUpstreamsConfig,
+			)
+
+			client, ok := createUpstreamClient(cfg).(*quicUpstreamClient)
+			Expect(ok).Should(BeTrue())
+			Expect(client.tlsConfig.ClientSessionCache).Should(BeNil())
+		})
+	})
+
+	Describe("MockDoTUpstreamServer misuse (Fix #14)", func() {
+		It("panics with a clear message when started without an answer", func() {
+			Expect(func() { NewMockDoTUpstreamServer().Start() }).
+				Should(PanicWith(ContainSubstring("answer")))
+		})
+	})
+
+	Describe("callExternal without a pool (Fix #10)", func() {
+		It("falls back to the tcp client instead of nil-dereferencing the pool", func() {
+			// A connection-oriented client with neither a udp client nor a pool
+			// (e.g. a future tcp-only client) must surface an error, not panic.
+			client := &dnsUpstreamClient{tcpClient: &dns.Client{Net: transportTCP}}
+
+			_, _, err := client.callExternal(ctx, newRequest("example.com.", A).Req, "127.0.0.1:0")
+			Expect(err).Should(HaveOccurred())
+		})
+	})
+
+	Describe("DoH client request building", func() {
+		When("the request message can't be packed", func() {
+			It("returns a pack error without sending anything", func() {
+				client := &httpUpstreamClient{client: http.DefaultClient, host: "example.com"}
+
+				msg := new(dns.Msg)
+				msg.Question = []dns.Question{{
+					Name: "not-fully-qualified", Qtype: dns.TypeA, Qclass: dns.ClassINET,
+				}}
+
+				_, _, err := client.callExternal(ctx, msg, "https://127.0.0.1:1/dns-query")
+				Expect(err).Should(MatchError(ContainSubstring("can't pack message")))
+			})
+		})
+
+		When("the upstream URL is invalid", func() {
+			It("returns a request creation error", func() {
+				client := &httpUpstreamClient{client: http.DefaultClient, host: "example.com"}
+
+				_, _, err := client.callExternal(ctx, newRequest("example.com.", A).Req, "ht tp://invalid")
+				Expect(err).Should(MatchError(ContainSubstring("can't create the new request")))
+			})
+		})
+	})
+
+	Describe("createUpstreamClient", func() {
+		When("a CommonName from a DNS stamp is set", func() {
+			It("uses it as the TLS server name instead of the host", func() {
+				cfg := newUpstreamConfig(config.Upstream{
+					Net: config.NetProtocolTcpTls, Host: "1.2.3.4", Port: 853, CommonName: "dot.example.com",
+				}, defaultUpstreamsConfig)
+
+				client, ok := createUpstreamClient(cfg).(*dnsUpstreamClient)
+				Expect(ok).Should(BeTrue())
+				Expect(client.tcpClient.TLSConfig.ServerName).Should(Equal("dot.example.com"))
+			})
+		})
+	})
+
+	Describe("udpRequestWithBufferFloor", func() {
+		When("the request advertises an EDNS0 buffer below the floor", func() {
+			It("raises it on a copy, keeping the DO bit and leaving the original untouched", func() {
+				msg := util.NewMsgWithQuestion("example.com.", A)
+				msg.SetEdns0(512, true)
+
+				raised := udpRequestWithBufferFloor(msg)
+
+				Expect(raised).ShouldNot(BeIdenticalTo(msg))
+				Expect(raised.IsEdns0().UDPSize()).Should(Equal(uint16(upstreamUDPBufferFloor)))
+				Expect(raised.IsEdns0().Do()).Should(BeTrue())
+				Expect(msg.IsEdns0().UDPSize()).Should(Equal(uint16(512)))
+			})
+		})
+	})
+
+	Describe("responseMatchesRequest", func() {
+		When("the response has a different number of questions than the request", func() {
+			It("doesn't match", func() {
+				req := util.NewMsgWithQuestion("example.com.", A)
+				resp := util.NewMsgWithQuestion("example.com.", A)
+				resp.Question = append(resp.Question, resp.Question[0])
+
+				Expect(responseMatchesRequest(req, resp)).Should(BeFalse())
+			})
+		})
+	})
+
+	Describe("TCP-only upstream client (DoT path)", func() {
+		When("the upstream responds with SERVFAIL", func() {
+			It("maps the response to an UpstreamServerError like the UDP/TCP path", func() {
+				mockUpstream := newMockTCPUDPUpstreamServer(
+					nil, // a TCP-only client never dials UDP
+					func(req *dns.Msg) *dns.Msg {
+						resp := new(dns.Msg)
+						resp.SetReply(req)
+						resp.Rcode = dns.RcodeServerFailure
+
+						return resp
+					},
+				)
+				upstream := mockUpstream.StartTCPOnly()
+
+				client := &dnsUpstreamClient{tcpClient: &dns.Client{Net: transportTCP}}
+				url := client.fmtURL(net.ParseIP(upstream.Host), upstream.Port, "")
+
+				_, _, err := client.callExternal(ctx, newRequest("example.com.", A).Req, url)
+
+				var servErr *UpstreamServerError
+				Expect(errors.As(err, &servErr)).Should(BeTrue())
+				Expect(servErr.Msg.Rcode).Should(Equal(dns.RcodeServerFailure))
+			})
+		})
+	})
+
+	Describe("upstreamClient.Close (Fix #9)", func() {
+		DescribeTable("closes cleanly for every protocol",
+			func(upstream config.Upstream) {
+				client := createUpstreamClient(newUpstreamConfig(upstream, defaultUpstreamsConfig))
+				Expect(client.Close()).Should(Succeed())
+			},
+			Entry("tcp+udp", config.Upstream{Net: config.NetProtocolTcpUdp, Host: "localhost", Port: 53}),
+			Entry("DoT", config.Upstream{Net: config.NetProtocolTcpTls, Host: "localhost", Port: 853}),
+			Entry("DoH", config.Upstream{Net: config.NetProtocolHttps, Host: "localhost", Port: 443, Path: "/dns-query"}),
+			Entry("DoQ", config.Upstream{Net: config.NetProtocolQuic, Host: "localhost", Port: 853}),
+		)
+	})
+
+	Describe("DoT connection reuse (Fix B)", func() {
+		// newDoTResolver builds a resolver pointing at the mock server and trusts
+		// its self-signed certificate. The pool shares the tcpClient's TLS config,
+		// so InsecureSkipVerify applies to pooled dials too.
+		newDoTResolver := func(upstream config.Upstream) *UpstreamResolver {
+			cfg := newUpstreamConfig(upstream, defaultUpstreamsConfig)
+			r := newUpstreamResolverUnchecked(cfg, systemResolverBootstrap)
+			client := r.upstreamClient.(*dnsUpstreamClient)
+			client.tcpClient.TLSConfig.InsecureSkipVerify = true
+
+			// Close the pool after the spec so idle client connections don't linger.
+			DeferCleanup(client.Close)
+
+			return r
+		}
+
+		It("reuses a single connection across multiple queries", func() {
+			mock := NewMockDoTUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+			sut := newDoTResolver(mock.Start())
+
+			for range 3 {
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(SatisfyAll(
+						BeDNSRecord("example.com.", A, "123.124.122.122"),
+						HaveResponseType(ResponseTypeRESOLVED),
+						HaveReturnCode(dns.RcodeSuccess),
+					))
+			}
+
+			Expect(mock.GetCallCount()).Should(Equal(3))
+			// A single connection serves all three queries.
+			Expect(mock.GetConnCount()).Should(Equal(1))
+
+			stats := sut.upstreamClient.(*dnsUpstreamClient).pool.stats()
+			Expect(stats.dialed).Should(Equal(int64(1)))
+			Expect(stats.reused).Should(Equal(int64(2)))
+		})
+
+		It("transparently recovers when the upstream closed a pooled connection", func() {
+			// The server drops the connection after each query, so every reuse
+			// hits a stale connection and must fall back to a fresh dial.
+			mock := NewMockDoTUpstreamServer().
+				WithAnswerRR("example.com 123 IN A 123.124.122.122").
+				WithCloseAfter(1)
+			sut := newDoTResolver(mock.Start())
+
+			for range 2 {
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(SatisfyAll(
+						BeDNSRecord("example.com.", A, "123.124.122.122"),
+						HaveResponseType(ResponseTypeRESOLVED),
+						HaveReturnCode(dns.RcodeSuccess),
+					))
+			}
+
+			Expect(mock.GetCallCount()).Should(Equal(2))
+			// A fresh connection per query because each was closed server-side.
+			Expect(mock.GetConnCount()).Should(Equal(2))
+
+			// The second query took the pooled connection, found it broken on
+			// exchange, and recovered with a fresh dial — never surfacing an error.
+			// reused counts only successful reuses, so it stays 0 here; the broken
+			// reuse is reflected by retried instead.
+			stats := sut.upstreamClient.(*dnsUpstreamClient).pool.stats()
+			Expect(stats.dialed).Should(Equal(int64(2)))
+			Expect(stats.reused).Should(Equal(int64(0)))
+			Expect(stats.retried).Should(Equal(int64(1)))
+		})
+
+		It("closes pooled connections when the client is closed (Fix #2)", func() {
+			mock := NewMockDoTUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+			sut := newDoTResolver(mock.Start())
+
+			Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+				Should(HaveReturnCode(dns.RcodeSuccess))
+
+			client := sut.upstreamClient.(*dnsUpstreamClient)
+			Expect(client.pool.idleCount()).Should(Equal(1))
+
+			Expect(client.Close()).Should(Succeed())
+			Expect(client.pool.idleCount()).Should(Equal(0))
+		})
+
+		It("does not leak server goroutines when the mock is closed (Fix #5)", func() {
+			mock := NewMockDoTUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+			sut := newDoTResolver(mock.Start())
+
+			Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+				Should(HaveReturnCode(dns.RcodeSuccess))
+
+			// The query left a handleConn goroutine serving the accepted connection.
+			Eventually(mock.openConnCount).Should(Equal(1))
+
+			mock.Close()
+
+			// Closing the server must close accepted connections too, so handleConn
+			// unblocks from ReadMsg and exits instead of leaking.
+			Eventually(mock.openConnCount).Should(Equal(0))
+		})
+	})
+
+	Describe("DoH connection reuse (#2238)", func() {
+		// newDoHResolver builds a resolver pointing at the mock server and trusts
+		// its self-signed certificate.
+		newDoHResolver := func(upstream config.Upstream) *UpstreamResolver {
+			cfg := newUpstreamConfig(upstream, defaultUpstreamsConfig)
+			r := newUpstreamResolverUnchecked(cfg, systemResolverBootstrap)
+			client := r.upstreamClient.(*httpUpstreamClient)
+			client.client.Transport.(*http.Transport).TLSClientConfig.InsecureSkipVerify = true
+
+			DeferCleanup(client.Close)
+
+			return r
+		}
+
+		It("reuses a single connection across multiple queries", func() {
+			mock := NewMockDoHUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+			sut := newDoHResolver(mock.Start())
+
+			for range 3 {
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(HaveReturnCode(dns.RcodeSuccess))
+			}
+
+			Expect(mock.GetCallCount()).Should(Equal(3))
+			// A single keep-alive connection serves all three queries.
+			Expect(mock.GetConnCount()).Should(Equal(1))
+		})
+
+		It("transparently recovers when the upstream closed a pooled connection", func() {
+			mock := NewMockDoHUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+			sut := newDoHResolver(mock.Start())
+
+			Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+				Should(HaveReturnCode(dns.RcodeSuccess))
+
+			// The upstream drops the idle connection denyzer still has pooled. The
+			// next query goes out on it and fails without ever being served.
+			mock.KillOpenConns()
+
+			Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+				Should(SatisfyAll(
+					BeDNSRecord("example.com.", A, "123.124.122.122"),
+					HaveResponseType(ResponseTypeRESOLVED),
+					HaveReturnCode(dns.RcodeSuccess),
+				))
+
+			// Two queries served, on a fresh connection for the second.
+			Expect(mock.GetCallCount()).Should(Equal(2))
+			Expect(mock.GetConnCount()).Should(Equal(2))
+		})
+
+		It("recovers when every pooled connection was closed", func() {
+			// Fill the idle pool with more than one connection, so a single retry
+			// could otherwise pick a second dead connection. The barrier keeps both
+			// queries in flight at once, so they cannot share one connection.
+			mock := NewMockDoHUpstreamServer().
+				WithAnswerRR("example.com 123 IN A 123.124.122.122").
+				WithConcurrentRequests(2)
+			sut := newDoHResolver(mock.Start())
+
+			var wg sync.WaitGroup
+			for range 2 {
+				wg.Add(1)
+
+				go func() {
+					defer GinkgoRecover()
+					defer wg.Done()
+
+					Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+						Should(HaveReturnCode(dns.RcodeSuccess))
+				}()
+			}
+
+			wg.Wait()
+			Expect(mock.GetConnCount()).Should(Equal(2))
+
+			mock.KillOpenConns()
+
+			Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+				Should(HaveReturnCode(dns.RcodeSuccess))
+		})
+
+		It("gives up instead of retrying forever when the upstream never answers", func() {
+			mock := NewMockDoHUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
+			sut := newDoHResolver(mock.Start())
+
+			mock.KillAll()
+
+			_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+			Expect(err).Should(HaveOccurred())
+			Expect(err.Error()).Should(ContainSubstring("can't perform https request"))
+		})
+
+		// newStaleConnClient builds a DoH client whose first `stale` requests fail
+		// the way a query sent over a connection the upstream closed while it sat
+		// in the keep-alive pool does. See stalePooledConnTransport for why the
+		// httptest-based mock cannot reach a retry that is itself stale.
+		newStaleConnClient := func(stale int32) (*httpUpstreamClient, *stalePooledConnTransport) {
+			transport := &stalePooledConnTransport{
+				answerFn: rrAnswerFn("example.com 123 IN A 123.124.122.122"),
+			}
+			transport.staleAttempts.Store(stale)
+
+			return &httpUpstreamClient{
+				client:    &http.Client{Transport: transport},
+				host:      "example.com",
+				userAgent: "test",
+			}, transport
+		}
+
+		It("retries again when the retry itself lands on a stale pooled connection", func() {
+			client, transport := newStaleConnClient(2)
+
+			resp, _, err := client.callExternal(ctx, newRequest("example.com.", A).Req, dohTestURL)
+			Expect(err).Should(Succeed())
+			Expect(resp.Answer).Should(HaveLen(1))
+			Expect(resp.Answer[0].String()).Should(ContainSubstring("123.124.122.122"))
+
+			// Two attempts on stale connections, then a fresh one that is served.
+			Expect(transport.GetCallCount()).Should(Equal(3))
+		})
+
+		It("gives up once the attempt budget is spent, however many connections are stale", func() {
+			client, transport := newStaleConnClient(100)
+
+			_, _, err := client.callExternal(ctx, newRequest("example.com.", A).Req, dohTestURL)
+			Expect(err).Should(HaveOccurred())
+			Expect(err.Error()).Should(ContainSubstring("can't perform https request"))
+
+			// Bounded: the client stops after its attempt budget rather than
+			// working through the pool until something answers.
+			Expect(transport.GetCallCount()).Should(Equal(3))
+		})
+	})
+
+	Describe("TLS session resumption (Fix A)", func() {
+		// The fix configures a ClientSessionCache. We assert the client-side
+		// effect we control: a session ticket is cached and then offered on the
+		// next dial. (Whether a given upstream completes resumption is up to the
+		// server; real DoT resolvers do.)
+		It("caches the TLS session and offers it on reconnect", func() {
+			// The server drops each connection after 3 queries, so the 4th query
+			// must reconnect — by which point the session ticket has been cached.
+			mock := NewMockDoTUpstreamServer().
+				WithAnswerRR("example.com 123 IN A 123.124.122.122").
+				WithCloseAfter(3)
+			cfg := newUpstreamConfig(mock.Start(), defaultUpstreamsConfig)
+			sut := newUpstreamResolverUnchecked(cfg, systemResolverBootstrap)
+
+			cache := &observingSessionCache{inner: tls.NewLRUClientSessionCache(0)}
+			client := sut.upstreamClient.(*dnsUpstreamClient)
+			client.tcpClient.TLSConfig.InsecureSkipVerify = true
+			client.tcpClient.TLSConfig.ClientSessionCache = cache
+			DeferCleanup(client.Close)
+
+			for range 4 {
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(HaveReturnCode(dns.RcodeSuccess))
+			}
+
+			// A reconnect happened: 3 queries on the first connection, then a fresh one.
+			Expect(mock.GetConnCount()).Should(BeNumerically(">=", 2))
+			// Fix A: the client cached a session ticket and offered it on the reconnect.
+			Expect(cache.puts.Load()).Should(BeNumerically(">=", 1))
+			Expect(cache.getHits.Load()).Should(BeNumerically(">=", 1))
+		})
+	})
+})
+
+// observingSessionCache wraps a tls.ClientSessionCache to count non-nil Puts
+// (sessions cached) and Get hits (sessions offered on reconnect), so tests can
+// assert that TLS session resumption is enabled and exercised.
+type observingSessionCache struct {
+	inner   tls.ClientSessionCache
+	puts    atomic.Int32
+	getHits atomic.Int32
+}
+
+func (o *observingSessionCache) Get(key string) (*tls.ClientSessionState, bool) {
+	cs, ok := o.inner.Get(key)
+	if ok {
+		o.getHits.Add(1)
+	}
+
+	return cs, ok
+}
+
+func (o *observingSessionCache) Put(key string, cs *tls.ClientSessionState) {
+	if cs != nil {
+		o.puts.Add(1)
+	}
+
+	o.inner.Put(key, cs)
+}

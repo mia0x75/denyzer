@@ -1,0 +1,115 @@
+# Additional information
+
+## Print current configuration
+
+To print runtime configuration / statistics, you can send `SIGUSR1` signal to running process.
+
+!!! summary
+
+    Example output:
+
+    ```
+    INFO server: current configuration:
+    INFO server: -> resolver: 'ClientNamesResolver'
+    INFO server:      singleNameOrder = "[2 1]"
+    INFO server:      externalResolver = "upstream 'tcp+udp:192.168.178.1:53'"
+    INFO server:      cache item count = 7
+    INFO server: -> resolver: 'QueryLoggingResolver'
+    INFO server:      type = sqlite
+    INFO server:      target= "querylog.db"
+    INFO server: -> resolver: 'ConditionalUpstreamResolver'
+    INFO server:      fritz.box = "parallel upstreams 'upstream 'tcp+udp:192.168.178.1:53''"
+    INFO server: -> resolver: 'CustomDNSResolver'
+    INFO server: runtime information:
+    ...
+    INFO server: MEM Alloc =                 9 MB
+    INFO server: MEM HeapAlloc =             9 MB
+    INFO server: MEM Sys =                  88 MB
+    INFO server: MEM NumGC =              1533
+    INFO server: RUN NumCPU =                4
+    INFO server: RUN NumGoroutine =         18
+    ```
+
+!!! hint
+
+    To send a signal to a process you can use `kill -s USR1 <PID>` or `docker kill -s SIGUSR1 denyzer` for docker setup
+
+## Debug / Profiling
+
+If http listener is enabled, [pprof](https://golang.org/pkg/net/http/pprof/) endpoint (`/debug/pprof`) is enabled
+automatically.
+
+## List sources
+
+Some links/ideas for lists:
+
+### Denylists
+
+* [https://github.com/StevenBlack/hosts](https://github.com/StevenBlack/hosts)
+* [https://github.com/nickspaargaren/no-google](https://github.com/nickspaargaren/no-google)
+* [https://github.com/hagezi/dns-blocklists](https://github.com/hagezi/dns-blocklists)
+* [https://github.com/Perflyst/PiHoleBlocklist](https://github.com/Perflyst/PiHoleBlocklist)
+* [https://github.com/kboghdady/youTube_ads_4_pi-hole](https://github.com/kboghdady/youTube_ads_4_pi-hole)
+* [https://github.com/chadmayfield/my-pihole-blocklists](https://github.com/chadmayfield/my-pihole-blocklists)
+
+!!! warning
+
+    Use only denylists from the sources you trust!
+
+### Allowlists
+
+* [https://github.com/anudeepND/whitelist](https://github.com/anudeepND/whitelist)
+
+## List of public DNS servers
+
+!!! warning
+
+    DNS server provider has access to all your DNS queries (all visited domain names). Some DNS providers can use (tracking, analyzing, profiling etc.). It is recommended to use different DNS upstream servers in denyzer to distribute your DNS queries over multiple providers.
+
+    Please read the description before using the DNS server as upstream. Some of them provide already an ad-blocker, some
+    filters other content. If you use external DNS server with included ad-blocker, you can't choose which domains should be
+    blocked, and you can't use allowlisting.
+
+This is only a small excerpt of all free available DNS servers and should only be understood as an idee.
+
+!!! info
+
+    I will **NOT** rate the DNS providers in the list. This list is sorted alphabetically.
+
+* [AdGuard](https://adguard.com/en/adguard-dns/setup.html)
+* [CloudFlare](https://1.1.1.1/)
+* [Comodo](https://www.comodo.com/secure-dns/)
+* [DigitalCourage](https://digitalcourage.de/support/zensurfreier-dns-server)
+* [DigitaleGesellschaft](https://www.digitale-gesellschaft.ch/dns/)
+* [Dismail](https://dismail.de/info.html#dns)
+* [dnsforge](https://dnsforge.de/)
+* [Google](https://developers.google.com/speed/public-dns)
+* [OpenDNS](https://www.opendns.com/setupguide/#familyshield)
+* [Quad9](https://www.quad9.net/)
+* [UncensoredDNS](https://blog.uncensoreddns.org/dns-servers/)
+
+## Project links
+
+### Code repository
+
+Main: [:material-github:GitHub](https://github.com/mia0x75/denyzer)
+
+Mirror: [:simple-codeberg:Codeberg](https://codeberg.org/mia0x75/denyzer)
+
+### Container Registry
+
+Main: [:material-docker:Docker Hub](https://hub.docker.com/r/mia0x75/denyzer)
+
+Mirror: [:material-github:GitHub Container Registry](https://ghcr.io/mia0x75/denyzer)
+
+## Developer Information
+
+### Docker Images
+
+To enable Docker image creation on a GitHub fork create a secret with the name `DEVELOPMENT_DOCKER` and the value `true`.
+This will trigger a workflow on every push of a branch starting with `fb-` and create an image with the branch name.
+
+### Automatic fork sync
+
+To enable automatic fork synchronisation create a secret with the name `FORK_SYNC_TOKEN` with an access token that has write permission to the fork repository.
+The enabled workflow will sync the main branch every 30 minutes with its upstream.

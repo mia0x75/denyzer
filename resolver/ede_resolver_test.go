@@ -1,0 +1,264 @@
+// Description: Tests for ede_resolver.go
+package resolver
+
+import (
+	"context"
+	"errors"
+	"math"
+	"strings"
+
+	"github.com/mia0x75/denyzer/config"
+	. "github.com/mia0x75/denyzer/helpertest"
+	"github.com/mia0x75/denyzer/log"
+	"github.com/mia0x75/denyzer/util"
+
+	. "github.com/mia0x75/denyzer/model"
+
+	"github.com/miekg/dns"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/mock"
+)
+
+var _ = Describe("EdeResolver", func() {
+	var (
+		sut        *EDEResolver
+		sutConfig  config.EDE
+		m          *mockResolver
+		mockAnswer *dns.Msg
+
+		ctx      context.Context
+		cancelFn context.CancelFunc
+	)
+
+	Describe("Type", func() {
+		It("follows conventions", func() {
+			expectValidResolverType(sut)
+		})
+	})
+
+	BeforeEach(func() {
+		ctx, cancelFn = context.WithCancel(context.Background())
+		DeferCleanup(cancelFn)
+
+		mockAnswer = new(dns.Msg)
+
+		// Reset the mock: it is a closure variable, so a resolver installed by one spec's
+		// BeforeEach would otherwise survive into the next and be reused by the guard below,
+		// leaking both its response type and its accumulated Calls.
+		m = nil
+	})
+
+	JustBeforeEach(func() {
+		if m == nil {
+			m = &mockResolver{}
+			m.On("Resolve", mock.Anything).Return(&Response{
+				Res:    mockAnswer,
+				RType:  ResponseTypeCUSTOMDNS,
+				Reason: "Test",
+			}, nil)
+		}
+
+		sut = NewEDEResolver(sutConfig)
+		sut.Next(m)
+	})
+
+	When("ede is disabled", func() {
+		BeforeEach(func() {
+			sutConfig = config.EDE{
+				Enable: false,
+			}
+		})
+		It("shouldn't add EDE information", func() {
+			Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+				Should(
+					SatisfyAll(
+						HaveNoAnswer(),
+						HaveResponseType(ResponseTypeCUSTOMDNS),
+						HaveReturnCode(dns.RcodeSuccess),
+						Not(HaveEdnsOption(dns.EDNS0EDE)),
+					))
+
+			// delegated to next resolver
+			Expect(m.Calls).Should(HaveLen(1))
+		})
+
+		Describe("IsEnabled", func() {
+			It("is false", func() {
+				Expect(sut.IsEnabled()).Should(BeFalse())
+			})
+		})
+	})
+
+	When("ede is enabled", func() {
+		BeforeEach(func() {
+			sutConfig = config.EDE{
+				Enable: true,
+			}
+		})
+
+		extractEdeOption := func(res *Response) dns.EDNS0_EDE {
+			return *util.GetEdns0Option[*dns.EDNS0_EDE](res.Res)
+		}
+
+		It("should add EDE information", func() {
+			Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+				Should(
+					SatisfyAll(
+						HaveNoAnswer(),
+						HaveResponseType(ResponseTypeCUSTOMDNS),
+						HaveReturnCode(dns.RcodeSuccess),
+						HaveEdnsOption(dns.EDNS0EDE),
+						WithTransform(extractEdeOption,
+							SatisfyAll(
+								HaveField("InfoCode", Equal(dns.ExtendedErrorCodeForgedAnswer)),
+								HaveField("ExtraText", Equal("Test")),
+							)),
+					))
+		})
+
+		When("resolver returns a blocked response carrying the matched rule", func() {
+			BeforeEach(func() {
+				m = &mockResolver{}
+				m.On("Resolve", mock.Anything).Return(&Response{
+					Res:    mockAnswer,
+					RType:  ResponseTypeBLOCKED,
+					Reason: "BLOCKED CNAME (ads: *.docler.com)",
+				}, nil)
+			})
+
+			It("returns the matched rule to the client in the EDE extra text", func() {
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(
+						SatisfyAll(
+							HaveEdnsOption(dns.EDNS0EDE),
+							WithTransform(extractEdeOption,
+								SatisfyAll(
+									HaveField("InfoCode", Equal(dns.ExtendedErrorCodeBlocked)),
+									HaveField("ExtraText", Equal("BLOCKED CNAME (ads: *.docler.com)")),
+								)),
+						))
+			})
+		})
+
+		When("resolver returns a rebinding-protection response", func() {
+			BeforeEach(func() {
+				m = &mockResolver{}
+				m.On("Resolve", mock.Anything).Return(&Response{
+					Res:    mockAnswer,
+					RType:  ResponseTypeREBIND,
+					Reason: "REBIND (rebinding protection)",
+				}, nil)
+			})
+
+			It("reports it to the client as blocked, not filtered", func() {
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(
+						SatisfyAll(
+							HaveEdnsOption(dns.EDNS0EDE),
+							WithTransform(extractEdeOption,
+								HaveField("InfoCode", Equal(dns.ExtendedErrorCodeBlocked)),
+							),
+						))
+			})
+		})
+
+		When("resolver returns a DNSSEC validation failure", func() {
+			BeforeEach(func() {
+				m = &mockResolver{}
+				m.On("Resolve", mock.Anything).Return(&Response{
+					Res:    mockAnswer,
+					RType:  ResponseTypeBOGUS,
+					Reason: "DNSSEC validation failed: bogus signatures",
+				}, nil)
+			})
+
+			// this resolver sits above the DNSSEC resolver and rewrites the EDE option from
+			// the response type, so a type that mapped to Blocked would silently replace the
+			// Bogus code the DNSSEC resolver set on its SERVFAIL
+			It("preserves the bogus code instead of overwriting it with blocked", func() {
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(
+						SatisfyAll(
+							HaveEdnsOption(dns.EDNS0EDE),
+							WithTransform(extractEdeOption,
+								HaveField("InfoCode", Equal(dns.ExtendedErrorCodeDNSBogus)),
+							),
+						))
+			})
+		})
+
+		When("resolver returns a blocked response with an oversized reason", func() {
+			longReason := "BLOCKED (ads: /" + strings.Repeat("a", 500) + "/)"
+
+			BeforeEach(func() {
+				m = &mockResolver{}
+				m.On("Resolve", mock.Anything).Return(&Response{
+					Res:    mockAnswer,
+					RType:  ResponseTypeBLOCKED,
+					Reason: longReason,
+				}, nil)
+			})
+
+			It("caps the EDE extra text so it can't bloat the OPT record", func() {
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(
+						SatisfyAll(
+							HaveEdnsOption(dns.EDNS0EDE),
+							WithTransform(extractEdeOption,
+								WithTransform(func(o dns.EDNS0_EDE) int { return len(o.ExtraText) },
+									BeNumerically("<=", maxEDETextLength))),
+						))
+			})
+		})
+
+		When("resolver returns other", func() {
+			BeforeEach(func() {
+				m = &mockResolver{}
+				m.On("Resolve", mock.Anything).Return(&Response{
+					Res:    mockAnswer,
+					RType:  ResponseType(math.MaxInt),
+					Reason: "Test",
+				}, nil)
+			})
+
+			It("shouldn't add EDE information", func() {
+				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
+					Should(
+						SatisfyAll(
+							HaveNoAnswer(),
+							HaveReturnCode(dns.RcodeSuccess),
+							Not(HaveEdnsOption(dns.EDNS0EDE)),
+						))
+
+				// delegated to next resolver
+				Expect(m.Calls).Should(HaveLen(1))
+			})
+		})
+
+		When("resolver returns an error", func() {
+			resolveErr := errors.New("test")
+
+			BeforeEach(func() {
+				m = &mockResolver{}
+				m.On("Resolve", mock.Anything).Return(nil, resolveErr)
+			})
+
+			It("should return it", func() {
+				resp, err := sut.Resolve(ctx, newRequest("example.com", A))
+				Expect(resp).To(BeNil())
+				Expect(err).To(MatchError(ContainSubstring(resolveErr.Error())))
+			})
+		})
+
+		Describe("LogConfig", func() {
+			It("should log something", func() {
+				logger, hook := log.NewMockEntry()
+
+				sut.LogConfig(logger)
+
+				Expect(hook.Calls).ShouldNot(BeEmpty())
+			})
+		})
+	})
+})

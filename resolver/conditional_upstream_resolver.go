@@ -1,0 +1,165 @@
+package resolver
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/mia0x75/denyzer/config"
+	"github.com/mia0x75/denyzer/model"
+	"github.com/mia0x75/denyzer/util"
+
+	"github.com/miekg/dns"
+	"github.com/sirupsen/logrus"
+)
+
+// ConditionalUpstreamResolver delegates DNS question to other DNS resolver dependent on domain name in question
+type ConditionalUpstreamResolver struct {
+	configurable[*config.ConditionalUpstream]
+	NextResolver
+	typed
+
+	mapping map[string]Resolver
+}
+
+// NewConditionalUpstreamResolver returns new resolver instance
+func NewConditionalUpstreamResolver(
+	ctx context.Context, cfg config.ConditionalUpstream, upstreamsCfg config.Upstreams, bootstrap *Bootstrap,
+) (*ConditionalUpstreamResolver, error) {
+	m := make(map[string]Resolver, len(cfg.Mapping.Upstreams))
+
+	for domain, upstreams := range cfg.Mapping.Upstreams {
+		name := fmt.Sprintf("<conditional in %s>", domain)
+		groupCfg := config.NewUpstreamGroup(name, upstreamsCfg, upstreams)
+
+		// Override init strategy for conditional upstreams to always use blocking initialization.
+		// This ensures conditional upstreams are always ready to resolve their domains,
+		// even if the default upstream is unreachable during async initialization.
+		// See: https://github.com/mia0x75/denyzer/issues/1639
+		groupCfg.Init.Strategy = config.InitStrategyBlocking
+
+		r, err := NewParallelBestResolver(ctx, groupCfg, bootstrap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create conditional upstream resolver for domain %s: %w", domain, err)
+		}
+
+		m[strings.ToLower(domain)] = r
+	}
+
+	r := ConditionalUpstreamResolver{
+		configurable: withConfig(&cfg),
+		typed:        withType("conditional_upstream"),
+
+		mapping: m,
+	}
+
+	return &r, nil
+}
+
+func (r *ConditionalUpstreamResolver) processRequest(
+	ctx context.Context, request *model.Request,
+) (bool, *model.Response, error) {
+	domainFromQuestion := util.ExtractDomain(request.Req.Question[0])
+
+	if strings.Contains(domainFromQuestion, ".") {
+		// try with domain with and without sub-domains
+		if domain, resolver, found := searchDomainOrParent(r.mapping, domainFromQuestion); found {
+			resp, err := r.internalResolve(ctx, resolver, domainFromQuestion, domain, request)
+
+			return true, resp, err
+		}
+	} else if resolver, found := r.mapping["."]; found {
+		resp, err := r.internalResolve(ctx, resolver, domainFromQuestion, domainFromQuestion, request)
+
+		return true, resp, err
+	}
+
+	return false, nil, nil
+}
+
+// Resolve uses the conditional resolver to resolve the query
+func (r *ConditionalUpstreamResolver) Resolve(ctx context.Context, request *model.Request) (*model.Response, error) {
+	ctx, logger := r.log(ctx)
+
+	// Apply domain rewrites if configured
+	original := request.Req
+	rewritten, originalNames := rewriteRequest(logger, original, r.cfg.Rewrite)
+	if rewritten != nil {
+		request.Req = rewritten
+	}
+
+	var response *model.Response
+	var err error
+
+	resolved := false
+	if len(r.mapping) > 0 {
+		resolved, response, err = r.processRequest(ctx, request)
+	}
+
+	// Revert the request before it leaves this resolver: the rewritten name is
+	// meant for the mapped upstream, not for the rest of the chain.
+	request.Req = original
+
+	// processRequest only reports `resolved` for a query it sent to a mapped
+	// upstream, so anything else continues down the chain under its original name.
+	if !resolved {
+		logger.WithField("next_resolver", Name(r.next)).Trace("go to next resolver")
+
+		return r.next.Resolve(ctx, request)
+	}
+
+	// The mapped resolver failed or had nothing: ask the rest of the chain,
+	// using the original name (`fallbackUpstream`).
+	if shouldFallbackUpstream(&r.cfg.RewriterConfig, response, err) {
+		logger.WithField("next_resolver", Name(r.next)).Trace("fallback to next resolver")
+
+		return r.next.Resolve(ctx, request)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Revert rewrites in the response
+	if rewritten != nil && response != NoResponse && response != nil && response.Res != nil {
+		revertRewritesInResponse(response.Res, originalNames)
+	}
+
+	return response, nil
+}
+
+func (r *ConditionalUpstreamResolver) internalResolve(ctx context.Context, reso Resolver, doFQ, do string,
+	req *model.Request,
+) (*model.Response, error) {
+	// internal request resolution
+	ctx, logger := r.log(ctx)
+
+	req.Req.Question[0].Name = dns.Fqdn(doFQ)
+	response, err := reso.Resolve(ctx, req)
+
+	if err == nil {
+		response.Reason = "CONDITIONAL"
+		response.RType = model.ResponseTypeCONDITIONAL
+
+		if len(response.Res.Question) > 0 {
+			response.Res.Question[0].Name = req.Req.Question[0].Name
+		}
+	} else {
+		return nil, fmt.Errorf("conditional upstream resolution failed for domain '%s': %w", do, err)
+	}
+
+	if isDebugEnabled(logger) {
+		var answer string
+		if response != nil {
+			answer = util.Obfuscate(util.AnswerToString(response.Res.Answer))
+		}
+
+		logger.WithFields(logrus.Fields{
+			logFieldAnswer:   answer,
+			logFieldDomain:   util.Obfuscate(do),
+			logFieldUpstream: reso,
+		}).Debugf("received response from conditional upstream")
+	}
+
+	return response, nil
+}

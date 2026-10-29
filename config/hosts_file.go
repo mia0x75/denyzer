@@ -1,0 +1,53 @@
+package config
+
+import (
+	. "github.com/mia0x75/denyzer/config/migration"
+	"github.com/mia0x75/denyzer/log"
+	"github.com/sirupsen/logrus"
+)
+
+type HostsFile struct {
+	// Host files to load (e.g. /etc/hosts); supports local paths, URLs, and inline content.
+	Sources []BytesSource `yaml:"sources"`
+	// TTL for DNS records resolved from host files.
+	HostsTTL Duration `default:"1h" yaml:"hostsTTL"`
+	// If true, loopback addresses (127.0.0.0/8 and ::1) from host files are ignored.
+	FilterLoopback bool `yaml:"filterLoopback"`
+	// Controls how host files are loaded and periodically refreshed.
+	Loading SourceLoading `yaml:"loading"`
+
+	// Deprecated options
+	Deprecated struct {
+		RefreshPeriod *Duration    `yaml:"refreshPeriod"`
+		Filepath      *BytesSource `yaml:"filePath"`
+	} `yaml:",inline"`
+}
+
+func (c *HostsFile) migrate(logger *logrus.Entry) bool {
+	return Migrate(logger, "hostsFile", c.Deprecated, map[string]Migrator{
+		"refreshPeriod": Move(To("loading.refreshPeriod", &c.Loading)),
+		"filePath": Apply(To("sources", c), func(value BytesSource) {
+			c.Sources = append(c.Sources, value)
+		}),
+	})
+}
+
+// IsEnabled implements `config.Configurable`.
+func (c *HostsFile) IsEnabled() bool {
+	return len(c.Sources) != 0
+}
+
+// LogConfig implements `config.Configurable`.
+func (c *HostsFile) LogConfig(logger *logrus.Entry) {
+	logger.Infof("TTL: %s", c.HostsTTL)
+	logger.Infof("filter loopback addresses: %t", c.FilterLoopback)
+
+	logger.Info("loading:")
+	log.WithIndent(logger, "  ", c.Loading.LogConfig)
+
+	logger.Info("sources:")
+
+	for _, source := range c.Sources {
+		logger.Infof("  - %s", source)
+	}
+}

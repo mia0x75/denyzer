@@ -1,0 +1,122 @@
+name: Build binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      goos:
+        description: "Target OS"
+        required: true
+        default: "linux"
+        type: choice
+        options:
+          - linux
+          - windows
+          - freebsd
+          - netbsd
+          - openbsd
+          - darwin
+      goarch:
+        description: "Target architecture"
+        required: true
+        default: "amd64"
+        type: choice
+        options:
+          - amd64
+          - arm
+          - arm64
+      goarm:
+        description: "Target ARM version(only used with arm architecture)"
+        required: true
+        default: "7"
+        type: choice
+        options:
+          - 6
+          - 7
+
+jobs:
+  build:
+    # macOS binaries need the macOS system libraries and are therefore built
+    # on a macOS runner. Every other target is cross compiled with Zig.
+    runs-on: ${{ inputs.goos == 'darwin' && 'macos-latest' || 'ubuntu-latest' }}
+    steps:
+      - name: Input Check
+        run: |
+          if [[ "${{ inputs.goos }}" == "windows" && "${{ inputs.goarch }}" == "arm" ]] || \
+            [[ "${{ inputs.goos }}" == "windows" && "${{ inputs.goarch }}" == "arm64" ]] || \
+            [[ "${{ inputs.goos }}" == "darwin" && "${{ inputs.goarch }}" == "arm" ]]; then
+            echo "## Unsupported input" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Combination not supported: ">> $GITHUB_STEP_SUMMARY
+            echo " - goos=${{ inputs.goos }}" >> $GITHUB_STEP_SUMMARY
+            echo " - goarch=${{ inputs.goarch }}" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Golang
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      # The query log is stored in SQLite through the native driver, so the
+      # binary has to be built with CGO. Zig bundles a libc for every target
+      # and scripts/zigcc/cc-zig.sh maps the Go target onto a Zig target
+      # triple. macOS is built with the native compiler instead.
+      - name: Set up Zig
+        if: inputs.goos != 'darwin'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Get variables
+        id: get_vars
+        run: |
+          # Check if the repository is forked and add upstream for correct versioning
+          if [[ "${{ github.repository_owner }}" != "mia0x75" ]]; then
+            git remote add upstream https://github.com/mia0x75/denyzer.git
+            git fetch upstream
+          fi
+          echo "version=$(git describe --always --tags)" >> $GITHUB_OUTPUT
+          if [[ "${{ inputs.goarch }}" == "arm" ]]; then
+            echo "arch=${{ inputs.goarch }}${{ inputs.goarm }}" >> $GITHUB_OUTPUT
+            echo "arm=${{ inputs.goarm }}" >> $GITHUB_OUTPUT
+          else
+            echo "arch=${{ inputs.goarch }}" >> $GITHUB_OUTPUT
+            echo "arm=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build
+        env:
+          GO_SKIP_GENERATE: 1
+          CGO_ENABLED: 1
+          GOOS: ${{ inputs.goos }}
+          GOARCH: ${{ inputs.goarch }}
+          GOARM: ${{ steps.get_vars.outputs.arm }}
+          VERSION: ${{ steps.get_vars.outputs.version }}
+          # cgo invokes the compiler from its own build directory, so the
+          # wrapper has to be referenced by an absolute path.
+          CC: ${{ inputs.goos == 'darwin' && 'clang' || format('{0}/scripts/zigcc/cc-zig.sh', github.workspace) }}
+        run: make build
+
+      - name: Rename binary
+        if: inputs.goos  == 'windows'
+        run: mv bin/denyzer bin/denyzer.exe
+
+      - name: Store build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: denyzer_${{ steps.get_vars.outputs.version }}_${{ inputs.goos }}_${{ steps.get_vars.outputs.arch }}
+          path: bin/denyzer*
+          retention-days: 5

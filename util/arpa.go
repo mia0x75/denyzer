@@ -1,0 +1,92 @@
+package util
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"slices"
+	"strconv"
+	"strings"
+)
+
+const (
+	IPv4PtrSuffix = ".in-addr.arpa."
+	IPv6PtrSuffix = ".ip6.arpa."
+
+	byteBits = 8
+)
+
+var ErrInvalidArpaAddrLen = errors.New("arpa hostname is not of expected length")
+
+func ParseIPFromArpaAddr(arpa string) (net.IP, error) {
+	if strings.HasSuffix(arpa, IPv4PtrSuffix) {
+		return parseIPv4FromArpaAddr(arpa)
+	}
+
+	if strings.HasSuffix(arpa, IPv6PtrSuffix) {
+		return parseIPv6FromArpaAddr(arpa)
+	}
+
+	return nil, fmt.Errorf("invalid arpa hostname: %s", arpa)
+}
+
+func parseIPv4FromArpaAddr(arpa string) (net.IP, error) {
+	const base10 = 10
+
+	revAddr := strings.TrimSuffix(arpa, IPv4PtrSuffix)
+
+	parts := strings.Split(revAddr, ".")
+	if len(parts) != net.IPv4len {
+		return nil, ErrInvalidArpaAddrLen
+	}
+
+	buf := make([]byte, 0, net.IPv4len)
+
+	// Parse and add each byte, in reverse, to the buffer
+	for _, part := range slices.Backward(parts) {
+		p, err := strconv.ParseUint(part, base10, byteBits)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse IPv4 octet '%s' in arpa address '%s': %w", part, arpa, err)
+		}
+
+		buf = append(buf, byte(p))
+	}
+
+	return net.IPv4(buf[0], buf[1], buf[2], buf[3]), nil
+}
+
+func parseIPv6FromArpaAddr(arpa string) (net.IP, error) {
+	const (
+		base16     = 16
+		ipv6Bytes  = 2 * net.IPv6len
+		nibbleBits = byteBits / 2
+	)
+
+	revAddr := strings.TrimSuffix(arpa, IPv6PtrSuffix)
+
+	parts := strings.Split(revAddr, ".")
+	if len(parts) != ipv6Bytes {
+		return nil, ErrInvalidArpaAddrLen
+	}
+
+	buf := make([]byte, 0, net.IPv6len)
+
+	// Parse and add each byte, in reverse, to the buffer
+	for i := len(parts) - 1; i >= 0; i -= 2 {
+		msNibble, err := strconv.ParseUint(parts[i], base16, byteBits)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse IPv6 nibble '%s' in arpa address '%s': %w", parts[i], arpa, err)
+		}
+
+		lsNibble, err := strconv.ParseUint(parts[i-1], base16, byteBits)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse IPv6 nibble '%s' in arpa address '%s': %w", parts[i-1], arpa, err)
+		}
+
+		part := msNibble<<nibbleBits | lsNibble
+
+		buf = append(buf, byte(part)) //nolint:gosec // nibble values always fit in a byte
+	}
+
+	return net.IP(buf), nil
+}

@@ -1,0 +1,79 @@
+# Denyzer
+
+Denyzer is a DNS proxy and ad-blocker for the local network written in Go with following features:
+
+```mermaid
+flowchart LR
+    C[Client devices] -->|DNS query| B(Denyzer)
+    B -->|allowed query| U[Upstream resolvers]
+    U -->|answer| B
+    B -->|blocked domain| X[Blocked response]
+    B -->|answer| C
+```
+
+## Features
+
+- **Blocking** - :no_entry: Blocking of DNS queries with external lists (Ad-block, malware) and allowlisting
+
+    * Definition of allow/denylists per client group (Kids, Smart home devices, etc.)
+    * Periodical reload of external allow/denylists
+    * Regex support
+    * Blocking of request domain, response CNAME (deep CNAME inspection) and response IP addresses (against IP lists)
+
+- **Advanced DNS configuration** - :nerd: not just an ad-blocker
+
+    * Custom DNS resolution for certain domain names
+    * Conditional forwarding to external DNS server
+    * Upstream resolvers can be defined per client group
+
+- **Performance** - :rocket: Improves speed and performance in your network
+
+    * Customizable caching of DNS answers for queries -> improves DNS resolution speed and reduces amount of external DNS
+      queries
+    * Using multiple external resolver simultaneously
+    * Low memory footprint
+
+- **Various Protocols** - :computer: Supports modern DNS protocols
+
+    * DNS over UDP and TCP
+    * DNS over HTTPS (aka DoH)
+    * DNS over TLS (aka DoT)
+    * DNS over QUIC (aka DoQ, RFC 9250)
+    * DNS over HTTPS/3 (aka DoH3, RFC 9114)
+
+- **Security and Privacy** - :dark_sunglasses: Secure communication
+
+    * Supports modern DNS extensions: DNSSEC, eDNS, ...
+    * DNSSEC validation of upstream resolvers
+    * Free configurable blocking lists - no hidden filtering etc.
+    * Provides DoH Endpoint
+    * Uses random upstream resolvers from the configuration - increases your privacy through the distribution of your DNS
+      traffic over multiple provider
+    * Open source development
+    * Denyzer does **NOT** collect any user data, telemetry, statistics etc.
+
+- **Integration** - :notebook_with_decorative_cover: various integration
+
+    * Embedded web dashboard (DenyzerUI) served at `/dashboard/`
+    * Query logging to an embedded SQLite store (per-day / per-client) with configurable retention - no external database
+      required
+    * Various REST API endpoints
+    * CLI tool
+
+- **Simple configuration** - :baby: single or multiple configuration files in YAML format
+
+    * Simple to maintain
+    * Simple to backup
+
+- **Simple installation/configuration** - :cloud: denyzer was designed for simple installation
+
+    * Single binary and embedded dashboard - no external services needed
+    * Docker image with Multi-arch support
+    * Supports x86-64, ARM, and MIPS architectures -> runs fine on Raspberry PI and OpenWrt routers
+    * Community supported Helm chart for k8s deployment
+
+
+## Contribution
+
+Issues, feature suggestions and pull requests are welcome! Denyzer lives on :material-github:[GitHub](https://github.com/mia0x75/denyzer).
+
