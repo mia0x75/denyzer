@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
@@ -428,34 +429,120 @@ func createUDPServer(ctx context.Context, address string, opts listenerOptions) 
 	return createDNSServer(ctx, networkUDP, address, nil, opts)
 }
 
+// queryResolverParts holds the resolvers that make up the query chain, together
+// with their construction errors. Its fields are filled concurrently, so it is
+// only safe to read them once newQueryResolverParts has returned.
+type queryResolverParts struct {
+	upstreamTree    resolver.Resolver
+	blocking        *resolver.BlockingResolver
+	queryLogging    *resolver.QueryLoggingResolver
+	condUpstream    *resolver.ConditionalUpstreamResolver
+	customDNS       *resolver.CustomDNSResolver
+	hostsFile       *resolver.HostsFileResolver
+	clientNames     *resolver.ClientNamesResolver
+	cachingResolver *resolver.CachingResolver
+	dnssecResolver  resolver.ChainedResolver
+
+	utErr error
+	blErr error
+	qlErr error
+	cuErr error
+	hfErr error
+	cnErr error
+	crErr error
+	dsErr error
+}
+
+// newQueryResolverParts constructs the resolvers of the query chain.
+//
+// The resolvers that only depend on their own configuration are built
+// concurrently: several of them do real work (list downloads, upstream
+// verification, opening the query log), and running them one after the other
+// makes startup the sum of their initialisation times. Client-name resolution
+// and DNSSEC validation depend on those results, so they form a second concurrent
+// stage.
+func newQueryResolverParts(
+	ctx context.Context,
+	cfg *config.Config,
+	bootstrap *resolver.Bootstrap,
+) *queryResolverParts {
+	parts := &queryResolverParts{
+		customDNS: resolver.NewCustomDNSResolver(cfg.CustomDNS),
+	}
+
+	runConcurrently([]func(){
+		func() {
+			parts.upstreamTree, parts.utErr = resolver.NewUpstreamTreeResolver(ctx, cfg.Upstreams, bootstrap)
+		},
+		func() {
+			parts.blocking, parts.blErr = resolver.NewBlockingResolver(ctx, cfg.Blocking, bootstrap)
+		},
+		func() {
+			parts.queryLogging, parts.qlErr = resolver.NewQueryLoggingResolver(ctx, cfg.QueryLog)
+		},
+		func() {
+			parts.condUpstream, parts.cuErr = resolver.NewConditionalUpstreamResolver(
+				ctx, cfg.Conditional, cfg.Upstreams, bootstrap)
+		},
+		func() {
+			parts.hostsFile, parts.hfErr = resolver.NewHostsFileResolver(ctx, cfg.HostsFile, bootstrap)
+		},
+		func() {
+			parts.cachingResolver, parts.crErr = resolver.NewCachingResolver(ctx, cfg.Caching, cfg.DNSSEC)
+		},
+	})
+
+	// Second stage: these consume the resolvers built above.
+	runConcurrently([]func(){
+		func() {
+			// client name resolution consults local reverse sources (custom DNS, hosts file)
+			// before the rDNS upstream
+			parts.clientNames, parts.cnErr = resolver.NewClientNamesResolver(
+				ctx, cfg.ClientLookup, cfg.Upstreams, bootstrap, parts.customDNS, parts.hostsFile)
+		},
+		func() {
+			// UpstreamTree is passed to the DNSSEC resolver so it can query for DNSKEY/DS records
+			parts.dnssecResolver, parts.dsErr = resolver.NewDNSSECResolver(ctx, cfg.DNSSEC, parts.upstreamTree)
+		},
+	})
+
+	return parts
+}
+
+// runConcurrently runs every job in its own goroutine and returns once all of
+// them have finished.
+func runConcurrently(jobs []func()) {
+	var wg sync.WaitGroup
+
+	wg.Add(len(jobs))
+
+	for _, job := range jobs {
+		go func() {
+			defer wg.Done()
+
+			job()
+		}()
+	}
+
+	wg.Wait()
+}
+
 func createQueryResolver(
 	ctx context.Context,
 	cfg *config.Config,
 	bootstrap *resolver.Bootstrap,
 ) (resolver.ChainedResolver, error) {
-	upstreamTree, utErr := resolver.NewUpstreamTreeResolver(ctx, cfg.Upstreams, bootstrap)
-	blocking, blErr := resolver.NewBlockingResolver(ctx, cfg.Blocking, bootstrap)
-	queryLogging, qlErr := resolver.NewQueryLoggingResolver(ctx, cfg.QueryLog)
-	condUpstream, cuErr := resolver.NewConditionalUpstreamResolver(ctx, cfg.Conditional, cfg.Upstreams, bootstrap)
-	customDNS := resolver.NewCustomDNSResolver(cfg.CustomDNS)
-	hostsFile, hfErr := resolver.NewHostsFileResolver(ctx, cfg.HostsFile, bootstrap)
-	// client name resolution consults local reverse sources (custom DNS, hosts file) before the rDNS upstream
-	clientNames, cnErr := resolver.NewClientNamesResolver(
-		ctx, cfg.ClientLookup, cfg.Upstreams, bootstrap, customDNS, hostsFile)
-
-	cachingResolver, crErr := resolver.NewCachingResolver(ctx, cfg.Caching, cfg.DNSSEC)
-	// Pass upstreamTree to DNSSEC resolver so it can query for DNSKEY/DS records
-	dnssecResolver, dsErr := resolver.NewDNSSECResolver(ctx, cfg.DNSSEC, upstreamTree)
+	parts := newQueryResolverParts(ctx, cfg, bootstrap)
 
 	multiErr := multierror.Append(
-		multierror.Prefix(utErr, "upstream tree resolver: "),
-		multierror.Prefix(blErr, "blocking resolver: "),
-		multierror.Prefix(qlErr, "query logging resolver: "),
-		multierror.Prefix(cnErr, "client names resolver: "),
-		multierror.Prefix(cuErr, "conditional upstream resolver: "),
-		multierror.Prefix(hfErr, "hosts file resolver: "),
-		multierror.Prefix(crErr, "caching resolver: "),
-		multierror.Prefix(dsErr, "dnssec resolver: "),
+		multierror.Prefix(parts.utErr, "upstream tree resolver: "),
+		multierror.Prefix(parts.blErr, "blocking resolver: "),
+		multierror.Prefix(parts.qlErr, "query logging resolver: "),
+		multierror.Prefix(parts.cnErr, "client names resolver: "),
+		multierror.Prefix(parts.cuErr, "conditional upstream resolver: "),
+		multierror.Prefix(parts.hfErr, "hosts file resolver: "),
+		multierror.Prefix(parts.crErr, "caching resolver: "),
+		multierror.Prefix(parts.dsErr, "dnssec resolver: "),
 	).ErrorOrNil()
 	if multiErr != nil {
 		return nil, fmt.Errorf("failed to create query resolver components: %w", multiErr)
@@ -478,13 +565,13 @@ func createQueryResolver(
 		// them would leave request.ClientNames empty for every query they short-circuit,
 		// and the statistics would attribute those to the raw client IP while the same
 		// client's other queries are attributed to its name
-		clientNames,
+		parts.clientNames,
 		resolver.NewFilteringResolver(cfg.Filtering),
 		resolver.NewFQDNOnlyResolver(cfg.FQDNOnly),
 		resolver.NewEDEResolver(cfg.EDE),
-		queryLogging,
-		customDNS,
-		hostsFile,
+		parts.queryLogging,
+		parts.customDNS,
+		parts.hostsFile,
 		// above blocking and the cache: it inspects only RESOLVED/CACHED answers
 		// (conditional/custom DNS/hosts file/SUDN/blocked answers are recognized
 		// by response type and pass through; the cache stores only
@@ -493,14 +580,14 @@ func createQueryResolver(
 		// hit, and blocking's internal FQDN client-identifier lookups enter the
 		// chain below it
 		resolver.NewRebindingProtectionResolver(cfg.RebindingProtection),
-		blocking,
-		dnssecResolver, // DNSSEC validation BEFORE caching - validates all responses before they are cached
-		cachingResolver,
+		parts.blocking,
+		parts.dnssecResolver, // DNSSEC validation BEFORE caching - validates all responses before they are cached
+		parts.cachingResolver,
 		resolver.NewDNS64Resolver(cfg.DNS64), // DNS64 synthesis AFTER caching
 		resolver.NewECSResolver(cfg.ECS),
-		condUpstream,
+		parts.condUpstream,
 		resolver.NewSpecialUseDomainNamesResolver(cfg.SUDN),
-		upstreamTree,
+		parts.upstreamTree,
 	)
 
 	return r, nil

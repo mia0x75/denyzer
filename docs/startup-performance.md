@@ -3,8 +3,8 @@
 Denyzer prepares several independent things during startup: the denylist and the
 allowlist, every group inside each list, the resolvers of the query chain, and the
 configured upstreams. These stages used to run strictly one after another. They
-now overlap denylist, allowlist, and list-group loading, which cuts the time
-until the first query can be answered.
+now overlap denylist, allowlist, list-group loading, and independent query
+resolver construction, which cuts the time until the first query can be answered.
 
 ## What runs concurrently now
 
@@ -12,7 +12,7 @@ until the first query can be answered.
 | --- | --- | --- |
 | Denylist and allowlist | loaded one after the other | loaded concurrently |
 | List groups | one group rebuilt at a time | up to `loading.groupConcurrency` groups |
-| Query resolver components | constructed one after the other | unchanged |
+| Query resolver components | constructed one after the other | independent components constructed concurrently |
 | Upstreams | tested and initialised one by one | unchanged |
 
 Only independent work is overlapped: the DNSSEC resolver still waits for the
