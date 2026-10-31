@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/model"
@@ -55,40 +56,76 @@ func NewUpstreamTreeResolver(ctx context.Context, cfg config.Upstreams, bootstra
 func createUpstreamBranches(
 	ctx context.Context, cfg config.Upstreams, bootstrap *Bootstrap,
 ) (map[string]Resolver, error) {
-	branches := make(map[string]Resolver, len(cfg.Groups))
-	errs := make([]error, 0, len(cfg.Groups))
+	// Each branch verifies its upstreams with a test query, so building them one
+	// after the other makes startup the sum of every group's latency. The groups
+	// are independent of each other and are therefore initialised concurrently.
+	groups := make([]string, 0, len(cfg.Groups))
+	groupUpstreams := make([][]config.Upstream, 0, len(cfg.Groups))
 
 	for group, upstreams := range cfg.Groups {
-		var (
-			upstream Resolver
-			err      error
-		)
+		groups = append(groups, group)
+		groupUpstreams = append(groupUpstreams, upstreams)
+	}
 
-		groupConfig := config.NewUpstreamGroup(group, cfg, upstreams)
+	resolvers := make([]Resolver, len(groups))
+	errs := make([]error, len(groups))
 
-		switch cfg.Strategy {
-		case config.UpstreamStrategyParallelBest:
-			fallthrough
-		case config.UpstreamStrategyRandom:
-			upstream, err = NewParallelBestResolver(ctx, groupConfig, bootstrap)
-		case config.UpstreamStrategyStrict:
-			upstream, err = NewStrictResolver(ctx, groupConfig, bootstrap)
-		}
+	var wg sync.WaitGroup
 
-		if err != nil {
-			errs = append(errs, fmt.Errorf("group %s: %w", group, err))
+	wg.Add(len(groups))
+
+	for i := range groups {
+		go func() {
+			defer wg.Done()
+
+			resolvers[i], errs[i] = newUpstreamGroupResolver(ctx, cfg, groups[i], groupUpstreams[i], bootstrap)
+		}()
+	}
+
+	wg.Wait()
+
+	branches := make(map[string]Resolver, len(groups))
+	joinErrs := make([]error, 0, len(groups))
+
+	for i, group := range groups {
+		if errs[i] != nil {
+			joinErrs = append(joinErrs, errs[i])
 
 			continue
 		}
 
-		branches[group] = upstream
+		branches[group] = resolvers[i]
 	}
 
-	if len(errs) != 0 {
-		return nil, errors.Join(errs...)
+	if len(joinErrs) != 0 {
+		return nil, errors.Join(joinErrs...)
 	}
 
 	return branches, nil
+}
+
+func newUpstreamGroupResolver(
+	ctx context.Context, cfg config.Upstreams, group string, upstreams []config.Upstream, bootstrap *Bootstrap,
+) (Resolver, error) {
+	groupConfig := config.NewUpstreamGroup(group, cfg, upstreams)
+
+	var (
+		resolver Resolver
+		err      error
+	)
+
+	switch cfg.Strategy {
+	case config.UpstreamStrategyParallelBest, config.UpstreamStrategyRandom:
+		resolver, err = NewParallelBestResolver(ctx, groupConfig, bootstrap)
+	case config.UpstreamStrategyStrict:
+		resolver, err = NewStrictResolver(ctx, groupConfig, bootstrap)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("group %s: %w", group, err)
+	}
+
+	return resolver, nil
 }
 
 func (r *UpstreamTreeResolver) Name() string {
