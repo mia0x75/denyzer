@@ -37,7 +37,12 @@ var _ = Describe("Hosts file resolver", func() {
 					"10.0.0.1 server.example",
 				)
 
-				confFile := createTempFile(strings.Split(dedent(`
+				// The DNS port must be set explicitly: this spec builds its own
+				// container request instead of going through createDenyzerContainer,
+				// so it doesn't get the e2e DNS port automatically. Without it
+				// denyzer listens on the default port 53, while the suite talks to
+				// the container on the e2e DNS port.
+				confFile := createTempFile(withDNSPort(strings.Split(dedent(`
 					upstreams:
 					  groups:
 					    default:
@@ -46,7 +51,7 @@ var _ = Describe("Hosts file resolver", func() {
 					  sources:
 					    - /app/hosts.txt
 					  hostsTTL: 5m
-					`), "\n")...)
+					`), "\n"))...)
 
 				cfg, cfgErr := config.LoadConfig(confFile, true)
 				Expect(cfgErr).Should(Succeed())
