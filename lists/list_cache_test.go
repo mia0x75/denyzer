@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/mia0x75/denyzer/cache/stringcache"
 	"github.com/mia0x75/denyzer/config"
 	. "github.com/mia0x75/denyzer/evt"
@@ -608,7 +608,7 @@ func createTestListFile(tb testFailer, dir string, totalLines int) (string, int)
 
 	w := bufio.NewWriter(file)
 	for range totalLines {
-		fmt.Fprintln(w, uuid.NewString()+".com")
+		fmt.Fprintln(w, uuid.NewV7().String()+".com")
 	}
 
 	// close the file even if flushing fails, and report both errors

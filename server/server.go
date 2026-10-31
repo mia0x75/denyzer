@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/log"
@@ -20,7 +21,6 @@ import (
 	"github.com/mia0x75/denyzer/resolver"
 	"github.com/mia0x75/denyzer/server/freebind"
 
-	"github.com/google/uuid"
 	"github.com/hashicorp/go-multierror"
 	"github.com/mia0x75/denyzer/util"
 
@@ -748,7 +748,7 @@ func newRequest(
 	protocol model.RequestProtocol, request *dns.Msg,
 ) (context.Context, *model.Request) {
 	ctx, logger := log.CtxWithFields(ctx, logrus.Fields{
-		"req_id":    uuid.New().String(),
+		"req_id":    uuid.NewV7().String(),
 		"question":  util.QuestionToString(request.Question),
 		"client_ip": clientIP,
 	})
