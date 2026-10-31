@@ -525,6 +525,9 @@ type SourceLoading struct {
 
 	// Maximum number of sources downloaded and processed concurrently (default: 4).
 	Concurrency uint `default:"4" yaml:"concurrency"`
+	// Maximum number of list groups loaded concurrently; 0 selects a value from the
+	// number of groups and `concurrency` (default: auto).
+	GroupConcurrency uint `default:"0" yaml:"groupConcurrency"`
 	// Maximum parse errors per source before the source is considered invalid; -1 disables the limit.
 	MaxErrorsPerSource int `default:"5" yaml:"maxErrorsPerSource"`
 	// How often sources are reloaded; a value of 0 or less disables periodic refresh (default: 4h).
@@ -536,6 +539,13 @@ type SourceLoading struct {
 func (c *SourceLoading) LogConfig(logger *logrus.Entry) {
 	c.Init.LogConfig(logger)
 	logger.Infof("concurrency = %d", c.Concurrency)
+
+	if c.GroupConcurrency > 0 {
+		logger.Infof("groupConcurrency = %d", c.GroupConcurrency)
+	} else {
+		logger.Infof("groupConcurrency = auto")
+	}
+
 	logger.Debugf("maxErrorsPerSource = %d", c.MaxErrorsPerSource)
 
 	if c.RefreshPeriod.IsAboveZero() {

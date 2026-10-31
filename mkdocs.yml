@@ -78,5 +78,7 @@ nav:
   - "Interfaces": "interfaces.md"
   - "Network configuration": "network_configuration.md"
   - "Additional information": "additional_information.md"
+  - "Performance":
+      - "Startup performance": "startup-performance.md"
   - "Decisions":
       - "SQLite driver and release pipeline": "sqlite-driver.md"

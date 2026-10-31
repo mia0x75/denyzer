@@ -329,6 +329,11 @@
               "description": "Maximum number of sources downloaded and processed concurrently (default: 4).",
               "default": 4
             },
+            "groupConcurrency": {
+              "type": "integer",
+              "description": "Maximum number of list groups loaded concurrently; 0 selects a value from the\nnumber of groups and `concurrency` (default: auto).",
+              "default": 0
+            },
             "maxErrorsPerSource": {
               "type": "integer",
               "description": "Maximum parse errors per source before the source is considered invalid; -1 disables the limit.",
@@ -1141,6 +1146,11 @@
               "type": "integer",
               "description": "Maximum number of sources downloaded and processed concurrently (default: 4).",
               "default": 4
+            },
+            "groupConcurrency": {
+              "type": "integer",
+              "description": "Maximum number of list groups loaded concurrently; 0 selects a value from the\nnumber of groups and `concurrency` (default: auto).",
+              "default": 0
             },
             "maxErrorsPerSource": {
               "type": "integer",

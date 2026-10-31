@@ -1937,3 +1937,26 @@ Default value is 4.
     As with other settings under `loading`, the limit applies to the blocking and hosts file resolvers separately.
     The total number of concurrent sources concurrently processed can reach the sum of both values.
     For example if blocking has a limit set to 8 and hosts file's is 4, there could be up to 12 concurrent jobs.
+
+### Group Concurrency
+
+Denyzer loads list groups concurrently. This limits how many groups are rebuilt at the same time.
+Larger values reduce startup and refresh time when several groups are configured, at the cost of holding
+several replacement caches in memory at once.
+
+The default is `auto`: one group per source concurrency slot, capped by the number of groups, i.e.
+`min(number of groups, max(1, loading.concurrency))`.
+Set it to `1` to rebuild one group at a time.
+
+!!! example
+
+    ```yaml
+    loading:
+      concurrency: 4
+      groupConcurrency: 2
+    ```
+
+!!! note
+
+    As with other settings under `loading`, the limit applies to the blocking and hosts file resolvers separately.
+    See [Startup performance](startup-performance.md) for benchmark results.

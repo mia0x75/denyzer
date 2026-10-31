@@ -167,9 +167,9 @@ func (b *ListCache) refresh(ctx context.Context) error {
 	producersGrp := jobgroup.WithMaxConcurrency(unlimitedGrp, b.cfg.Concurrency)
 	defer producersGrp.Close()
 
-	// Only one group retains a replacement cache and its parse buffers at a
-	// time. Producers and consumers remain outside this limit to avoid stalls.
-	groupsGrp := jobgroup.WithMaxConcurrency(unlimitedGrp, 1)
+	// Groups are loaded concurrently, up to the configured group concurrency.
+	// Producers and consumers remain outside this limit to avoid stalls.
+	groupsGrp := jobgroup.WithMaxConcurrency(unlimitedGrp, b.groupConcurrency(len(b.groupSources)))
 	defer groupsGrp.Close()
 
 	for group, sources := range b.groupSources {
@@ -210,6 +210,27 @@ func (b *ListCache) refresh(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// groupConcurrency returns the maximum number of list groups that may be loaded
+// concurrently.
+//
+// A configured value is used as-is. The default (0) selects a value
+// automatically: one group per source-concurrency slot, capped by the number of
+// groups. The result is never 0, which the job group would interpret as "no
+// limit".
+func (b *ListCache) groupConcurrency(groupCount int) uint {
+	if b.cfg.GroupConcurrency > 0 {
+		return b.cfg.GroupConcurrency
+	}
+
+	concurrency := max(1, b.cfg.Concurrency)
+
+	if groupCount > 0 && uint(groupCount) < concurrency {
+		concurrency = uint(groupCount)
+	}
+
+	return max(1, concurrency)
 }
 
 func (b *ListCache) createCacheForGroup(
@@ -283,7 +304,7 @@ func (b *ListCache) seedFromDisk(ctx context.Context) {
 	producersGrp := jobgroup.WithMaxConcurrency(unlimitedGrp, b.cfg.Concurrency)
 	defer producersGrp.Close()
 
-	groupsGrp := jobgroup.WithMaxConcurrency(unlimitedGrp, 1)
+	groupsGrp := jobgroup.WithMaxConcurrency(unlimitedGrp, b.groupConcurrency(len(localSources)))
 	defer groupsGrp.Close()
 
 	for group, sources := range localSources {

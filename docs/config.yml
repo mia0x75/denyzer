@@ -181,6 +181,11 @@ blocking:
     # optional: Maximum number of lists to process in parallel.
     # default: 4
     concurrency: 16
+    # optional: Maximum number of list groups to load in parallel.
+    # 0 selects a value automatically from the number of groups and `concurrency`.
+    # Set to 1 to load one group at a time.
+    # default: 0 (auto)
+    groupConcurrency: 2
     # Configure startup behavior.
     # accepted: blocking, failOnError, fast
     # default: blocking
@@ -373,6 +378,11 @@ hostsFile:
     # optional: Maximum number of files to process in parallel.
     # default: 4
     concurrency: 16
+    # optional: Maximum number of file groups to load in parallel.
+    # 0 selects a value automatically from the number of groups and `concurrency`.
+    # Set to 1 to load one group at a time.
+    # default: 0 (auto)
+    groupConcurrency: 2
     # Configure startup behavior.
     # accepted: blocking, failOnError, fast
     # default: blocking
