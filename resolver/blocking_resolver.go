@@ -244,16 +244,12 @@ func NewBlockingResolver(ctx context.Context,
 
 	downloader := lists.NewDownloader(cfg.Loading.Downloads, bootstrap.NewHTTPTransport())
 
-	denylistMatcher, blErr := lists.NewListCache(ctx, lists.ListCacheTypeDenylist,
-		cfg.Loading, cfg.Denylists, downloader)
-	allowlistMatcher, wlErr := lists.NewListCache(ctx, lists.ListCacheTypeAllowlist,
-		cfg.Loading, cfg.Allowlists, downloader)
-	allowlistOnlyGroups := determineAllowlistOnlyGroups(&cfg)
-
-	err = multierror.Append(err, blErr, wlErr).ErrorOrNil()
+	denylistMatcher, allowlistMatcher, err := newListCaches(ctx, cfg, downloader)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create denylist/allowlist cache: %w", err)
+		return nil, err
 	}
+
+	allowlistOnlyGroups := determineAllowlistOnlyGroups(&cfg)
 
 	res := &BlockingResolver{
 		configurable: withConfig(&cfg),
@@ -284,6 +280,46 @@ func NewBlockingResolver(ctx context.Context,
 	}
 
 	return res, nil
+}
+
+// newListCaches loads the denylist and the allowlist caches.
+func newListCaches(
+	ctx context.Context, cfg config.Blocking, downloader lists.FileDownloader,
+) (denylistMatcher, allowlistMatcher *lists.ListCache, err error) {
+	// The denylist and the allowlist are independent of each other: each one
+	// downloads and parses its own sources. Loading them one after the other
+	// would make the startup time the sum of both load times, so they are
+	// loaded concurrently instead.
+	var (
+		blErr error
+		wlErr error
+	)
+
+	var wg sync.WaitGroup
+
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+
+		denylistMatcher, blErr = lists.NewListCache(ctx, lists.ListCacheTypeDenylist,
+			cfg.Loading, cfg.Denylists, downloader)
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		allowlistMatcher, wlErr = lists.NewListCache(ctx, lists.ListCacheTypeAllowlist,
+			cfg.Loading, cfg.Allowlists, downloader)
+	}()
+
+	wg.Wait()
+
+	if err := multierror.Append(blErr, wlErr).ErrorOrNil(); err != nil {
+		return nil, nil, fmt.Errorf("failed to create denylist/allowlist cache: %w", err)
+	}
+
+	return denylistMatcher, allowlistMatcher, nil
 }
 
 func (r *BlockingResolver) subscribeEvents(ctx context.Context) error {
