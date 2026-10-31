@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,12 @@ func getIPv6Network(ctx context.Context) *testcontainers.DockerNetwork {
 // deferTerminate is a helper function to terminate the container when the test is finished.
 func deferTerminate[T testcontainers.Container](container T, err error) (T, error) {
 	DeferCleanup(func(ctx context.Context) error {
+		// A container that could not be started is returned as a typed nil pointer.
+		// There is nothing to terminate, and calling a method on it would panic.
+		if isNilContainer(container) {
+			return nil
+		}
+
 		if container.IsRunning() {
 			return container.Terminate(ctx)
 		}
@@ -65,6 +72,19 @@ func deferTerminate[T testcontainers.Container](container T, err error) (T, erro
 	})
 
 	return container, err
+}
+
+// isNilContainer reports whether the given container is nil. A container that
+// failed to start is handed out as a typed nil pointer, which is not equal to
+// nil once it is stored in the testcontainers.Container interface.
+func isNilContainer(container testcontainers.Container) bool {
+	if container == nil {
+		return true
+	}
+
+	value := reflect.ValueOf(container)
+
+	return value.Kind() == reflect.Pointer && value.IsNil()
 }
 
 // startContainerWithNetwork starts the container with the given alias and attaches it to the test network.
