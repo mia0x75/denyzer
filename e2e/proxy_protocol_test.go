@@ -49,13 +49,17 @@ var _ = Describe("PROXY protocol behind an nginx stream proxy", func() {
 				return queryDoTViaProxy(ctx, nginx, "dotquery.")
 			}, "30s", "1s").Should(Succeed())
 
-			nginxIP, err := getContainerNetworkIP(ctx, nginx, e2eNet.Name)
-			Expect(err).Should(Succeed())
-
 			clientIP := proxyProtocolClientIP(ctx, denyzer, "dotquery")
 			Expect(net.ParseIP(clientIP)).ShouldNot(BeNil())
-			Expect(clientIP).ShouldNot(Equal(nginxIP),
-				"denyzer should log the real client IP from the PROXY header, not the proxy's address")
+
+			// The PROXY protocol header contains the address nginx saw for the client
+			// connection. Depending on the container runtime, this is either the address of
+			// the real client or the address of the runtime's port forwarder. Asserting that
+			// denyzer used the address from the header is therefore independent of the
+			// runtime, while still verifying that the header was honored.
+			proxyAddr := nginxRemoteAddr(ctx, nginx, e2eDoTPort)
+			Expect(clientIP).Should(Equal(proxyAddr),
+				"denyzer should log the client IP from the PROXY header sent by nginx")
 		})
 
 		It("uses the PROXY header source as the client IP for DoH", func(ctx context.Context) {
@@ -63,13 +67,12 @@ var _ = Describe("PROXY protocol behind an nginx stream proxy", func() {
 				return queryDoHViaProxy(ctx, nginx, "dohquery.")
 			}, "30s", "1s").Should(Succeed())
 
-			nginxIP, err := getContainerNetworkIP(ctx, nginx, e2eNet.Name)
-			Expect(err).Should(Succeed())
-
 			clientIP := proxyProtocolClientIP(ctx, denyzer, "dohquery")
 			Expect(net.ParseIP(clientIP)).ShouldNot(BeNil())
-			Expect(clientIP).ShouldNot(Equal(nginxIP),
-				"denyzer should log the real client IP from the PROXY header, not the proxy's address")
+
+			proxyAddr := nginxRemoteAddr(ctx, nginx, e2eDoHPort)
+			Expect(clientIP).Should(Equal(proxyAddr),
+				"denyzer should log the client IP from the PROXY header sent by nginx")
 		})
 	})
 
@@ -202,10 +205,17 @@ func queryDoHViaProxy(ctx context.Context, nginx testcontainers.Container, quest
 		return fmt.Errorf("unexpected DoH status %d", resp.StatusCode)
 	}
 
+	// Close the keep-alive connection. The nginx stream proxy writes its access log entry
+	// when the proxied session ends, so the connection has to be closed to make the entry
+	// available to the test.
+	client.CloseIdleConnections()
+
 	return nil
 }
 
 var clientIPLogRe = regexp.MustCompile(`client_ip="?([0-9a-fA-F.:]+)`)
+
+var nginxRemoteAddrLogRe = regexp.MustCompile(`proxy_protocol_conn remote_addr=([0-9a-fA-F.:]+) server_port=(\d+)`)
 
 // proxyProtocolClientIP polls the denyzer container logs for the resolved-query log entry of the
 // given question name and returns the client_ip it recorded.
@@ -235,4 +245,34 @@ func proxyProtocolClientIP(ctx context.Context, denyzer testcontainers.Container
 		"expected a resolved-query log entry for %q with a client_ip field", questionName)
 
 	return clientIP
+}
+
+// nginxRemoteAddr polls the nginx container logs for the access log entry of the session
+// accepted on the given server port and returns the remote address nginx saw for it.
+// This is the address nginx sends in the PROXY protocol header to the upstream.
+func nginxRemoteAddr(ctx context.Context, nginx testcontainers.Container, serverPort int) string {
+	var remoteAddr string
+
+	Eventually(func() string {
+		lines, err := getContainerLogs(ctx, nginx)
+		if err != nil {
+			return ""
+		}
+
+		remoteAddr = ""
+
+		for _, line := range lines {
+			m := nginxRemoteAddrLogRe.FindStringSubmatch(line)
+			if m == nil || m[2] != strconv.Itoa(serverPort) {
+				continue
+			}
+
+			remoteAddr = m[1]
+		}
+
+		return remoteAddr
+	}, "15s", "500ms").ShouldNot(BeEmpty(),
+		"expected an nginx access log entry for server port %d", serverPort)
+
+	return remoteAddr
 }

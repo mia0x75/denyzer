@@ -48,6 +48,12 @@ const (
 	// denyzer (ready in <1s) is probed and marked healthy almost immediately.
 	healthcheckStartInterval = 250 * time.Millisecond
 
+	// healthcheckStartPeriod and healthcheckTimeout mirror the timing of the
+	// healthcheck in the Dockerfile, so that overriding the healthcheck doesn't
+	// change how a container is judged healthy.
+	healthcheckStartPeriod = time.Minute
+	healthcheckTimeout     = 3 * time.Second
+
 	// e2eDNSPort is the unprivileged DNS port the denyzer containers listen on
 	// in the e2e suite. The default port 53 is privileged: binding it requires
 	// CAP_NET_BIND_SERVICE, which the container image only carries in its
@@ -62,6 +68,19 @@ const (
 	e2eDoTPort = 8853
 	e2eDoHPort = 8443
 )
+
+// withRelabelOption adds the "z" mount option to a bind mount. It lets the
+// container runtime relabel the host path for the container. Without it the
+// container can't read or write the mounted files on hosts with SELinux
+// enabled. On hosts without SELinux the option has no effect.
+func withRelabelOption(bind string) string {
+	// The mount options are the third colon separated field of a bind mount.
+	if strings.Count(bind, ":") >= 2 {
+		return bind + ",z"
+	}
+
+	return bind + ":z"
+}
 
 // createDNSMokkaContainer creates a DNS mokka container with the given rules attached to the test network
 // under the given alias.
@@ -120,7 +139,7 @@ func createHTTPServerContainer(ctx context.Context, alias string, e2eNet *testco
 		ExposedPorts: []string{"8080/tcp"},
 		Env:          map[string]string{"FOLDER": "/data"},
 		HostConfigModifier: func(hc *container.HostConfig) {
-			hc.Binds = append(hc.Binds, dir+":/data:ro")
+			hc.Binds = append(hc.Binds, withRelabelOption(dir+":/data:ro"))
 		},
 	}
 
@@ -142,9 +161,15 @@ func createNginxStreamProxyContainer(ctx context.Context, e2eNet *testcontainers
 
 	// Minimal nginx.conf with only the stream module: TCP passthrough to denyzer so the TLS
 	// handshake (DoT/DoH) terminates at denyzer, optionally prefixed with a PROXY protocol header.
+	//
+	// The stream access log records the address nginx saw for the client connection. This is the
+	// address nginx puts into the PROXY protocol header, so the tests can verify that denyzer
+	// used it as the client IP, independently of the container runtime.
 	conf := fmt.Sprintf(`worker_processes 1;
 events {}
 stream {
+    log_format proxy_protocol 'proxy_protocol_conn remote_addr=$remote_addr server_port=$server_port';
+    access_log /dev/stdout proxy_protocol;
     server {
         listen %[1]d;
         proxy_pass denyzer:%[1]d;
@@ -200,12 +225,20 @@ func buildDenyzerContainerRequest(confFile string) testcontainers.ContainerReque
 		},
 		ConfigModifier: func(c *container.Config) {
 			c.Healthcheck = &container.HealthConfig{
+				// The test command has to be set explicitly. Some container
+				// runtimes (e.g. podman) reject a healthcheck without a command
+				// instead of falling back to the one from the image.
+				Test:     []string{"CMD", "/app/denyzer", "healthcheck"},
 				Interval: time.Second,
 				// During the image's start period Docker probes at the
 				// start-interval, which defaults to 5s. denyzer is ready in
 				// <1s, so without this every container wastes ~5s waiting to
 				// be marked healthy.
 				StartInterval: healthcheckStartInterval,
+				// Keep the timing of the image's healthcheck, so the override
+				// only changes how fast the container is probed.
+				StartPeriod: healthcheckStartPeriod,
+				Timeout:     healthcheckTimeout,
 			}
 			// Enable coverage collection if GOCOVERDIR is set
 			if coverDir != "" {
@@ -215,7 +248,7 @@ func buildDenyzerContainerRequest(confFile string) testcontainers.ContainerReque
 		HostConfigModifier: func(hc *container.HostConfig) {
 			// Mount coverage directory if enabled
 			if coverDir != "" {
-				hc.Binds = append(hc.Binds, coverDir+":/tmp/coverage")
+				hc.Binds = append(hc.Binds, withRelabelOption(coverDir+":/tmp/coverage"))
 			}
 		},
 		WaitingFor: wait.ForHealthCheck().WithStartupTimeout(startupTimeout),
@@ -226,7 +259,8 @@ func buildDenyzerContainerRequest(confFile string) testcontainers.ContainerReque
 
 // createDenyzerContainerInternal builds and starts a denyzer container from the given config
 // lines, mounting any extraFiles in addition to the generated config.yml and adding any
-// Docker bind mounts (each in "hostPath:containerPath" form).
+// Docker bind mounts (each in "hostPath:containerPath" form). The bind mounts are relabeled
+// for the container, see withRelabelOption.
 func createDenyzerContainerInternal(ctx context.Context, e2eNet *testcontainers.DockerNetwork,
 	extraFiles []testcontainers.ContainerFile, binds []string, lines ...string,
 ) (testcontainers.Container, error) {
@@ -248,18 +282,16 @@ func createDenyzerContainerInternal(ctx context.Context, e2eNet *testcontainers.
 		baseHostConfigModifier := req.HostConfigModifier
 		req.HostConfigModifier = func(hc *container.HostConfig) {
 			baseHostConfigModifier(hc)
-			hc.Binds = append(hc.Binds, binds...)
+			for _, bind := range binds {
+				hc.Binds = append(hc.Binds, withRelabelOption(bind))
+			}
 		}
 	}
 
 	container, err := startContainerWithNetwork(ctx, req, "denyzer", e2eNet)
 	if err != nil {
 		// attach container log if error occurs
-		if r, err := container.Logs(ctx); err == nil {
-			if b, err := io.ReadAll(r); err == nil {
-				AddReportEntry("denyzer container log", string(b))
-			}
-		}
+		attachContainerLog(ctx, container)
 
 		return container, err
 	}
@@ -274,8 +306,30 @@ func createDenyzerContainerInternal(ctx context.Context, e2eNet *testcontainers.
 	return container, nil
 }
 
+// attachContainerLog adds the log output of the given container to the test report.
+// It is used to capture the reason why a container didn't start.
+func attachContainerLog(ctx context.Context, container testcontainers.Container) {
+	// A container that could not be started is handed out as a typed nil pointer.
+	if isNilContainer(container) {
+		return
+	}
+
+	r, err := container.Logs(ctx)
+	if err != nil {
+		return
+	}
+
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return
+	}
+
+	AddReportEntry("denyzer container log", string(b))
+}
+
 // createDenyzerContainerWithBinds creates a denyzer container like createDenyzerContainer, but additionally
 // mounts the given Docker bind mounts (each in "hostPath:containerPath" form) into the container.
+// The bind mounts are relabeled for the container, see withRelabelOption.
 // It is automatically terminated when the test is finished.
 func createDenyzerContainerWithBinds(ctx context.Context, e2eNet *testcontainers.DockerNetwork,
 	binds []string, lines ...string,
