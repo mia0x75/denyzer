@@ -1812,7 +1812,8 @@ The supported source types are:
 
 ### Sources Loading
 
-This sections covers `loading` configuration that applies to both the blocking and hosts file resolvers.
+This section covers `loading` configuration that applies to both the blocking and hosts file resolvers,
+except `groupConcurrency`, which applies only to blocking lists.
 These settings apply only to the resolver under which they are nested.
 
 !!! example
@@ -1934,6 +1935,30 @@ Default value is 4.
 
 !!! note
 
-    As with other settings under `loading`, the limit applies to the blocking and hosts file resolvers separately.
-    The total number of concurrent sources concurrently processed can reach the sum of both values.
-    For example if blocking has a limit set to 8 and hosts file's is 4, there could be up to 12 concurrent jobs.
+    The limit applies independently to the denylist cache, the allowlist cache, and the hosts file resolver.
+    If blocking has a limit of 8 and hosts file's is 4, there can be up to 20 concurrent source jobs
+    (8 denylist + 8 allowlist + 4 hosts file).
+
+### Group Concurrency
+
+Denyzer loads list groups concurrently. This limits how many groups are rebuilt at the same time.
+Larger values reduce startup and refresh time when several groups are configured, at the cost of holding
+several replacement caches in memory at once.
+
+The default is `auto`: one group per source concurrency slot, capped by the number of groups, i.e.
+`min(number of groups, max(1, loading.concurrency))`.
+Set it to `1` to rebuild one group at a time.
+
+!!! example
+
+    ```yaml
+    loading:
+      concurrency: 4
+      groupConcurrency: 2
+    ```
+
+!!! note
+
+    The limit applies independently to the denylist and allowlist caches. Hosts files have no groups
+    and ignore this setting.
+    See [Startup performance](startup-performance.md) for benchmark results.
