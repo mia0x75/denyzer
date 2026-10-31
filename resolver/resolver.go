@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
@@ -289,22 +290,48 @@ func createGroupResolvers(
 	ctx context.Context, cfg config.UpstreamGroup, bootstrap *Bootstrap,
 ) ([]*upstreamResolverStatus, error) {
 	upstreams := cfg.GroupUpstreams()
-	resolvers := make([]*upstreamResolverStatus, 0, len(upstreams))
 
-	for _, upstream := range upstreams {
-		resolver, err := NewUpstreamResolver(ctx, newUpstreamConfig(upstream, cfg.Upstreams), bootstrap)
-		if err != nil {
-			continue // err was already logged
-		}
+	// Creating an upstream resolver runs a test query against it, so doing this
+	// one upstream at a time makes group initialisation the sum of every
+	// upstream's latency. The upstreams are independent, so they are initialised
+	// concurrently. Results are stored by index to preserve the configured order,
+	// which the strict strategy relies on.
+	resolvers := make([]*upstreamResolverStatus, len(upstreams))
+	created := make([]bool, len(upstreams))
 
-		resolvers = append(resolvers, newUpstreamResolverStatus(resolver))
+	var wg sync.WaitGroup
+
+	wg.Add(len(upstreams))
+
+	for i, upstream := range upstreams {
+		go func() {
+			defer wg.Done()
+
+			resolver, err := NewUpstreamResolver(ctx, newUpstreamConfig(upstream, cfg.Upstreams), bootstrap)
+			if err != nil {
+				return // err was already logged
+			}
+
+			resolvers[i] = newUpstreamResolverStatus(resolver)
+			created[i] = true
+		}()
 	}
 
-	if len(resolvers) == 0 {
+	wg.Wait()
+
+	valid := make([]*upstreamResolverStatus, 0, len(resolvers))
+
+	for i, resolver := range resolvers {
+		if created[i] {
+			valid = append(valid, resolver)
+		}
+	}
+
+	if len(valid) == 0 {
 		return nil, fmt.Errorf("no valid upstream for group %s", cfg.Name)
 	}
 
-	return resolvers, nil
+	return valid, nil
 }
 
 // formatUpstreamResolvers formats a list of upstream resolvers with their type and name
