@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"time"
 
 	. "github.com/mia0x75/denyzer/helpertest"
 	"github.com/mia0x75/denyzer/util"
@@ -265,8 +266,18 @@ var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 					msg := util.NewMsgWithQuestion("cloudflare.com.", A)
 					msg.SetEdns0(4096, true) // Enable DNSSEC OK (DO) bit
 
-					resp, err := doDNSRequest(ctx, denyzer, msg)
-					Expect(err).Should(Succeed())
+					// The upstream is a real DNS server, so the query can fail with a
+					// transient timeout, especially when the tests run in parallel. Retry
+					// in that case instead of failing the build.
+					var resp *dns.Msg
+
+					Eventually(func() error {
+						var err error
+
+						resp, err = doDNSRequest(ctx, denyzer, msg)
+
+						return err
+					}).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(Succeed())
 
 					// Should return NOERROR
 					Expect(resp.Rcode).Should(Equal(dns.RcodeSuccess))
