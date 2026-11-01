@@ -42,7 +42,11 @@ FRONTEND_DIR?=frontend
 DASHBOARD_OUT_DIR?=web/dashboard
 
 # define version of golangci-lint here. If defined in tools.go, go mod perfoms automatically downgrade to older version which doesn't work with golang >=1.18
-GOLANG_LINT_VERSION=v2.13.2
+#
+# v2.15.0 is the first version that understands the export data format emitted by
+# Go 1.27.3 ("export data version 5 is greater than maximum supported version 4"
+# with v2.13.2).
+GOLANG_LINT_VERSION=v2.15.0
 
 GINKGO_PROCS?=
 

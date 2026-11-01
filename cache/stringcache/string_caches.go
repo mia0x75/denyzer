@@ -2,7 +2,10 @@ package stringcache
 
 import (
 	"regexp"
+	"regexp/syntax"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sirupsen/logrus"
 
@@ -85,20 +88,30 @@ func (f *stringCacheFactory) create() stringCache {
 	return hashCache{seed: f.entries.seed, set: f.entries.build()}
 }
 
-type regexCache []*regexp.Regexp
+type regexEntry struct {
+	re       *regexp.Regexp
+	required string
+}
+
+type regexCache []regexEntry
 
 func (c regexCache) elementCount() int {
 	return len(c)
 }
 
 func (c regexCache) findMatch(searchString string) (string, bool) {
-	for _, regex := range c {
-		if regex.MatchString(searchString) {
-			logMatch("regex_cache", "regex", regex.String(), searchString)
+	for i := range c {
+		regex := &c[i]
+		if regex.required != "" && !strings.Contains(searchString, regex.required) {
+			continue
+		}
+
+		if regex.re.MatchString(searchString) {
+			logMatch("regex_cache", "regex", regex.re.String(), searchString)
 
 			// re-wrap in the '/.../' delimiters that addEntry strips on insertion
 			// so the reported rule matches the entry as configured by the user.
-			return "/" + regex.String() + "/", true
+			return "/" + regex.re.String() + "/", true
 		}
 	}
 
@@ -128,9 +141,76 @@ func (f *regexCacheFactory) addEntry(entry string) bool {
 		return true // invalid but handled
 	}
 
-	f.cache = append(f.cache, compile)
+	f.cache = append(f.cache, regexEntry{re: compile, required: regexRequiredLiteral(entry)})
 
 	return true
+}
+
+// regexRequiredLiteral returns a literal present in every possible match, or
+// empty to leave the pattern on the unfiltered standard-library path. Parsing
+// happens only on insertion; lookup never parses or allocates filter state.
+func regexRequiredLiteral(pattern string) string {
+	tree, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return ""
+	}
+
+	return requiredLiteral(tree)
+}
+
+func requiredLiteral(tree *syntax.Regexp) string {
+	switch tree.Op {
+	case syntax.OpLiteral:
+		if tree.Flags&syntax.FoldCase != 0 {
+			return ""
+		}
+
+		// regexp treats malformed UTF-8 as RuneError. A byte substring check
+		// cannot prove absence of that rune in arbitrary query strings.
+		if slices.Contains(tree.Rune, utf8.RuneError) {
+			return ""
+		}
+
+		return string(tree.Rune)
+	case syntax.OpCapture, syntax.OpPlus:
+		return requiredLiteral(tree.Sub[0])
+	case syntax.OpRepeat:
+		if tree.Min > 0 {
+			return requiredLiteral(tree.Sub[0])
+		}
+	case syntax.OpConcat:
+		var longest string
+		for _, sub := range tree.Sub {
+			if literal := requiredLiteral(sub); len(literal) > len(longest) {
+				longest = literal
+			}
+		}
+
+		return longest
+	case syntax.OpNoMatch,
+		syntax.OpEmptyMatch,
+		syntax.OpCharClass,
+		syntax.OpAnyCharNotNL,
+		syntax.OpAnyChar,
+		syntax.OpBeginLine,
+		syntax.OpEndLine,
+		syntax.OpBeginText,
+		syntax.OpEndText,
+		syntax.OpWordBoundary,
+		syntax.OpNoWordBoundary,
+		syntax.OpStar,
+		syntax.OpQuest,
+		syntax.OpAlternate:
+		// Alternation, optional/zero repetitions, assertions, character
+		// classes, and empty-match operations deliberately fall back to no
+		// filter.
+		return ""
+	default:
+		// Keep unknown future syntax operations conservative.
+		return ""
+	}
+
+	return ""
 }
 
 func (f *regexCacheFactory) count() int {

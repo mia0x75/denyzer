@@ -161,7 +161,7 @@ func canonicalCacheDump(t *testing.T, files ...string) (dump string, parseErrs i
 
 	if rc, ok := (*regexC.caches.Load())[group]; ok && rc != nil {
 		for _, re := range rc.(regexCache) {
-			lines = append(lines, "regex\t"+re.String())
+			lines = append(lines, "regex\t"+re.re.String())
 			regexCount++
 		}
 	}

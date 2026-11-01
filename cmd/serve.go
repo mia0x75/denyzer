@@ -154,7 +154,7 @@ func printBanner() {
 	log.Log().Info("|   ███ ███ ███▀▀▀▀ ███ ███  ▀▀▀███   ██▀   ███▀▀▀▀ ███       |")
 	log.Log().Info("|   ███ ███ ███ ███ ███ ███ ███ ███ ▄██▀    ███ ███ ███       |")
 	log.Log().Info("|   ███▄██▀ ▀██▄██▀ ███ ███ ▀██▄██▀ ███████ ▀██▄██▀ ███       |")
-	log.Log().Infof("|   Version: %-16s Build time: %-18s  |", util.Version, util.BuildTime)
+	log.Log().Infof("|   Version: %-14s Build time: %-18s    |", util.Version, util.BuildTime)
 	log.Log().Info("|                                                             |")
 	log.Log().Info("+-------------------------------------------------------------+")
 }

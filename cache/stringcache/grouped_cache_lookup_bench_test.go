@@ -43,12 +43,28 @@ func buildBlockingCache(tb testing.TB, groups []string, nRegex, nWild, nString i
 
 // BenchmarkGroupedCacheStringHit measures looking up a domain that is an exact
 // entry in the (cheapest, last-in-chain) string cache while the group also holds
-// regexes. This is the case Tier 2b targets: today the lookup pays a full linear
-// regex scan before reaching the string match.
+// regexes. The reverse chain must short-circuit before the regex scan.
 func BenchmarkGroupedCacheStringHit(b *testing.B) {
 	cache := buildBlockingCache(b, []string{"default"}, 200, 200, 5000)
 	groups := []string{"default"}
 	hit := "string1234.example.com"
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		if m := cache.Contains(hit, groups); len(m) == 0 {
+			b.Fatalf("expected %q to match", hit)
+		}
+	}
+}
+
+// BenchmarkGroupedCacheWildcardHit is the corresponding guardrail for a
+// wildcard match: the reverse chain reaches wildcard before regex, so a hit
+// must not pay the regex scan either.
+func BenchmarkGroupedCacheWildcardHit(b *testing.B) {
+	cache := buildBlockingCache(b, []string{"default"}, 200, 200, 5000)
+	groups := []string{"default"}
+	hit := "sub.wild123.example"
 
 	b.ReportAllocs()
 
