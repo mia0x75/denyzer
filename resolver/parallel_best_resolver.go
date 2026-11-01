@@ -34,17 +34,29 @@ type ParallelBestResolver struct {
 	retryWithDifferentResolver bool
 }
 
+// noErrorTime marks an upstream that has not failed yet.
+const noErrorTime = math.MinInt64
+
 type upstreamResolverStatus struct {
-	resolver      Resolver
-	lastErrorTime atomic.Value
+	resolver Resolver
+
+	// clockBase anchors the error timestamps of this upstream. Elapsed times are
+	// measured against the monotonic clock, so a wall-clock adjustment cannot
+	// distort the error window.
+	clockBase time.Time
+
+	// lastErrorTime is the offset in nanoseconds between clockBase and the most
+	// recent error. It is noErrorTime until the upstream fails.
+	lastErrorTime atomic.Int64
 }
 
 func newUpstreamResolverStatus(resolver Resolver) *upstreamResolverStatus {
 	status := &upstreamResolverStatus{
-		resolver: resolver,
+		resolver:  resolver,
+		clockBase: time.Now(),
 	}
 
-	status.lastErrorTime.Store(time.Unix(0, 0))
+	status.lastErrorTime.Store(noErrorTime)
 
 	return status
 }
@@ -64,7 +76,7 @@ func (r *upstreamResolverStatus) resolve(ctx context.Context, req *model.Request
 	if err != nil {
 		// Ignore `Canceled`: resolver lost the race, not an error
 		if !errors.Is(err, context.Canceled) {
-			r.lastErrorTime.Store(time.Now())
+			r.lastErrorTime.Store(time.Since(r.clockBase).Nanoseconds())
 		}
 
 		return nil, fmt.Errorf("%s: %w", r.resolver, err)
@@ -184,7 +196,7 @@ func (r *ParallelBestResolver) Resolve(ctx context.Context, request *model.Reque
 func evaluateResponses(
 	logger *logrus.Entry, ch chan requestResponse, resolvers []*upstreamResolverStatus,
 ) (*model.Response, []error) {
-	collectedErrors := make([]error, 0, len(resolvers))
+	var collectedErrors []error
 
 	for len(collectedErrors) < len(resolvers) {
 		result := <-ch
@@ -221,7 +233,7 @@ func (r *ParallelBestResolver) retryWithDifferent(
 	}
 
 	logger.WithFields(logrus.Fields{
-		"resolver":     *resolver,
+		"resolver":     resolver.resolver,
 		logFieldAnswer: util.Obfuscate(util.AnswerToString(resp.Res.Answer)),
 	}).Debug("using response from resolver")
 
@@ -263,9 +275,13 @@ outer:
 
 		var weight float64 = errorWindowInSec
 
-		if t, ok := res.lastErrorTime.Load().(time.Time); ok && time.Since(t) < time.Hour {
-			// reduce weight: consider last error time
-			weight = math.Max(1, weight-(errorWindowInSec-time.Since(t).Minutes()))
+		if lastErrorOffset := res.lastErrorTime.Load(); lastErrorOffset != noErrorTime {
+			// Time since the last error, measured on the monotonic clock.
+			sinceError := time.Since(res.clockBase) - time.Duration(lastErrorOffset)
+			if sinceError < time.Hour {
+				// reduce weight: consider last error time
+				weight = math.Max(1, weight-(errorWindowInSec-sinceError.Minutes()))
+			}
 		}
 
 		w := uint(weight)

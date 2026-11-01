@@ -160,7 +160,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64
+          platforms: linux/amd64,linux/arm/v7,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.docker_meta.outputs.tags }}
           labels: ${{ steps.docker_meta.outputs.labels }}
@@ -299,6 +299,12 @@ jobs:
 
       # The ARM binaries are run under QEMU. The images are Debian based, so
       # curl is installed for the smoke test.
+      #
+      # No githubToken is passed on purpose: the token would let the action
+      # push its emulator images into this repository's package registry
+      # (run-on-arch-<owner>-<repo>-<arch>-<distro>), which fills the registry
+      # with packages nobody consumes. Without the token the images are built
+      # on every run instead.
       - name: Run smoke test under QEMU
         if: matrix.os == 'linux' && matrix.arch != 'amd64'
         uses: uraimo/run-on-arch-action@v3

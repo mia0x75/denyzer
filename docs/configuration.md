@@ -848,7 +848,13 @@ Examples:
 - `/^apple\.(de|com)$/` will only block `apple.de` and `apple.com`
 
 !!! warning
-    Regexes use more a lot more memory and are much slower than wildcards, you should use them as a last resort.
+    Regexes use much more memory and are slower than wildcards; use them as a last resort.
+
+Matching uses Go's standard-library `regexp` package. A required-literal pre-filter skips rules
+that cannot match without changing regex semantics or the first matching regex rule.
+See [Query performance](query-performance.md#phase-4-blocking-regex-pre-filter) for the
+query-time benefit and additional list-loading cost, and [Regex engine benchmark](regex-engine-benchmark.md)
+for the engine comparison. No additional configuration is needed.
 
 #### Storage of entries
 

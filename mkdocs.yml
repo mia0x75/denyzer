@@ -85,5 +85,7 @@ nav:
   - "Additional information": "additional_information.md"
   - "Performance":
       - "Startup performance": "startup-performance.md"
+      - "Query performance": "query-performance.md"
+      - "Regex engine benchmark": "regex-engine-benchmark.md"
   - "Decisions":
       - "SQLite driver and release pipeline": "sqlite-driver.md"

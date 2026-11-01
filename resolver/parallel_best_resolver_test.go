@@ -2,7 +2,10 @@ package resolver
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mia0x75/denyzer/config"
 	. "github.com/mia0x75/denyzer/helpertest"
@@ -12,6 +15,34 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+var _ = Describe("Upstream error timestamps", func() {
+	DescribeTable("records failures but not successful or canceled requests",
+		func(returnedErr error, wantFailure bool) {
+			ctx := context.Background()
+			request := newRequest("example.com", A)
+			upstream := NewMockChainedResolver(GinkgoT())
+			upstream.EXPECT().Resolve(ctx, request).Return(nil, returnedErr).Once()
+			if returnedErr != nil {
+				upstream.EXPECT().String().Return("test upstream").Once()
+			}
+			status := newUpstreamResolverStatus(upstream)
+			Expect(status.lastErrorTime.Load()).To(Equal(int64(noErrorTime)))
+			_, err := status.resolve(ctx, request)
+			Expect(errors.Is(err, returnedErr)).To(BeTrue())
+			if wantFailure {
+				Expect(status.lastErrorTime.Load()).To(BeNumerically(">=", 0))
+				Expect(status.lastErrorTime.Load()).To(BeNumerically("<=", time.Since(status.clockBase).Nanoseconds()))
+			} else {
+				Expect(status.lastErrorTime.Load()).To(Equal(int64(noErrorTime)))
+			}
+		},
+		Entry("success", nil, false),
+		Entry("lost race", context.Canceled, false),
+		Entry("wrapped cancellation", fmt.Errorf("lost race: %w", context.Canceled), false),
+		Entry("timeout", context.DeadlineExceeded, true),
+	)
+})
 
 var _ = Describe("ParallelBestResolver", Label("parallelBestResolver"), func() {
 	var (
