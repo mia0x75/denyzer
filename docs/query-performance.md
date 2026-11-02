@@ -4,6 +4,11 @@
     The tables record experiments from the source branch, including intermediate implementations.
     They are not fresh measurements of this branch. Use the reproduction commands to measure the current build.
 
+This report records the original four-phase query optimization. Its Logrus
+logging decision and measurements are historical: the subsequent
+[`log/slog` migration](logging-performance.md) replaces the eager entry cloning
+and separates isolated logging overhead from complete-chain/query measurements.
+
 ## Decision
 
 Denyzer will continue using Go's standard-library `regexp` package.
@@ -19,15 +24,15 @@ replacement.
 The optimization target is therefore the work around regex matching:
 
 1. measure the complete query path;
-2. evaluate the per-resolver logging plumbing (the lazy variant was rejected, see
-   Phase 2);
+2. evaluate the per-resolver logging plumbing (the initial Logrus lazy variant
+   was rejected, see Phase 2; the later slog migration is reported separately);
 3. remove avoidable per-query allocations;
 4. reduce the number of regex calls with a semantics-preserving blocking
    pre-filter.
 
 YAML work remains outside this plan.
 
-## Current baseline and rules
+## Original baseline and rules
 
 The existing startup work is complete and documented in
 [`startup-performance.md`](startup-performance.md). The query work uses the same
@@ -49,10 +54,13 @@ measurement discipline:
     -u SOCKS5_PROXY <command>
   ```
 
-`benchstat` cannot be installed in the build environment (no network access),
-so the A/B runner is a small local script: it builds both sides once, runs the
-alternating rounds, and reports the median, the min-max spread and the delta.
-The raw output of every round is kept in the temporary benchmark directory.
+At the time of these four phases, `benchstat` was unavailable in the build
+environment (no network access), so the A/B runner was a small local script: it
+built both sides once, ran the alternating rounds, and reported the median, the
+min-max spread and the delta.
+The raw output of every round is kept in the temporary benchmark directory. The
+later slog comparison uses `benchstat` and ten alternating pairs, not these
+historical timing tables.
 
 Every phase must report `ns/op`, `B/op`, and `allocs/op`, and must include
 correctness tests. A speedup that changes blocking decisions, response data,
@@ -215,9 +223,12 @@ numbers of the two tables are therefore not comparable with each other):
 
 ### What the baseline shows
 
-- **The logging plumbing is the largest per-query cost.** A chain of 15
-  resolvers pays 109 allocations and 10.2 KB per request for the context
-  logger alone, before a single line is written. The complete query path
+- **The logging plumbing is a large per-query cost.** The original 15-resolver
+  `BenchmarkChainLoggingPlumbing` pays 109 allocations and 10.2 KB per request
+  without writing a line, but also constructs the backend DNS response: these
+  totals are not isolated logging costs. The later slog report supplies an
+  isolated logging benchmark and retains this benchmark as a control. The
+  complete query path
   costs 53 allocations (cache hit) to 180 allocations (upstream miss), so the
   logger rebuild is a large part of the smaller numbers. This is the target of
   phase 2.
@@ -277,9 +288,9 @@ go test -c -o /tmp/bench/cand.test ./server/     # candidate revision
 
 ### Problem
 
-Each resolver currently calls `r.log(ctx)`. That rebuilds a context logger and
-copies logrus entry state once per resolver even when the configured level will
-not emit a log line. The existing
+In the original implementation, each resolver called `r.log(ctx)`. That rebuilt
+a context logger and copied Logrus entry state once per resolver even when the
+configured level would not emit a log line. The original
 `BenchmarkChainLoggingPlumbing` measures approximately 109 allocations and
 10 KB per 15-resolver request-shaped chain.
 
@@ -338,14 +349,15 @@ not support it safely:
   overwrote the prefix of the outer resolver and the dotted prefix chain
   (`blocking.client_id_cache`) collapsed to its first element.
 
-The final implementation keeps the eager plumbing that was in place before this
-phase: every resolver derives its entry from the request entry with
+This initial phase kept the eager plumbing that was in place before it:
+every resolver derived its entry from the request entry with
 `log.SetPrefix`, which replaces the prefix instead of accumulating it. The
 request fields (`req_id`, `question`, `client_ip`) are preserved, the prefix
 semantics are unchanged, and the cost is the logrus data-map clone that
-`Entry.WithField` performs - one clone per resolver per request. logrus is
-scheduled to be replaced by `log/slog`; until then the clone is accepted instead
-of adding a second logging mechanism next to logrus.
+`Entry.WithField` performed - one clone per resolver per request. The clone was
+accepted at that checkpoint instead of adding a second logging mechanism next
+to Logrus. The subsequent [slog migration](logging-performance.md) removes this
+cost without retaining the rejected hook or a compatibility bridge.
 
 The golden tests of the `log` package and the resolver tests cover the prefix
 and field output; `go test -race ./log ./resolver` covers the concurrent use of
@@ -388,7 +400,7 @@ Targets in `resolver/parallel_best_resolver.go`:
 
 Targets around `server.newRequest`:
 
-- retain UUID v7 semantics, but build the request `logrus.Fields` lazily where
+- retain UUID v7 semantics, but build the request logging fields lazily where
   possible;
 - calculate `QuestionToString` only when a Trace message is enabled;
 - avoid allocating secondary field maps for a disabled log line.

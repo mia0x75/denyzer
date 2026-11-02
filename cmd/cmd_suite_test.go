@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"maps"
 	"testing"
 
 	"github.com/mia0x75/denyzer/log"
@@ -32,18 +31,11 @@ func withContext(cmd *cobra.Command) *cobra.Command {
 // keepGlobals sets the global logger and the command settings back as they are now once
 // the spec ends
 func keepGlobals() {
-	logger := log.Log()
-	level, formatter, out, hooks := logger.GetLevel(), logger.Formatter, logger.Out, maps.Clone(logger.Hooks)
+	restoreLog := log.SaveSettings(log.Log())
 	path, host, port, dHost, dPort := configPath, apiHost, apiPort, dnsHost, dnsPort
 
 	DeferCleanup(func() {
-		// closes a syslog output the spec left
-		log.Configure(log.DefaultConfig())
-
-		logger.SetLevel(level)
-		logger.SetFormatter(formatter)
-		logger.SetOutput(out)
-		logger.ReplaceHooks(hooks)
+		restoreLog()
 
 		configPath, apiHost, apiPort, dnsHost, dnsPort = path, host, port, dHost, dPort
 	})

@@ -2,63 +2,50 @@ package log
 
 import (
 	"context"
-
-	"github.com/sirupsen/logrus"
+	"log/slog"
+	"slices"
 )
 
 type ctxKey struct{}
 
-func NewCtx(ctx context.Context, logger *logrus.Entry) (context.Context, *logrus.Entry) {
+// NewCtx stores an explicit logger, for scoped initialization or test capture.
+// Request fields should use CtxWithAttrs instead, keeping loggers reusable.
+func NewCtx(ctx context.Context, logger *slog.Logger) (context.Context, *slog.Logger) {
 	ctx = context.WithValue(ctx, ctxKey{}, logger)
 
-	return ctx, entryWithCtx(ctx, logger)
+	return ctx, logger
 }
 
-func FromCtx(ctx context.Context) *logrus.Entry {
-	logger, ok := ctx.Value(ctxKey{}).(*logrus.Entry)
-	if !ok {
-		// Fallback to the global logger
-		return logrus.NewEntry(Log())
-	}
-
-	// Ensure `logger.Context == ctx`, not always the case since `ctx` could be a child of `logger.Context`
-	return entryWithCtx(ctx, logger)
-}
-
-// baseFromCtx returns the entry stored in the context (or a fresh entry on the
-// global logger) WITHOUT copying it. The returned entry's `Context` may point at
-// an ancestor of `ctx`; callers that need `Context == ctx` must wrap it (FromCtx
-// copies via entryWithCtx; WrapCtx re-stamps Context via NewCtx).
-func baseFromCtx(ctx context.Context) *logrus.Entry {
-	if logger, ok := ctx.Value(ctxKey{}).(*logrus.Entry); ok {
+// FromCtx returns the explicitly scoped logger, or the global logger.
+func FromCtx(ctx context.Context) *slog.Logger {
+	if logger, ok := LoggerInCtx(ctx); ok {
 		return logger
 	}
 
-	// Fallback to the global logger
-	return logrus.NewEntry(Log())
+	return Log()
 }
 
-func entryWithCtx(ctx context.Context, logger *logrus.Entry) *logrus.Entry {
-	loggerCopy := *logger
-	loggerCopy.Context = ctx
+// LoggerInCtx returns only an explicitly scoped logger, without allocating.
+func LoggerInCtx(ctx context.Context) (*slog.Logger, bool) {
+	logger, ok := ctx.Value(ctxKey{}).(*slog.Logger)
 
-	return &loggerCopy
+	return logger, ok && logger != nil
 }
 
-// WrapCtx derives a new context logger by applying `wrap` to the context-stored entry.
-//
-// `wrap` MUST return a new entry (e.g. via WithField/WithFields) and MUST NOT mutate
-// the entry it is given in place: the base entry is passed without copying (the wrapped
-// result is a fresh entry and NewCtx re-stamps its Context), so an in-place mutation
-// would corrupt the shared context-stored logger.
-func WrapCtx(ctx context.Context, wrap func(*logrus.Entry) *logrus.Entry) (context.Context, *logrus.Entry) {
-	logger := wrap(baseFromCtx(ctx))
+// WrapCtx derives an immutable, explicitly scoped logger.
+func WrapCtx(ctx context.Context, wrap func(*slog.Logger) *slog.Logger) (context.Context, *slog.Logger) {
+	logger := wrap(FromCtx(ctx))
 
 	return NewCtx(ctx, logger)
 }
 
-func CtxWithFields(ctx context.Context, fields logrus.Fields) (context.Context, *logrus.Entry) {
-	return WrapCtx(ctx, func(e *logrus.Entry) *logrus.Entry {
-		return e.WithFields(fields)
-	})
+// CtxWithAttrs adds request-scoped fields. Handlers read them only for enabled
+// records; disabled logging does not derive a logger or resolve deferred values.
+func CtxWithAttrs(ctx context.Context, attrs ...slog.Attr) context.Context {
+	existing, _ := ctx.Value(attrsKey{}).([]slog.Attr)
+	fields := make([]slog.Attr, 0, len(existing)+len(attrs))
+	fields = append(fields, existing...)
+	fields = append(fields, cloneAttrs(attrs)...)
+
+	return context.WithValue(ctx, attrsKey{}, slices.Clip(fields))
 }

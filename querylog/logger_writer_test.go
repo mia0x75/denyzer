@@ -1,10 +1,10 @@
 package querylog
 
 import (
+	"log/slog"
 	"time"
 
-	"github.com/sirupsen/logrus"
-	"github.com/sirupsen/logrus/hooks/test"
+	"github.com/mia0x75/denyzer/log"
 
 	. "github.com/onsi/gomega"
 
@@ -16,16 +16,16 @@ var _ = Describe("LoggerWriter", func() {
 		When("New log entry was created", func() {
 			It("should be logged", func() {
 				writer := NewLoggerWriter()
-				logger, hook := test.NewNullLogger()
-				writer.logger = logger.WithField("k", "v")
+				logger, hook := log.NewMockLogger()
+				writer.logger = logger.With("k", "v")
 
 				writer.Write(&LogEntry{
 					Start:      time.Now(),
 					DurationMs: 20,
 				})
 
-				Expect(hook.Entries).Should(HaveLen(1))
-				Expect(hook.LastEntry().Message).Should(Equal("query resolved"))
+				Expect(hook.Records()).Should(HaveLen(1))
+				Expect(hook.LastRecord().Message).Should(Equal("query resolved"))
 			})
 		})
 		When("Cleanup is called", func() {
@@ -45,7 +45,9 @@ var _ = Describe("LoggerWriter", func() {
 				ResponseCode: "rcode",
 			}
 
-			fields := LogEntryFields(&entry)
+			record := slog.NewRecord(time.Time{}, slog.LevelInfo, "", 0)
+			record.AddAttrs(LogEntryFields(&entry)...)
+			fields := log.RecordFields(record)
 
 			Expect(fields).Should(HaveKeyWithValue("client_ip", entry.ClientIP))
 			Expect(fields).Should(HaveKeyWithValue("duration_ms", entry.DurationMs))
@@ -59,7 +61,7 @@ var _ = Describe("LoggerWriter", func() {
 
 	DescribeTable("withoutZeroes",
 		func(value any, isZero bool) {
-			fields := withoutZeroes(logrus.Fields{"a": value})
+			fields := withoutZeroes([]slog.Attr{slog.Any("a", value)})
 
 			if isZero {
 				Expect(fields).Should(BeEmpty())

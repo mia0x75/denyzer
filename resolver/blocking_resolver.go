@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"math"
 	"net"
@@ -27,7 +28,6 @@ import (
 	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 const defaultBlockingCleanUpInterval = 5 * time.Second
@@ -132,7 +132,7 @@ func clientGroupsBlock(cfg config.Blocking) map[string][]scheduledGroup {
 				sched.Compile()
 				listScheds[listName] = append(listScheds[listName], &sched)
 			} else {
-				log.Log().Warnf("listSchedules '%s' references unknown schedule '%s', skipping", listName, schedName)
+				log.Log().Warn(fmt.Sprintf("listSchedules '%s' references unknown schedule '%s', skipping", listName, schedName))
 			}
 		}
 	}
@@ -409,17 +409,23 @@ func (r *BlockingResolver) DisableBlocking(ctx context.Context, duration time.Du
 		s.autoEnable = false
 		s.disableEnd = time.Time{}
 
-		log.Log().Infof("disable blocking for group(s) '%s'", log.EscapeInput(strings.Join(s.disabledGroups, "; ")))
+		log.Log().InfoContext(ctx, fmt.Sprintf(
+			"disable blocking for group(s) '%s'",
+			log.EscapeInput(strings.Join(s.disabledGroups, "; ")),
+		))
 	} else {
 		s.autoEnable = true
 		s.disableEnd = time.Now().Add(duration)
 
-		log.Log().Infof("disable blocking for %s for group(s) '%s'", duration,
-			log.EscapeInput(strings.Join(s.disabledGroups, "; ")))
+		log.Log().InfoContext(ctx, fmt.Sprintf(
+			"disable blocking for %s for group(s) '%s'",
+			duration,
+			log.EscapeInput(strings.Join(s.disabledGroups, "; ")),
+		))
 
 		s.enableTimer = time.AfterFunc(duration, func() {
 			r.EnableBlocking(ctx)
-			log.Log().Info("blocking enabled again")
+			log.Log().InfoContext(ctx, "blocking enabled again")
 		})
 	}
 
@@ -482,19 +488,26 @@ func determineAllowlistOnlyGroups(cfg *config.Blocking) (result map[string]bool)
 }
 
 // sets answer and/or return code for DNS response, if request should be blocked
-func (r *BlockingResolver) handleBlocked(logger *logrus.Entry,
-	request *model.Request, question dns.Question, reason string,
+func (r *BlockingResolver) handleBlocked(
+	ctx context.Context,
+	logger *slog.Logger,
+	request *model.Request,
+	question dns.Question,
+	reason string,
+	field slog.Attr,
 ) (*model.Response, error) {
 	modelResp := model.NewResponseWithReason(request, model.ResponseTypeBLOCKED, reason)
 	r.blockHandler.handleBlock(question, modelResp.Res)
 
-	logger.Debugf("blocking request '%s'", reason)
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.LogAttrs(ctx, slog.LevelDebug, fmt.Sprintf("blocking request '%s'", reason), field)
+	}
 
 	return modelResp, nil
 }
 
 // LogConfig implements `config.Configurable`.
-func (r *BlockingResolver) LogConfig(logger *logrus.Entry) {
+func (r *BlockingResolver) LogConfig(logger *slog.Logger) {
 	r.cfg.LogConfig(logger)
 
 	logger.Info("denylist cache entries:")
@@ -504,19 +517,32 @@ func (r *BlockingResolver) LogConfig(logger *logrus.Entry) {
 	log.WithIndent(logger, "  ", r.allowlistMatcher.LogConfig)
 }
 
+//nolint:funlen // multiline, guarded logging keeps allowlist and denylist decisions in their original order
 func (r *BlockingResolver) handleDenylist(ctx context.Context, groupsToCheck []string, allowlistOnly bool,
-	request *model.Request, logger *logrus.Entry,
+	request *model.Request, logger *slog.Logger,
 ) (bool, *model.Response, error) {
-	if isDebugEnabled(logger) {
-		logger.WithField("groupsToCheck", strings.Join(groupsToCheck, "; ")).Debug("checking groups for request")
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"checking groups for request",
+			slog.Any("groupsToCheck", strings.Join(groupsToCheck, "; ")),
+		)
 	}
 
 	for _, question := range request.Req.Question {
 		domain := util.ExtractDomain(question)
-		logger := logger.WithField(logFieldDomain, domain)
 
 		if matches := r.matches(groupsToCheck, r.allowlistMatcher, domain); len(matches) > 0 {
-			logger.WithField("matches", matches).Debug("domain is allowlisted")
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.LogAttrs(
+					ctx,
+					slog.LevelDebug,
+					"domain is allowlisted",
+					slog.String(logFieldDomain, domain),
+					slog.Any("matches", matches),
+				)
+			}
 
 			resp, err := r.next.Resolve(ctx, request)
 			if err != nil {
@@ -527,7 +553,14 @@ func (r *BlockingResolver) handleDenylist(ctx context.Context, groupsToCheck []s
 		}
 
 		if allowlistOnly {
-			resp, err := r.handleBlocked(logger, request, question, "BLOCKED (ALLOWLIST ONLY)")
+			resp, err := r.handleBlocked(
+				ctx,
+				logger,
+				request,
+				question,
+				"BLOCKED (ALLOWLIST ONLY)",
+				slog.String(logFieldDomain, domain),
+			)
 			if err != nil {
 				err = fmt.Errorf("failed to handle allowlist-only block for %s: %w", domain, err)
 			}
@@ -536,8 +569,14 @@ func (r *BlockingResolver) handleDenylist(ctx context.Context, groupsToCheck []s
 		}
 
 		if matches := r.matches(groupsToCheck, r.denylistMatcher, domain); len(matches) > 0 {
-			resp, err := r.handleBlocked(logger, request, question,
-				formatBlockReason(matches, ""))
+			resp, err := r.handleBlocked(
+				ctx,
+				logger,
+				request,
+				question,
+				formatBlockReason(matches, ""),
+				slog.String(logFieldDomain, domain),
+			)
 
 			return true, resp, err
 		}
@@ -549,7 +588,7 @@ func (r *BlockingResolver) handleDenylist(ctx context.Context, groupsToCheck []s
 // Resolve checks the query against the denylist and delegates to next resolver if domain is not blocked
 func (r *BlockingResolver) Resolve(ctx context.Context, request *model.Request) (*model.Response, error) {
 	// When no client groups are configured there is nothing to block, so skip the
-	// per-request logger derivation and group resolution entirely (matches the
+	// logging and group resolution entirely (matches the
 	// disabled-path early-return in hosts_file/rebinding resolvers).
 	if !r.IsEnabled() {
 		return r.next.Resolve(ctx, request)
@@ -567,19 +606,38 @@ func (r *BlockingResolver) Resolve(ctx context.Context, request *model.Request) 
 
 	respFromNext, err := r.next.Resolve(ctx, request)
 
-	if err == nil && len(groupsToCheck) > 0 && respFromNext.Res != nil {
-		for _, rr := range respFromNext.Res.Answer {
-			entryToCheck, tName := extractEntryToCheckFromResponse(rr)
-			if len(entryToCheck) > 0 {
-				logger := logger.WithField("response_entry", entryToCheck)
+	if err != nil || len(groupsToCheck) == 0 || respFromNext.Res == nil {
+		return respFromNext, err
+	}
 
-				if matches := r.matches(groupsToCheck, r.allowlistMatcher, entryToCheck); len(matches) > 0 {
-					logger.WithField("matches", matches).Debugf("%s is allowlisted", tName)
-				} else if matches := r.matches(groupsToCheck, r.denylistMatcher, entryToCheck); len(matches) > 0 {
-					return r.handleBlocked(logger, request, request.Req.Question[0],
-						formatBlockReason(matches, tName))
-				}
+	for _, rr := range respFromNext.Res.Answer {
+		entryToCheck, tName := extractEntryToCheckFromResponse(rr)
+		if entryToCheck == "" {
+			continue
+		}
+
+		if matches := r.matches(groupsToCheck, r.allowlistMatcher, entryToCheck); len(matches) > 0 {
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.LogAttrs(
+					ctx,
+					slog.LevelDebug,
+					tName+" is allowlisted",
+					slog.String("response_entry", entryToCheck),
+					slog.Any("matches", matches),
+				)
 			}
+
+			continue
+		}
+		if matches := r.matches(groupsToCheck, r.denylistMatcher, entryToCheck); len(matches) > 0 {
+			return r.handleBlocked(
+				ctx,
+				logger,
+				request,
+				request.Req.Question[0],
+				formatBlockReason(matches, tName),
+				slog.String("response_entry", entryToCheck),
+			)
 		}
 	}
 
@@ -827,7 +885,7 @@ func (b ipBlockHandler) handleBlock(question dns.Question, response *dns.Msg) {
 }
 
 func (r *BlockingResolver) queryForFQIdentifierIPs(ctx context.Context, identifier string) (*[]net.IP, time.Duration) {
-	ctx, logger := r.logWith(ctx, func(logger *logrus.Entry) *logrus.Entry {
+	ctx, logger := r.logWith(ctx, func(logger *slog.Logger) *slog.Logger {
 		return log.WithPrefix(logger, "client_id_cache")
 	})
 
@@ -855,10 +913,13 @@ func (r *BlockingResolver) queryForFQIdentifierIPs(ctx context.Context, identifi
 	}
 
 	if len(result) != 0 {
-		logger.WithFields(logrus.Fields{
-			"ips":       result,
-			"client_id": identifier,
-		}).Debug("resolved client IPs")
+		logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"resolved client IPs",
+			slog.Any("ips", result),
+			slog.Any("client_id", identifier),
+		)
 	}
 
 	return &result, ttl

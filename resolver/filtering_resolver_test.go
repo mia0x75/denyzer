@@ -35,7 +35,8 @@ func newHTTPSRecord() *dns.HTTPS {
 			&dns.SVCBAlpn{Alpn: []string{"h3", "h2"}},
 			&dns.SVCBIPv4Hint{Hint: []net.IP{net.ParseIP("104.16.123.96")}},
 			&dns.SVCBIPv6Hint{Hint: []net.IP{net.ParseIP("2606:4700::6810:7b60")}},
-		}}
+		},
+	}
 }
 
 // newHTTPSRecordNoV6Hint builds an HTTPS RR for example.com. with alpn and an ipv4hint, but no ipv6hint.
@@ -47,7 +48,8 @@ func newHTTPSRecordNoV6Hint() *dns.HTTPS {
 		Value: []dns.SVCBKeyValue{
 			&dns.SVCBAlpn{Alpn: []string{"h3", "h2"}},
 			&dns.SVCBIPv4Hint{Hint: []net.IP{net.ParseIP("104.16.123.96")}},
-		}}
+		},
+	}
 }
 
 // newRRSIG builds a minimal RRSIG RR covering the given record type.
@@ -111,11 +113,11 @@ var _ = Describe("FilteringResolver", func() {
 
 	Describe("LogConfig", func() {
 		It("should log something", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 
 			sut.LogConfig(logger)
 
-			Expect(hook.Calls).ShouldNot(BeEmpty())
+			Expect(hook.Records()).ShouldNot(BeEmpty())
 		})
 	})
 

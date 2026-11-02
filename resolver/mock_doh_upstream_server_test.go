@@ -145,6 +145,7 @@ func (m *MockDoHUpstreamServer) trackConn(conn net.Conn, state http.ConnState) {
 	}
 }
 
+//nolint:contextcheck // fatal mock failures terminate the process, not the HTTP request
 func (m *MockDoHUpstreamServer) handle(w http.ResponseWriter, r *http.Request) {
 	// Read the request fully before deciding what to do, so a killed connection
 	// fails while the client waits for the response - as it does in the wild -
@@ -236,6 +237,7 @@ type stalePooledConnTransport struct {
 	answerFn func(request *dns.Msg) (response *dns.Msg)
 }
 
+//nolint:contextcheck // fatal mock failures terminate the process, not the HTTP request
 func (t *stalePooledConnTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.calls.Add(1)
 

@@ -46,11 +46,11 @@ var _ = Describe("NoOpResolver", func() {
 
 	Describe("LogConfig", func() {
 		It("should not log anything", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 
 			sut.LogConfig(logger)
 
-			Expect(hook.Calls).Should(BeEmpty())
+			Expect(hook.Records()).Should(BeEmpty())
 		})
 	})
 })

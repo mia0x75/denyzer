@@ -26,11 +26,11 @@ var _ = Describe("StatisticsConfig", func() {
 
 	Describe("LogConfig", func() {
 		It("logs the enabled state", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 
 			cfg.LogConfig(logger)
 
-			Expect(hook.Calls).ShouldNot(BeEmpty())
+			Expect(hook.Records()).ShouldNot(BeEmpty())
 		})
 	})
 })

@@ -19,7 +19,6 @@ import (
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/docs"
 	. "github.com/mia0x75/denyzer/helpertest"
-	. "github.com/mia0x75/denyzer/log"
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/resolver"
 	"github.com/mia0x75/denyzer/util"
@@ -830,7 +829,7 @@ var _ = Describe("Running DNS server", func() {
 			It("logs a warning and leaves http3Server nil", func() {
 				cfg.HTTP3.Enable = true
 
-				logHook := installLogHook()
+				logHook := installLogRecorder()
 				DeferCleanup(logHook.uninstall)
 
 				srv, err := NewServer(ctx, &cfg)
@@ -853,7 +852,7 @@ var _ = Describe("Running DNS server", func() {
 				cfg.HTTP3.Enable = true
 				cfg.Ports.ProxyProtocol = config.ProxyProtocolListeners{config.ProxyProtocolTypeHttps}
 
-				logHook := installLogHook()
+				logHook := installLogRecorder()
 				DeferCleanup(logHook.uninstall)
 
 				srv, err := NewServer(ctx, &cfg)
@@ -1730,17 +1729,17 @@ var _ = Describe("Running DNS server", func() {
 func requestServer(ctx context.Context, request *dns.Msg) *dns.Msg {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "udp", GetHostPort("", dnsBasePort))
 	if err != nil {
-		Log().Fatal("could not connect to server: ", err)
+		util.FatalOnError("could not connect to server: ", err)
 	}
 	defer conn.Close()
 
 	msg, err := request.Pack()
 	if err != nil {
-		Log().Fatal("can't pack request: ", err)
+		util.FatalOnError("can't pack request: ", err)
 	}
 
 	if _, err = conn.Write(msg); err != nil {
-		Log().Fatal("can't send request to server: ", err)
+		util.FatalOnError("can't send request to server: ", err)
 	}
 
 	out := make([]byte, 1024)
@@ -1750,14 +1749,14 @@ func requestServer(ctx context.Context, request *dns.Msg) *dns.Msg {
 
 		err = response.Unpack(out)
 		if err != nil {
-			Log().Fatal("can't unpack response: ", err)
+			util.FatalOnError("can't unpack response: ", err)
 		}
 
 		return response
 	}
 
 	if err != nil {
-		Log().Fatal("could not read from connection", err)
+		util.FatalOnError("could not read from connection", err)
 	}
 
 	return nil

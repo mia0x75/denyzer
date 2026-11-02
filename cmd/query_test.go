@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 
 	"github.com/mia0x75/denyzer/log"
-	"github.com/sirupsen/logrus/hooks/test"
 
 	"github.com/mia0x75/denyzer/api"
 
@@ -18,7 +17,7 @@ var _ = Describe("Blocking command", func() {
 	var (
 		ts         *httptest.Server
 		mockFn     func(w http.ResponseWriter, _ *http.Request)
-		loggerHook *test.Hook
+		loggerHook *log.Recorder
 	)
 	JustBeforeEach(func() {
 		ts = testHTTPAPIServer(mockFn)
@@ -28,8 +27,9 @@ var _ = Describe("Blocking command", func() {
 	})
 	BeforeEach(func() {
 		mockFn = func(w http.ResponseWriter, _ *http.Request) {}
-		loggerHook = test.NewGlobal()
-		log.Log().AddHook(loggerHook)
+		var cleanup func()
+		loggerHook, cleanup = log.Capture(log.Log())
+		DeferCleanup(cleanup)
 	})
 	AfterEach(func() {
 		loggerHook.Reset()
@@ -67,7 +67,7 @@ var _ = Describe("Blocking command", func() {
 			})
 			It("should print result", func() {
 				Expect(query(withContext(NewQueryCommand()), []string{"google.de"})).Should(Succeed())
-				Expect(loggerHook.LastEntry().Message).Should(ContainSubstring("NOERROR"))
+				Expect(loggerHook.LastRecord().Message).Should(ContainSubstring("NOERROR"))
 			})
 		})
 		When("Server returns 500", func() {

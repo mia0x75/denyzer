@@ -4,11 +4,10 @@ package log
 
 import (
 	"fmt"
+	"log/slog"
 	"log/syslog"
 	"slices"
 	"strings"
-
-	"github.com/sirupsen/logrus"
 )
 
 // Facilities a DNS server can sensibly claim: the system daemon facility and the
@@ -28,9 +27,8 @@ var syslogFacilities = map[SyslogFacility]syslog.Priority{
 	SyslogFacilityLocal7: syslog.LOG_LOCAL7,
 }
 
-// newSyslogWriter connects to syslog and returns a writer logging each entry at
-// the priority matching the level levelFormatter prefixed it with.
-func newSyslogWriter(cfg SyslogConfig) (syslogOutput, error) {
+// newSyslogWriter connects to syslog, accepting each record's severity directly.
+func newSyslogWriter(cfg SyslogConfig) (syslogTransport, error) {
 	facility, found := syslogFacilities[cfg.Facility]
 	if !found {
 		names := SyslogFacilityNames()
@@ -62,35 +60,31 @@ func (w *syslogWriter) closeSyslog() error {
 	return w.writer.Close()
 }
 
-// Write implements `io.Writer`.
-func (w *syslogWriter) Write(p []byte) (int, error) {
-	level, line := splitLevel(p)
+func (w *syslogWriter) writeRecord(level slog.Level, line []byte) error {
 	write := w.writeFunc(level)
 
 	// a syslog record is a single line, so a multi-line entry becomes one record
 	// per line rather than one record containing newlines
 	for message := range strings.SplitSeq(strings.TrimRight(string(line), "\n"), "\n") {
 		if err := write(message); err != nil {
-			return 0, err
+			return err
 		}
 	}
 
-	return len(p), nil
+	return nil
 }
 
-func (w *syslogWriter) writeFunc(level logrus.Level) func(string) error {
-	switch level {
-	case logrus.PanicLevel, logrus.FatalLevel:
+func (w *syslogWriter) writeFunc(level slog.Level) func(string) error {
+	switch {
+	case level >= LevelFatal:
 		return w.writer.Crit
-	case logrus.ErrorLevel:
+	case level >= slog.LevelError:
 		return w.writer.Err
-	case logrus.WarnLevel:
+	case level >= slog.LevelWarn:
 		return w.writer.Warning
-	case logrus.InfoLevel:
+	case level >= slog.LevelInfo:
 		return w.writer.Info
-	case logrus.DebugLevel, logrus.TraceLevel:
-		return w.writer.Debug
 	default:
-		return w.writer.Info
+		return w.writer.Debug
 	}
 }

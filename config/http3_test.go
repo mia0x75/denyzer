@@ -37,8 +37,8 @@ var _ = Describe("HTTP3Config", func() {
 			cfg := HTTP3{Enable: true}
 			cfg.LogConfig(logger)
 
-			Expect(hook.Calls).Should(HaveLen(1))
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("enabled")))
+			Expect(hook.Records()).Should(HaveLen(1))
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("enabled")))
 		})
 	})
 

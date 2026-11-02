@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -11,7 +12,6 @@ import (
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/util"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -145,10 +145,17 @@ func (r *UpstreamTreeResolver) String() string {
 func (r *UpstreamTreeResolver) Resolve(ctx context.Context, request *model.Request) (*model.Response, error) {
 	ctx, logger := r.log(ctx)
 
-	group := r.upstreamGroupByClient(logger, request)
+	group := r.upstreamGroupByClient(ctx, logger, request)
 
 	// delegate request to group resolver
-	logger.WithField("resolver", fmt.Sprintf("%s (%s)", group, r.branches[group].Type())).Debug("delegating to resolver")
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"delegating to resolver",
+			slog.String("resolver", fmt.Sprintf("%s (%s)", group, r.branches[group].Type())),
+		)
+	}
 
 	resp, err := r.branches[group].Resolve(ctx, request)
 	if err != nil {
@@ -158,7 +165,11 @@ func (r *UpstreamTreeResolver) Resolve(ctx context.Context, request *model.Reque
 	return resp, nil
 }
 
-func (r *UpstreamTreeResolver) upstreamGroupByClient(logger *logrus.Entry, request *model.Request) string {
+func (r *UpstreamTreeResolver) upstreamGroupByClient(
+	ctx context.Context,
+	logger *slog.Logger,
+	request *model.Request,
+) string {
 	groups := make([]string, 0, len(r.branches))
 	clientIP := request.ClientIP.String()
 
@@ -191,11 +202,14 @@ func (r *UpstreamTreeResolver) upstreamGroupByClient(logger *logrus.Entry, reque
 			// validation cache by this group, and its sub-queries must reach the same group.
 			slices.Sort(groups)
 
-			logger.WithFields(logrus.Fields{
-				"clientNames": request.ClientNames,
-				"clientIP":    clientIP,
-				"groups":      groups,
-			}).Warn("client matches multiple groups")
+			logger.LogAttrs(
+				ctx,
+				slog.LevelWarn,
+				"client matches multiple groups",
+				slog.Any("clientNames", request.ClientNames),
+				slog.String("clientIP", clientIP),
+				slog.Any("groups", groups),
+			)
 		}
 
 		return groups[0]

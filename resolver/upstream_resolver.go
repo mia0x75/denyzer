@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -26,7 +27,6 @@ import (
 	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -81,14 +81,15 @@ func (c upstreamConfig) IsEnabled() bool {
 }
 
 // LogConfig implements `config.Configurable`.
-func (c upstreamConfig) LogConfig(logger *logrus.Entry) {
+func (c upstreamConfig) LogConfig(logger *slog.Logger) {
 	if len(c.CertificateFingerprints) > 0 {
-		logger.WithFields(logrus.Fields{
-			"cert_pinning":  true,
-			"pinned_hashes": len(c.CertificateFingerprints),
-		}).Info(c.Upstream)
+		logger.Info(
+			fmt.Sprint(c.Upstream),
+			slog.Any("cert_pinning", true),
+			slog.Any("pinned_hashes", len(c.CertificateFingerprints)),
+		)
 	} else {
-		logger.Info(c.Upstream)
+		logger.Info(fmt.Sprint(c.Upstream))
 	}
 }
 
@@ -123,6 +124,7 @@ type httpUpstreamClient struct {
 	client    *http.Client
 	host      string
 	userAgent string
+	upstream  string
 }
 
 // createCertificatePinningVerifier creates a certificate verifier that validates
@@ -205,6 +207,7 @@ func createUpstreamClient(cfg upstreamConfig) upstreamClient {
 
 		return &httpUpstreamClient{
 			userAgent: cfg.UserAgent,
+			upstream:  cfg.String(),
 			client: &http.Client{
 				Transport: transport,
 			},
@@ -236,8 +239,7 @@ func createUpstreamClient(cfg upstreamConfig) upstreamClient {
 		}
 
 	default:
-		log.Log().Fatalf("invalid protocol %s", cfg.Net)
-		panic("unreachable")
+		panic(fmt.Sprintf("invalid protocol %s", cfg.Net))
 	}
 }
 
@@ -360,7 +362,11 @@ func (r *httpUpstreamClient) callExternal(
 		// message could be: a larger body is not worth reading to keep the connection
 		// See: https://pkg.go.dev/net/http#Response.Body
 		_, _ = io.CopyN(io.Discard, httpResponse.Body, dns.MaxMsgSize)
-		util.LogOnError(ctx, "can't close response body ", httpResponse.Body.Close())
+		if err := httpResponse.Body.Close(); err != nil {
+			logger := log.SetPrefix(log.FromCtx(ctx), upstreamResolverType)
+			logger.LogAttrs(ctx, slog.LevelError, "can't close response body "+err.Error(),
+				slog.String(logFieldUpstream, r.upstream))
+		}
 	}()
 
 	if httpResponse.StatusCode != http.StatusOK {
@@ -571,7 +577,7 @@ func NewUpstreamResolver(
 	onErr := func(err error) {
 		_, logger := r.log(ctx)
 
-		logger.WithError(err).Warn("initial resolver test failed")
+		logger.LogAttrs(ctx, slog.LevelWarn, "initial resolver test failed", slog.Any("error", err))
 	}
 
 	err := cfg.Init.Strategy.Do(ctx, r.testResolve, onErr)
@@ -587,7 +593,7 @@ func newUpstreamResolverUnchecked(cfg upstreamConfig, bootstrap *Bootstrap) *Ups
 	upstreamClient := createUpstreamClient(cfg)
 
 	return &UpstreamResolver{
-		typed:        withType(upstreamResolverType),
+		typed:        withType(upstreamResolverType, slog.String(logFieldUpstream, cfg.String())),
 		configurable: withConfig(cfg),
 
 		upstreamClient: upstreamClient,
@@ -601,12 +607,6 @@ func (r UpstreamResolver) String() string {
 
 func (r UpstreamResolver) Upstream() config.Upstream {
 	return r.cfg.Upstream
-}
-
-func (r *UpstreamResolver) log(ctx context.Context) (context.Context, *logrus.Entry) {
-	return r.logWithFields(ctx, logrus.Fields{
-		logFieldUpstream: r.cfg.String(),
-	})
 }
 
 // testResolve sends a test query to verify the upstream is reachable and working
@@ -650,7 +650,7 @@ func (r *UpstreamResolver) Resolve(ctx context.Context, request *model.Request) 
 			}
 
 			resp = response
-			r.logResponse(logger, request, response, ip, rtt)
+			r.logResponse(ctx, logger, request, response, ip, rtt)
 
 			return nil
 		},
@@ -661,12 +661,12 @@ func (r *UpstreamResolver) Resolve(ctx context.Context, request *model.Request) 
 		retry.LastErrorOnly(true),
 		retry.RetryIf(isTimeout),
 		retry.OnRetry(func(n uint, err error) {
-			logger.WithFields(logrus.Fields{
-				logFieldUpstream: r.cfg.String(),
-				"upstream_ip":    ip.String(),
-				"question":       util.QuestionToString(request.Req.Question),
-				"attempt":        fmt.Sprintf("%d/%d", n+1, retryAttempts),
-			}).Debugf("%s, retrying...", err)
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.LogAttrs(ctx, slog.LevelDebug, fmt.Sprintf("%s, retrying...", err),
+					slog.String("upstream_ip", ip.String()),
+					slog.Any("question", util.LogQuestions(request.Req.Question)),
+					slog.String("attempt", fmt.Sprintf("%d/%d", n+1, retryAttempts)))
+			}
 
 			ips.Next()
 		}))
@@ -678,23 +678,19 @@ func (r *UpstreamResolver) Resolve(ctx context.Context, request *model.Request) 
 }
 
 func (r *UpstreamResolver) logResponse(
-	logger *logrus.Entry, request *model.Request, resp *dns.Msg, ip net.IP, rtt time.Duration,
+	ctx context.Context, logger *slog.Logger, request *model.Request, resp *dns.Msg, ip net.IP, rtt time.Duration,
 ) {
-	// runs on every successful upstream response (every cache miss); skip building the
-	// (expensive) answer string / field map entirely when Debug isn't enabled.
-	if !isDebugEnabled(logger) {
+	if !logger.Enabled(ctx, slog.LevelDebug) {
 		return
 	}
 
-	logger.WithFields(logrus.Fields{
-		logFieldAnswer:     util.Obfuscate(util.AnswerToString(resp.Answer)),
-		"return_code":      dns.RcodeToString[resp.Rcode],
-		logFieldUpstream:   r.cfg.String(),
-		"upstream_ip":      ip.String(),
-		logFieldProtocol:   request.Protocol,
-		"net":              r.cfg.Net,
-		"response_time_ms": rtt.Milliseconds(),
-	}).Debugf("received response from upstream")
+	logger.LogAttrs(ctx, slog.LevelDebug, "received response from upstream",
+		slog.Any(logFieldAnswer, util.LogAnswer(resp.Answer)),
+		slog.String("return_code", dns.RcodeToString[resp.Rcode]),
+		slog.String("upstream_ip", ip.String()),
+		slog.Any(logFieldProtocol, request.Protocol),
+		slog.Any("net", r.cfg.Net),
+		slog.Int64("response_time_ms", rtt.Milliseconds()))
 }
 
 func isTimeout(err error) bool {

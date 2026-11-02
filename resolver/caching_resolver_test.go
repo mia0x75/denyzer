@@ -76,11 +76,11 @@ var _ = Describe("CachingResolver", func() {
 
 	Describe("LogConfig", func() {
 		It("should log something", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 
 			sut.LogConfig(logger)
 
-			Expect(hook.Calls).ShouldNot(BeEmpty())
+			Expect(hook.Records()).ShouldNot(BeEmpty())
 		})
 	})
 

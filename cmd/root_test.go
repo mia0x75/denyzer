@@ -1,11 +1,11 @@
 package cmd
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"os"
 
+	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/log"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -30,7 +30,6 @@ func (m mockResponse) Status() string {
 
 var _ = Describe("root command", func() {
 	When("Version command is called", func() {
-		log.Log().ExitFunc = nil
 		It("should execute without error", func() {
 			c := NewRootCommand()
 			c.SetOut(io.Discard)
@@ -100,7 +99,8 @@ var _ = Describe("root command", func() {
 			configPath = syslogConfig.Path
 
 			Expect(initConfig()).Should(Succeed())
-			Expect(fmt.Sprintf("%T", log.Log().Out)).ShouldNot(ContainSubstring("syslog"))
+			logCfg := commandLogConfig(&config.Config{Log: log.Config{Target: log.TargetTypeSyslog}})
+			Expect(logCfg.Target).Should(Equal(log.TargetTypeStdout))
 		})
 
 		It("should handle config with HTTP port", func() {

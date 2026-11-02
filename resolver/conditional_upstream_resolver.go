@@ -3,14 +3,16 @@ package resolver
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+
+	"github.com/mia0x75/denyzer/log"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 // ConditionalUpstreamResolver delegates DNS question to other DNS resolver dependent on domain name in question
@@ -82,7 +84,7 @@ func (r *ConditionalUpstreamResolver) Resolve(ctx context.Context, request *mode
 
 	// Apply domain rewrites if configured
 	original := request.Req
-	rewritten, originalNames := rewriteRequest(logger, original, r.cfg.Rewrite)
+	rewritten, originalNames := rewriteRequest(ctx, logger, original, r.cfg.Rewrite)
 	if rewritten != nil {
 		request.Req = rewritten
 	}
@@ -102,7 +104,7 @@ func (r *ConditionalUpstreamResolver) Resolve(ctx context.Context, request *mode
 	// processRequest only reports `resolved` for a query it sent to a mapped
 	// upstream, so anything else continues down the chain under its original name.
 	if !resolved {
-		logger.WithField("next_resolver", Name(r.next)).Trace("go to next resolver")
+		logger.LogAttrs(ctx, log.LevelTrace, "go to next resolver", slog.Any("next_resolver", Name(r.next)))
 
 		return r.next.Resolve(ctx, request)
 	}
@@ -110,7 +112,7 @@ func (r *ConditionalUpstreamResolver) Resolve(ctx context.Context, request *mode
 	// The mapped resolver failed or had nothing: ask the rest of the chain,
 	// using the original name (`fallbackUpstream`).
 	if shouldFallbackUpstream(&r.cfg.RewriterConfig, response, err) {
-		logger.WithField("next_resolver", Name(r.next)).Trace("fallback to next resolver")
+		logger.LogAttrs(ctx, log.LevelTrace, "fallback to next resolver", slog.Any("next_resolver", Name(r.next)))
 
 		return r.next.Resolve(ctx, request)
 	}
@@ -147,17 +149,19 @@ func (r *ConditionalUpstreamResolver) internalResolve(ctx context.Context, reso 
 		return nil, fmt.Errorf("conditional upstream resolution failed for domain '%s': %w", do, err)
 	}
 
-	if isDebugEnabled(logger) {
-		var answer string
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		answer := slog.String(logFieldAnswer, "")
 		if response != nil {
-			answer = util.Obfuscate(util.AnswerToString(response.Res.Answer))
+			answer = slog.Any(logFieldAnswer, util.LogAnswer(response.Res.Answer))
 		}
-
-		logger.WithFields(logrus.Fields{
-			logFieldAnswer:   answer,
-			logFieldDomain:   util.Obfuscate(do),
-			logFieldUpstream: reso,
-		}).Debugf("received response from conditional upstream")
+		logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"received response from conditional upstream",
+			answer,
+			slog.Any(logFieldDomain, util.Obfuscated(do)),
+			slog.Any(logFieldUpstream, reso),
+		)
 	}
 
 	return response, nil

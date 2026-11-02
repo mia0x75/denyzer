@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"log/slog"
 	"net"
 
 	"github.com/mia0x75/denyzer/config"
@@ -93,8 +94,14 @@ func (r *RebindingProtectionResolver) Resolve(ctx context.Context, request *mode
 	}
 
 	_, logger := r.log(ctx)
-	logger.WithField(logFieldDomain, util.Obfuscate(domain)).
-		Debugf("dropped answer with non-public IP %s", util.Obfuscate(ip.String()))
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"dropped answer with non-public IP "+util.Obfuscate(ip.String()),
+			slog.Any(logFieldDomain, util.Obfuscate(domain)),
+		)
+	}
 
 	// fixed reason: the IP is attacker-chosen — embedding it would allow
 	// unbounded cardinality growth

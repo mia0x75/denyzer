@@ -815,7 +815,8 @@
           "default": "info",
           "examples": [
             "info",
-            "debug"
+            "debug",
+            "warn"
           ]
         },
         "format": {
@@ -1673,7 +1674,8 @@
       "deprecated": true,
       "examples": [
         "info",
-        "debug"
+        "debug",
+        "warn"
       ]
     },
     "logFormat": {

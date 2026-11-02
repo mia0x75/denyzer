@@ -1,13 +1,14 @@
 package stringcache
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"regexp"
 	"regexp/syntax"
 	"slices"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/sirupsen/logrus"
 
 	"github.com/mia0x75/denyzer/log"
 )
@@ -25,11 +26,13 @@ type cacheFactory interface {
 	count() int
 }
 
-// logMatch runs on every hit, so it skips the logrus entry and argument
-// allocations unless debug logging is on.
+// logMatch runs on every hit, so it skips logger derivation and message
+// formatting unless debug logging is on.
 func logMatch(prefix, kind, rule, searchString string) {
-	if log.Log().IsLevelEnabled(logrus.DebugLevel) {
-		log.PrefixedLog(prefix).Debugf("%s '%s' matched with '%s'", kind, rule, searchString)
+	if log.Log().Enabled(context.TODO(), slog.LevelDebug) {
+		if logger := log.PrefixedLog(prefix); logger.Enabled(context.TODO(), slog.LevelDebug) {
+			logger.Debug(fmt.Sprintf("%s '%s' matched with '%s'", kind, rule, searchString))
+		}
 	}
 }
 
@@ -136,7 +139,7 @@ func (f *regexCacheFactory) addEntry(entry string) bool {
 
 	compile, err := regexp.Compile(entry)
 	if err != nil {
-		log.Log().Warnf("invalid regex '%s'", entry)
+		log.Log().Warn(fmt.Sprintf("invalid regex '%s'", entry))
 
 		return true // invalid but handled
 	}

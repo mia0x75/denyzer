@@ -3,9 +3,11 @@ package dnssec
 // This file contains RRset and RRSIG signature validation logic per RFC 4035.
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/miekg/dns"
@@ -41,7 +43,13 @@ var errRRSIGVerificationFailed = errors.New("signature verification failed")
 // RRset of the signer zone. Key tags are not unique, so a signature is tried with every key that
 // has its key tag and algorithm (RFC 4035 §5.3.1). Each verification spends one of *budget, and
 // verifyWithZoneKeys fails once none is left (KeyTrap, CVE-2023-50387).
-func (v *Validator) verifyWithZoneKeys(rrset []dns.RR, sigs []*dns.RRSIG, keys []*dns.DNSKEY, budget *int) error {
+func (v *Validator) verifyWithZoneKeys(
+	ctx context.Context,
+	rrset []dns.RR,
+	sigs []*dns.RRSIG,
+	keys []*dns.DNSKEY,
+	budget *int,
+) error {
 	var errs []error
 
 	for _, sig := range sigs {
@@ -56,7 +64,7 @@ func (v *Validator) verifyWithZoneKeys(rrset []dns.RR, sigs []*dns.RRSIG, keys [
 
 			*budget--
 
-			err := v.verifyRRSIG(rrset, sig, key, nil, "")
+			err := v.verifyRRSIG(ctx, rrset, sig, key, nil, "")
 			if err == nil {
 				return nil
 			}
@@ -282,19 +290,32 @@ func (v *Validator) isSupportedAlgorithm(alg uint8) bool {
 }
 
 // verifyRRSIG verifies an RRSIG signature for an RRset
+//
+//nolint:funlen // guarded, multiline diagnostics keep signature checks and failure details in one path
 func (v *Validator) verifyRRSIG(
+	ctx context.Context,
 	rrset []dns.RR, rrsig *dns.RRSIG, key *dns.DNSKEY, nsRecords []dns.RR, qname string,
 ) error {
 	// Log DNSKEY details including public key prefix for debugging
-	pkeyPrefix := key.PublicKey
-	if len(pkeyPrefix) > publicKeyPrefixLen {
-		pkeyPrefix = pkeyPrefix[:publicKeyPrefixLen]
+	if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+		pkeyPrefix := key.PublicKey
+		if len(pkeyPrefix) > publicKeyPrefixLen {
+			pkeyPrefix = pkeyPrefix[:publicKeyPrefixLen]
+		}
+		logger.DebugContext(ctx, fmt.Sprintf(
+			"verifyRRSIG: Using DNSKEY flags=%d, protocol=%d, algorithm=%d, keytag=%d, "+
+				"Header.Name='%s', pubkey_prefix=%s... to verify RRSIG keytag=%d, algorithm=%d, SignerName='%s'",
+			key.Flags,
+			key.Protocol,
+			key.Algorithm,
+			key.KeyTag(),
+			key.Header().Name,
+			pkeyPrefix,
+			rrsig.KeyTag,
+			rrsig.Algorithm,
+			rrsig.SignerName,
+		))
 	}
-	v.logger.Debugf(
-		"verifyRRSIG: Using DNSKEY flags=%d, protocol=%d, algorithm=%d, keytag=%d, "+
-			"Header.Name='%s', pubkey_prefix=%s... to verify RRSIG keytag=%d, algorithm=%d, SignerName='%s'",
-		key.Flags, key.Protocol, key.Algorithm, key.KeyTag(), key.Header().Name, pkeyPrefix,
-		rrsig.KeyTag, rrsig.Algorithm, rrsig.SignerName)
 
 	// Check algorithm support per RFC 4035 §2.2
 	// Unsupported algorithms should be treated as Insecure, not Bogus
@@ -310,7 +331,7 @@ func (v *Validator) verifyRRSIG(
 	// RFC 4035 §5.3.4: Validate wildcard expansion if applicable
 	if len(rrset) > 0 {
 		rrsetName := dns.Fqdn(rrset[0].Header().Name)
-		if err := v.validateWildcardExpansion(rrsetName, rrsig, nsRecords, qname); err != nil {
+		if err := v.validateWildcardExpansion(ctx, rrsetName, rrsig, nsRecords, qname); err != nil {
 			return fmt.Errorf("wildcard validation failed: %w", err)
 		}
 	}
@@ -343,11 +364,13 @@ func (v *Validator) verifyRRSIG(
 	// Use miekg/dns to verify the signature (expensive crypto operation)
 	if err := rrsig.Verify(key, rrset); err != nil {
 		// Debug: log RRset details on failure
-		v.logger.Debugf("Signature verification failed for RRset with %d records:", len(rrset))
-		for i, rr := range rrset {
-			v.logger.Debugf("  [%d] %s", i, rr.String())
+		if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, fmt.Sprintf("Signature verification failed for RRset with %d records:", len(rrset)))
+			for i, rr := range rrset {
+				logger.DebugContext(ctx, fmt.Sprintf("  [%d] %s", i, rr.String()))
+			}
+			logger.DebugContext(ctx, "  RRSIG: "+rrsig.String())
 		}
-		v.logger.Debugf("  RRSIG: %s", rrsig.String())
 
 		return fmt.Errorf("%w: %w", errRRSIGVerificationFailed, err)
 	}

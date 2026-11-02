@@ -1,12 +1,12 @@
 package migration
 
 import (
+	"log/slog"
 	"testing"
 
 	"github.com/mia0x75/denyzer/log"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
 )
 
 func TestMigration(t *testing.T) {
@@ -28,12 +28,12 @@ type testNew struct {
 
 var _ = Describe("Migration", func() {
 	var (
-		logger *logrus.Entry
-		hook   *log.MockLoggerHook
+		logger *slog.Logger
+		hook   *log.Recorder
 	)
 
 	BeforeEach(func() {
-		logger, hook = log.NewMockEntry()
+		logger, hook = log.NewMockLogger()
 	})
 
 	Describe("Migrate", func() {
@@ -63,7 +63,7 @@ var _ = Describe("Migration", func() {
 
 			Expect(result).Should(BeTrue())
 			Expect(newCfg.NewName).Should(Equal("migrated-value"))
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("deprecated")))
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("deprecated")))
 		})
 
 		It("should not override new option if already set", func() {
@@ -94,7 +94,7 @@ var _ = Describe("Migration", func() {
 
 			Expect(result).Should(BeTrue())
 			Expect(newCfg.NewName).Should(Equal("val"))
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("section.oldName")))
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("section.oldName")))
 		})
 	})
 

@@ -111,9 +111,9 @@ var _ = Describe("StatsResolver", func() {
 
 		It("logs config", func(ctx context.Context) {
 			start(ctx)
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 			sut.LogConfig(logger)
-			Expect(hook.Calls).ShouldNot(BeEmpty())
+			Expect(hook.Records()).ShouldNot(BeEmpty())
 		})
 
 		It("updates cache entry count from the event bus", func(ctx context.Context) {

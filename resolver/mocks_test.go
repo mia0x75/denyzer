@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/util"
-	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
 
 	"github.com/mia0x75/denyzer/model"
@@ -42,7 +42,7 @@ func (r *mockResolver) IsEnabled() bool {
 }
 
 // LogConfig implements `config.Configurable`.
-func (r *mockResolver) LogConfig(*logrus.Entry) {
+func (r *mockResolver) LogConfig(*slog.Logger) {
 	r.Called()
 }
 
@@ -119,6 +119,8 @@ func autoAnswer(qType dns.Type, qName string) (*dns.Msg, error) {
 }
 
 // newTestBootstrap creates a test Bootstrap
+//
+//nolint:contextcheck // fatal fixture failures terminate the process, not the bootstrap context
 func newTestBootstrap(ctx context.Context, response *dns.Msg) *Bootstrap {
 	const cfgTxt = `
 upstream: https://mock
@@ -147,6 +149,8 @@ ips:
 }
 
 // newTestDOHUpstream creates a test DoH Upstream
+//
+//nolint:contextcheck // fatal fixture failures terminate the process, not the HTTP request
 func newTestDOHUpstream(fn func(request *dns.Msg) (response *dns.Msg),
 	reqFn ...func(w http.ResponseWriter),
 ) config.Upstream {

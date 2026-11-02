@@ -127,15 +127,25 @@ All logging options are optional.
 
 | Parameter           | Type                                   | Default value | Description                                                                                                                                       |
 | ------------------- | -------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| log.level           | enum (trace, debug, info, warn, error) | info          | Log level                                                                                                                                         |
+| log.level           | enum (trace, debug, info, warn, warning, error, fatal, panic) | info | Minimum log level, case-insensitive. `warn` and `warning` are aliases. |
 | log.format          | enum (text, json)                      | text          | Log format (text or json).                                                                                                                        |
 | log.target          | enum (stdout, stderr, syslog)          | stdout        | Where log entries are written. `syslog` logs each entry at the priority matching its level.                                                       |
 | log.syslog.network  | string                                 |               | Empty for the local syslog socket, otherwise `udp` or `tcp`.                                                                                      |
 | log.syslog.address  | string                                 |               | `host:port` of the syslog server. Requires `network`.                                                                                             |
 | log.syslog.tag      | string                                 | denyzer       | Tag each entry is logged under.                                                                                                                   |
 | log.syslog.facility | enum (daemon, user, local0-local7)     | daemon        | Syslog facility.                                                                                                                                  |
-| log.timestamp       | bool                                   | true          | Log timestamps (true or false).                                                                                                                   |
+| log.timestamp       | bool                                   | true          | Include timestamps in text output. JSON retains its `time` field even when this is false; syslog supplies its own timestamp. |
 | log.privacy         | bool                                   | false         | Obfuscate log output (replace all alphanumeric characters with \*) for user sensitive data like request domains or responses to increase privacy. |
+
+Logging uses Go's `log/slog` with Denyzer's compatible output handlers. Existing
+configuration files do not need changes. JSON keeps the `time`, `level`, and `msg`
+fields and spells the warning level `"warning"`. Text retains resolver prefixes
+and configuration indentation. Startup messages are buffered and replayed using
+the configured level, format, and destination. If syslog setup fails, logging
+falls back to stderr in the configured format.
+
+See [Logging migration and performance](logging-performance.md) for the handler
+design, compatibility tests, and benchmark scope.
 
 !!! example
 

@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -9,7 +10,6 @@ import (
 	. "github.com/mia0x75/denyzer/helpertest"
 	"github.com/mia0x75/denyzer/log"
 	"github.com/mia0x75/denyzer/querylog"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/mock"
 
 	"github.com/mia0x75/denyzer/cache/stringcache"
@@ -91,11 +91,11 @@ var _ = Describe("QueryLoggingResolver", func() {
 
 	Describe("LogConfig", func() {
 		It("should log something", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 
 			sut.LogConfig(logger)
 
-			Expect(hook.Calls).ShouldNot(BeEmpty())
+			Expect(hook.Records()).ShouldNot(BeEmpty())
 		})
 	})
 
@@ -142,7 +142,7 @@ var _ = Describe("QueryLoggingResolver", func() {
 		})
 
 		Describe("ignore", func() {
-			var ignored *log.MockLoggerHook
+			var ignored *log.Recorder
 
 			JustBeforeEach(func() {
 				// Stop background goroutines
@@ -153,9 +153,9 @@ var _ = Describe("QueryLoggingResolver", func() {
 
 				// Capture ignored logs
 				{
-					var logger *logrus.Entry
+					var logger *slog.Logger
 
-					logger, ignored = log.NewMockEntry()
+					logger, ignored = log.NewMockLogger()
 					ctx, _ = log.NewCtx(ctx, logger)
 				}
 			})
@@ -171,8 +171,8 @@ var _ = Describe("QueryLoggingResolver", func() {
 					_, err := sut.Resolve(ctx, newRequestWithClient("example.com.", A, "192.168.178.25", "client1"))
 					Expect(err).Should(Succeed())
 
-					Expect(ignored.Calls).Should(HaveLen(1))
-					Expect(ignored.Messages).Should(ContainElement(ContainSubstring("ignored querylog entry")))
+					Expect(ignored.Records()).Should(HaveLen(1))
+					Expect(ignored.Messages()).Should(ContainElement(ContainSubstring("ignored querylog entry")))
 				})
 
 				It("should log other responses", func() {
@@ -181,7 +181,7 @@ var _ = Describe("QueryLoggingResolver", func() {
 					_, err := sut.Resolve(ctx, newRequestWithClient("example.com.", A, "192.168.178.25", "client1"))
 					Expect(err).Should(Succeed())
 
-					Expect(ignored.Calls).Should(BeEmpty())
+					Expect(ignored.Records()).Should(BeEmpty())
 				})
 			})
 
@@ -195,7 +195,7 @@ var _ = Describe("QueryLoggingResolver", func() {
 						newRequestWithClient("ignored.example.com.", A, "192.168.178.25", "client1"))
 					Expect(err).Should(Succeed())
 
-					Expect(ignored.Messages).Should(ContainElement(ContainSubstring("ignored querylog entry")))
+					Expect(ignored.Messages()).Should(ContainElement(ContainSubstring("ignored querylog entry")))
 				})
 
 				It("should not log a matching wildcard domain", func() {
@@ -203,7 +203,7 @@ var _ = Describe("QueryLoggingResolver", func() {
 						newRequestWithClient("host.noisy.lan.", A, "192.168.178.25", "client1"))
 					Expect(err).Should(Succeed())
 
-					Expect(ignored.Messages).Should(ContainElement(ContainSubstring("ignored querylog entry")))
+					Expect(ignored.Messages()).Should(ContainElement(ContainSubstring("ignored querylog entry")))
 				})
 
 				It("should log a non-matching domain", func() {
@@ -211,7 +211,7 @@ var _ = Describe("QueryLoggingResolver", func() {
 						newRequestWithClient("example.com.", A, "192.168.178.25", "client1"))
 					Expect(err).Should(Succeed())
 
-					Expect(ignored.Calls).Should(BeEmpty())
+					Expect(ignored.Records()).Should(BeEmpty())
 				})
 			})
 		})
@@ -279,12 +279,12 @@ var _ = Describe("QueryLoggingResolver", func() {
 
 	Describe("newIgnoreDomainsMatcher", func() {
 		It("returns nil for an empty list", func() {
-			logger, _ := log.NewMockEntry()
+			logger, _ := log.NewMockLogger()
 			Expect(newIgnoreDomainsMatcher(nil, logger)).Should(BeNil())
 		})
 
 		It("matches exact, wildcard and regex entries", func() {
-			logger, _ := log.NewMockEntry()
+			logger, _ := log.NewMockLogger()
 			matcher := newIgnoreDomainsMatcher(
 				[]string{"example.com", "*.lan", "/\\.arpa$/"}, logger)
 			Expect(matcher).ShouldNot(BeNil())
@@ -297,17 +297,17 @@ var _ = Describe("QueryLoggingResolver", func() {
 		})
 
 		It("warns and skips an invalid entry but keeps valid ones", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 			matcher := newIgnoreDomainsMatcher(
 				[]string{"/[invalid(/", "example.com"}, logger)
 
 			Expect(matcher).ShouldNot(BeNil())
 			Expect(matcher.Contains("example.com", []string{queryLogIgnoreGroup})).ShouldNot(BeEmpty())
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("invalid")))
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("invalid")))
 		})
 
 		It("warns and skips a lone slash entry without panicking", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 
 			var matcher stringcache.GroupedStringCache
 			Expect(func() {
@@ -315,11 +315,11 @@ var _ = Describe("QueryLoggingResolver", func() {
 			}).ShouldNot(Panic())
 
 			Expect(matcher.Contains("example.com", []string{queryLogIgnoreGroup})).ShouldNot(BeEmpty())
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("invalid")))
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("invalid")))
 		})
 
 		It("warns and skips empty regex entries instead of matching every domain", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 
 			matcher := newIgnoreDomainsMatcher([]string{"//", "/ /", "example.com"}, logger)
 			Expect(matcher).ShouldNot(BeNil())
@@ -328,7 +328,7 @@ var _ = Describe("QueryLoggingResolver", func() {
 			// an empty regex would match everything; the entries must be rejected
 			Expect(matcher.Contains("unrelated.example.net", groups)).Should(BeEmpty())
 			Expect(matcher.Contains("example.com", groups)).ShouldNot(BeEmpty())
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("invalid")))
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("invalid")))
 		})
 	})
 })

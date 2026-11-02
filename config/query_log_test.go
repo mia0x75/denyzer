@@ -54,9 +54,9 @@ var _ = Describe("QueryLogConfig", func() {
 		It("should log configuration", func() {
 			cfg.LogConfig(logger)
 
-			Expect(hook.Calls).ShouldNot(BeEmpty())
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("retention:")))
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("sudn:")))
+			Expect(hook.Records()).ShouldNot(BeEmpty())
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("retention:")))
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("sudn:")))
 		})
 
 		It("should log the ignored domains", func() {
@@ -64,7 +64,7 @@ var _ = Describe("QueryLogConfig", func() {
 
 			cfg.LogConfig(logger)
 
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("domains (3):")))
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("domains (3):")))
 		})
 	})
 

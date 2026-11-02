@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/sirupsen/logrus/hooks/test"
-
 	"github.com/mia0x75/denyzer/log"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -16,7 +14,7 @@ var _ = Describe("Cache command", func() {
 	var (
 		ts         *httptest.Server
 		mockFn     func(w http.ResponseWriter, _ *http.Request)
-		loggerHook *test.Hook
+		loggerHook *log.Recorder
 	)
 	JustBeforeEach(func() {
 		ts = testHTTPAPIServer(mockFn)
@@ -26,8 +24,9 @@ var _ = Describe("Cache command", func() {
 	})
 	BeforeEach(func() {
 		mockFn = func(w http.ResponseWriter, _ *http.Request) {}
-		loggerHook = test.NewGlobal()
-		log.Log().AddHook(loggerHook)
+		var cleanup func()
+		loggerHook, cleanup = log.Capture(log.Log())
+		DeferCleanup(cleanup)
 	})
 	AfterEach(func() {
 		loggerHook.Reset()
@@ -36,7 +35,7 @@ var _ = Describe("Cache command", func() {
 		When("flush cache is called via REST", func() {
 			It("should flush caches", func() {
 				Expect(flushCache(withContext(newCacheCommand()), []string{})).Should(Succeed())
-				Expect(loggerHook.LastEntry().Message).Should(Equal("OK"))
+				Expect(loggerHook.LastRecord().Message).Should(Equal("OK"))
 			})
 		})
 		When("Wrong url is used", func() {

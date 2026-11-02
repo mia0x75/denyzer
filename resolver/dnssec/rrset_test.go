@@ -1,6 +1,7 @@
 package dnssec
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"encoding/base64"
 	"strings"
@@ -14,20 +15,23 @@ import (
 
 var _ = Describe("RRset validation functions", func() {
 	var (
+		ctx          context.Context
 		sut          *Validator
 		trustStore   *TrustAnchorStore
 		mockUpstream *mockResolver
 	)
 
 	BeforeEach(func(specCtx SpecContext) {
+		ctx = specCtx
+
 		var err error
 		trustStore, err = NewTrustAnchorStore(nil)
 		Expect(err).Should(Succeed())
 
 		mockUpstream = &mockResolver{}
-		logger, _ := log.NewMockEntry()
+		logger, _ := log.NewMockLogger()
 
-		sut = NewValidator(specCtx, trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
+		sut = NewValidator(ctx, trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
 	})
 
 	Describe("getAlgorithmStrength", func() {
@@ -313,7 +317,7 @@ var _ = Describe("RRset validation functions", func() {
 				PublicKey: "test-key",
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, key, nil, "example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("unsupported"))
 		})
@@ -349,7 +353,7 @@ var _ = Describe("RRset validation functions", func() {
 				PublicKey: "test-key",
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, key, nil, "example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("algorithm mismatch"))
 		})
@@ -385,7 +389,7 @@ var _ = Describe("RRset validation functions", func() {
 				PublicKey: "test-key",
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, key, nil, "example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("not yet valid"))
 		})
@@ -421,7 +425,7 @@ var _ = Describe("RRset validation functions", func() {
 				PublicKey: "test-key",
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, key, nil, "example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("expired"))
 		})
@@ -458,7 +462,7 @@ var _ = Describe("RRset validation functions", func() {
 				PublicKey: "test-key",
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, key, nil, "example.com.")
 			// Will fail on crypto but not on timing
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).ShouldNot(ContainSubstring("not yet valid"))
@@ -486,7 +490,7 @@ var _ = Describe("RRset validation functions", func() {
 			otherKey, _, _ := newSignedZoneKey("example.com.")
 			sig := signRRset(rrset, dns.TypeA, key, priv, "example.com.")
 
-			Expect(sut.verifyWithZoneKeys(rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{otherKey, key}, &budget)).
+			Expect(sut.verifyWithZoneKeys(ctx, rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{otherKey, key}, &budget)).
 				Should(Succeed())
 		})
 
@@ -497,7 +501,7 @@ var _ = Describe("RRset validation functions", func() {
 			}
 			sig := signRRset(rrset, dns.TypeA, key, priv, "example.com.")
 
-			Expect(sut.verifyWithZoneKeys(rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{otherKey}, &budget)).
+			Expect(sut.verifyWithZoneKeys(ctx, rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{otherKey}, &budget)).
 				Should(MatchError(ContainSubstring("no RRSIG made by a validated key")))
 		})
 
@@ -516,7 +520,7 @@ var _ = Describe("RRset validation functions", func() {
 			Expect(sameTag.KeyTag()).Should(Equal(key.KeyTag()))
 			sig := signRRset(rrset, dns.TypeA, key, priv, "example.com.")
 
-			Expect(sut.verifyWithZoneKeys(rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{&sameTag, key}, &budget)).
+			Expect(sut.verifyWithZoneKeys(ctx, rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{&sameTag, key}, &budget)).
 				Should(Succeed())
 			Expect(budget).Should(Equal(maxZoneKeyVerifications-2), "both keys were tried")
 		})
@@ -530,7 +534,7 @@ var _ = Describe("RRset validation functions", func() {
 				sigs[i] = sig
 			}
 
-			err := sut.verifyWithZoneKeys(rrset, sigs, []*dns.DNSKEY{key}, &budget)
+			err := sut.verifyWithZoneKeys(ctx, rrset, sigs, []*dns.DNSKEY{key}, &budget)
 			Expect(err).Should(MatchError(ContainSubstring("signature verification failed")))
 			Expect(strings.Count(err.Error(), "signature verification failed")).Should(Equal(maxZoneKeyVerifications))
 		})

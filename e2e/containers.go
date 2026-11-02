@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/sirupsen/logrus"
+	log "github.com/mia0x75/denyzer/log"
 
 	"github.com/avast/retry-go/v4"
 	"github.com/mia0x75/denyzer/config"
@@ -270,6 +270,9 @@ func createDenyzerContainerInternal(ctx context.Context, e2eNet *testcontainers.
 
 	confFile := createTempFile(withDNSPort(lines)...)
 
+	// Configuration validation is process-scoped and owns its buffered logger,
+	// including FatalOnError; it does not run under the container-start timeout.
+	//nolint:contextcheck
 	cfg, err := config.LoadConfig(confFile, true)
 	if err != nil {
 		return nil, fmt.Errorf("can't create config struct %w", err)
@@ -370,7 +373,7 @@ func checkDenyzerReadiness(ctx context.Context, cfg *config.Config, container te
 			return nil
 		},
 		retry.OnRetry(func(n uint, err error) {
-			log.Infof("Performing retry DNS request #%d: %s\n", n, err)
+			log.Log().InfoContext(ctx, fmt.Sprintf("Performing retry DNS request #%d: %s\n", n, err))
 		}),
 		retry.Attempts(retryAttempts),
 		retry.DelayType(retry.BackOffDelay),
@@ -388,7 +391,7 @@ func checkDenyzerReadiness(ctx context.Context, cfg *config.Config, container te
 				return doHTTPRequest(ctx, container, port)
 			},
 			retry.OnRetry(func(n uint, err error) {
-				log.Infof("Performing retry HTTP request #%d: %s\n", n, err)
+				log.Log().InfoContext(ctx, fmt.Sprintf("Performing retry HTTP request #%d: %s\n", n, err))
 			}),
 			retry.Attempts(retryAttempts),
 			retry.DelayType(retry.BackOffDelay),

@@ -3,6 +3,9 @@ package dnssec
 // This file contains NSEC-based denial of existence validation per RFC 4035 §5.4.
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -12,17 +15,21 @@ import (
 )
 
 // validateNSECDenialOfExistence validates NSEC-based denial of existence per RFC 4035 §5.4
-func (v *Validator) validateNSECDenialOfExistence(response *dns.Msg, question dns.Question) ValidationResult {
+func (v *Validator) validateNSECDenialOfExistence(
+	ctx context.Context,
+	response *dns.Msg,
+	question dns.Question,
+) ValidationResult {
 	nsecRecords := extractNSECRecords(response.Ns)
 	if len(nsecRecords) == 0 {
 		return ValidationResultInsecure
 	}
 
 	if response.Rcode == dns.RcodeNameError {
-		return v.validateNSECNXDOMAIN(nsecRecords, question.Name)
+		return v.validateNSECNXDOMAIN(ctx, nsecRecords, question.Name)
 	}
 
-	return v.validateNSECNODATA(nsecRecords, question.Name, question.Qtype)
+	return v.validateNSECNODATA(ctx, nsecRecords, question.Name, question.Qtype)
 }
 
 // extractNSECRecords extracts all NSEC records from a slice of RRs
@@ -31,26 +38,42 @@ func extractNSECRecords(rrs []dns.RR) []*dns.NSEC {
 }
 
 // validateNSECNXDOMAIN validates NSEC proof for NXDOMAIN
-func (v *Validator) validateNSECNXDOMAIN(nsecRecords []*dns.NSEC, qname string) ValidationResult {
+func (v *Validator) validateNSECNXDOMAIN(
+	ctx context.Context,
+	nsecRecords []*dns.NSEC,
+	qname string,
+) ValidationResult {
 	qname = dns.Fqdn(qname)
 
 	// NXDOMAIN: Need to prove the name doesn't exist
 	// Find NSEC that covers the query name
 	for _, nsec := range nsecRecords {
 		if v.nsecCoversName(nsec, qname) {
-			v.logger.Debugf("NSEC covers NXDOMAIN for %s: %s -> %s", qname, nsec.Header().Name, nsec.NextDomain)
+			if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+				logger.DebugContext(ctx, fmt.Sprintf(
+					"NSEC covers NXDOMAIN for %s: %s -> %s",
+					qname,
+					nsec.Header().Name,
+					nsec.NextDomain,
+				))
+			}
 
 			return ValidationResultSecure
 		}
 	}
 
-	v.logger.Warnf("No NSEC record covers NXDOMAIN for %s", qname)
+	v.logger.WarnContext(ctx, "No NSEC record covers NXDOMAIN for "+qname)
 
 	return ValidationResultBogus
 }
 
 // validateNSECNODATA validates NSEC proof for NODATA
-func (v *Validator) validateNSECNODATA(nsecRecords []*dns.NSEC, qname string, qtype uint16) ValidationResult {
+func (v *Validator) validateNSECNODATA(
+	ctx context.Context,
+	nsecRecords []*dns.NSEC,
+	qname string,
+	qtype uint16,
+) ValidationResult {
 	qname = dns.Fqdn(qname)
 
 	// NODATA: Need NSEC at the name proving type doesn't exist
@@ -59,18 +82,20 @@ func (v *Validator) validateNSECNODATA(nsecRecords []*dns.NSEC, qname string, qt
 		if nsecName == qname {
 			// NSEC matches the query name - check if it proves type doesn't exist
 			if !v.nsecHasType(nsec, qtype) {
-				v.logger.Debugf("NSEC proves NODATA for %s type %d", qname, qtype)
+				if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+					logger.DebugContext(ctx, fmt.Sprintf("NSEC proves NODATA for %s type %d", qname, qtype))
+				}
 
 				return ValidationResultSecure
 			}
 			// Type exists according to NSEC - this is bogus
-			v.logger.Warnf("NSEC at %s claims type %d exists but no answer returned", qname, qtype)
+			v.logger.WarnContext(ctx, fmt.Sprintf("NSEC at %s claims type %d exists but no answer returned", qname, qtype))
 
 			return ValidationResultBogus
 		}
 	}
 
-	v.logger.Warnf("No matching NSEC record found for NODATA proof: %s", qname)
+	v.logger.WarnContext(ctx, "No matching NSEC record found for NODATA proof: "+qname)
 
 	return ValidationResultBogus
 }

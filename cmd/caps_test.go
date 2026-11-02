@@ -6,22 +6,21 @@ import (
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/log"
 
-	"github.com/sirupsen/logrus/hooks/test"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("warnMissingPrivilegedPortCapability", func() {
 	var (
-		loggerHook *test.Hook
+		loggerHook *log.Recorder
 		origRaise  func() (bool, error)
 	)
 
 	BeforeEach(func() {
 		origRaise = raiseNetBindService
-		loggerHook = test.NewGlobal()
-		log.Log().AddHook(loggerHook)
+		var cleanup func()
+		loggerHook, cleanup = log.Capture(log.Log())
+		DeferCleanup(cleanup)
 	})
 
 	AfterEach(func() {
@@ -36,7 +35,7 @@ var _ = Describe("warnMissingPrivilegedPortCapability", func() {
 
 		It("does not warn even with a privileged port", func() {
 			warnMissingPrivilegedPortCapability(config.Ports{DNS: config.ListenConfig{":53"}})
-			Expect(loggerHook.AllEntries()).Should(BeEmpty())
+			Expect(loggerHook.Records()).Should(BeEmpty())
 		})
 	})
 
@@ -47,7 +46,7 @@ var _ = Describe("warnMissingPrivilegedPortCapability", func() {
 
 		It("warns when a privileged port is configured", func() {
 			warnMissingPrivilegedPortCapability(config.Ports{DNS: config.ListenConfig{":53"}})
-			Expect(loggerHook.LastEntry().Message).Should(ContainSubstring("CAP_NET_BIND_SERVICE"))
+			Expect(loggerHook.LastRecord().Message).Should(ContainSubstring("CAP_NET_BIND_SERVICE"))
 		})
 
 		It("does not warn when only unprivileged ports are configured", func() {
@@ -55,7 +54,7 @@ var _ = Describe("warnMissingPrivilegedPortCapability", func() {
 				DNS:  config.ListenConfig{":1053"},
 				HTTP: config.ListenConfig{":4000"},
 			})
-			Expect(loggerHook.AllEntries()).Should(BeEmpty())
+			Expect(loggerHook.Records()).Should(BeEmpty())
 		})
 	})
 
@@ -66,8 +65,8 @@ var _ = Describe("warnMissingPrivilegedPortCapability", func() {
 
 		It("logs one combined warning naming the error and the capability", func() {
 			warnMissingPrivilegedPortCapability(config.Ports{DNS: config.ListenConfig{":53"}})
-			Expect(loggerHook.AllEntries()).Should(HaveLen(1))
-			Expect(loggerHook.LastEntry().Message).Should(SatisfyAll(
+			Expect(loggerHook.Records()).Should(HaveLen(1))
+			Expect(loggerHook.LastRecord().Message).Should(SatisfyAll(
 				ContainSubstring("could not adjust process capabilities"),
 				ContainSubstring("CAP_NET_BIND_SERVICE"),
 			))
@@ -75,7 +74,7 @@ var _ = Describe("warnMissingPrivilegedPortCapability", func() {
 
 		It("does not warn when no privileged port is configured", func() {
 			warnMissingPrivilegedPortCapability(config.Ports{DNS: config.ListenConfig{":1053"}})
-			Expect(loggerHook.AllEntries()).Should(BeEmpty())
+			Expect(loggerHook.Records()).Should(BeEmpty())
 		})
 
 		It("does not raise the capability when no privileged port is configured", func() {
@@ -88,7 +87,7 @@ var _ = Describe("warnMissingPrivilegedPortCapability", func() {
 
 			warnMissingPrivilegedPortCapability(config.Ports{DNS: config.ListenConfig{":1053"}})
 			Expect(raised).Should(BeFalse())
-			Expect(loggerHook.AllEntries()).Should(BeEmpty())
+			Expect(loggerHook.Records()).Should(BeEmpty())
 		})
 	})
 })

@@ -2,10 +2,12 @@ package config
 
 import (
 	"bytes"
+	"log/slog"
+
+	"github.com/mia0x75/denyzer/log"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
 )
 
 var _ = Describe("DNSSEC config", func() {
@@ -35,16 +37,16 @@ var _ = Describe("DNSSEC config", func() {
 
 	Describe("LogConfig", func() {
 		var (
-			logger *logrus.Entry
+			logger *slog.Logger
 			buf    *bytes.Buffer
 		)
 
 		BeforeEach(func() {
 			buf = new(bytes.Buffer)
-			logInstance := logrus.New()
-			logInstance.Out = buf
-			logInstance.SetLevel(logrus.InfoLevel)
-			logger = logrus.NewEntry(logInstance)
+			logInstance := log.NewLogger(log.DefaultConfig())
+			log.SetOutput(logInstance, buf)
+			log.SetLevel(logInstance, slog.LevelInfo)
+			logger = logInstance
 		})
 
 		It("should log validation status when disabled", func() {

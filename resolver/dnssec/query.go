@@ -82,7 +82,7 @@ func queryBudgetExhausted(ctx context.Context) bool {
 func (v *Validator) queryRecords(ctx context.Context, domain string, qtype uint16) (*dns.Msg, error) {
 	// Check query budget (DoS protection)
 	if err := v.consumeQueryBudget(ctx); err != nil {
-		v.logger.Warnf("Query budget exhausted while querying %s (type %d): %v", domain, qtype, err)
+		v.logger.WarnContext(ctx, fmt.Sprintf("Query budget exhausted while querying %s (type %d): %v", domain, qtype, err))
 
 		return nil, err
 	}

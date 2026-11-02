@@ -17,7 +17,6 @@ import (
 	"github.com/mia0x75/denyzer/log"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus/hooks/test"
 )
 
 var _ = Describe("Downloader", func() {
@@ -25,7 +24,7 @@ var _ = Describe("Downloader", func() {
 		sutConfig                     config.Downloader
 		sut                           *httpDownloader
 		failedDownloadCountEvtChannel chan string
-		loggerHook                    *test.Hook
+		loggerHook                    *log.Recorder
 	)
 	BeforeEach(func() {
 		var err error
@@ -43,8 +42,9 @@ var _ = Describe("Downloader", func() {
 			Expect(Bus().Unsubscribe(CachingFailedDownloadChanged, fn)).Should(Succeed())
 		})
 
-		loggerHook = test.NewGlobal()
-		log.Log().AddHook(loggerHook)
+		var cleanup func()
+		loggerHook, cleanup = log.Capture(log.Log())
+		DeferCleanup(cleanup)
 		DeferCleanup(loggerHook.Reset)
 	})
 
@@ -118,7 +118,7 @@ var _ = Describe("Downloader", func() {
 				_, err := sut.DownloadFile(ctx, "somewrongurl")
 
 				Expect(err).Should(HaveOccurred())
-				Expect(loggerHook.LastEntry().Message).Should(ContainSubstring("Can't download file: "))
+				Expect(loggerHook.LastRecord().Message).Should(ContainSubstring("Can't download file: "))
 				// failed download event was emitted only once
 				Expect(failedDownloadCountEvtChannel).Should(HaveLen(1))
 				Expect(failedDownloadCountEvtChannel).Should(Receive(Equal("somewrongurl")))
@@ -161,7 +161,7 @@ var _ = Describe("Downloader", func() {
 				// failed download event was emitted only once
 				Expect(failedDownloadCountEvtChannel).Should(HaveLen(1))
 				Expect(failedDownloadCountEvtChannel).Should(Receive(Equal(server.URL)))
-				Expect(loggerHook.LastEntry().Message).Should(ContainSubstring("Temporary network err / Timeout occurred: "))
+				Expect(loggerHook.LastRecord().Message).Should(ContainSubstring("Temporary network err / Timeout occurred: "))
 			})
 		})
 		When("If timeout occurs on all request", func() {
@@ -226,7 +226,7 @@ var _ = Describe("Downloader", func() {
 					Expect(failedDownloadCountEvtChannel).Should(Receive(Equal("http://xyz.example.com")))
 
 					// Use Or() to combine matchers instead of the | operator
-					Expect(loggerHook.LastEntry().Message).Should(Or(
+					Expect(loggerHook.LastRecord().Message).Should(Or(
 						ContainSubstring("Can't download file:"),
 						ContainSubstring("Name resolution err:")))
 				})

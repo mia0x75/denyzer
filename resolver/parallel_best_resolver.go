@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/rand"
 	"sync/atomic"
@@ -12,8 +13,6 @@ import (
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/util"
-
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -157,7 +156,7 @@ func (r *ParallelBestResolver) Resolve(ctx context.Context, request *model.Reque
 
 	if len(allResolvers) == 1 {
 		resolver := allResolvers[0]
-		logger.WithField("resolver", resolver.resolver).Debug("delegating to resolver")
+		logger.LogAttrs(ctx, slog.LevelDebug, "delegating to resolver", slog.Any("resolver", resolver.resolver))
 
 		return resolver.resolve(ctx, request)
 	}
@@ -176,12 +175,12 @@ func (r *ParallelBestResolver) Resolve(ctx context.Context, request *model.Reque
 	ch := make(chan requestResponse, len(resolvers))
 
 	for _, resolver := range resolvers {
-		logger.WithField("resolver", resolver.resolver).Debug("delegating to resolver")
+		logger.LogAttrs(ctx, slog.LevelDebug, "delegating to resolver", slog.Any("resolver", resolver.resolver))
 
 		go resolver.resolveToChan(ctx, request, ch)
 	}
 
-	response, collectedErrors := evaluateResponses(logger, ch, resolvers)
+	response, collectedErrors := evaluateResponses(ctx, logger, ch, resolvers)
 	if response != nil {
 		return response, nil
 	}
@@ -194,24 +193,38 @@ func (r *ParallelBestResolver) Resolve(ctx context.Context, request *model.Reque
 }
 
 func evaluateResponses(
-	logger *logrus.Entry, ch chan requestResponse, resolvers []*upstreamResolverStatus,
+	ctx context.Context,
+	logger *slog.Logger,
+	ch <-chan requestResponse,
+	resolvers []*upstreamResolverStatus,
 ) (*model.Response, []error) {
 	var collectedErrors []error
 
 	for len(collectedErrors) < len(resolvers) {
 		result := <-ch
-		logger := logger.WithField("resolver", *result.resolver)
 
 		if result.err != nil {
-			logger.Debug("resolution failed from resolver, cause: ", result.err)
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.LogAttrs(
+					ctx,
+					slog.LevelDebug,
+					fmt.Sprint("resolution failed from resolver, cause: ", result.err),
+					slog.Any("resolver", *result.resolver),
+				)
+			}
 			collectedErrors = append(collectedErrors, fmt.Errorf("resolver: %q error: %w", *result.resolver, result.err))
 
 			continue
 		}
 
-		if isDebugEnabled(logger) {
-			logger.WithField(logFieldAnswer, util.Obfuscate(util.AnswerToString(result.response.Res.Answer))).
-				Debug("using response from resolver")
+		if logger.Enabled(ctx, slog.LevelDebug) {
+			logger.LogAttrs(
+				ctx,
+				slog.LevelDebug,
+				"using response from resolver",
+				slog.Any("resolver", *result.resolver),
+				slog.Any(logFieldAnswer, util.LogAnswer(result.response.Res.Answer)),
+			)
 		}
 
 		return result.response, nil
@@ -221,21 +234,28 @@ func evaluateResponses(
 }
 
 func (r *ParallelBestResolver) retryWithDifferent(
-	ctx context.Context, logger *logrus.Entry, request *model.Request, resolvers []*upstreamResolverStatus,
+	ctx context.Context, logger *slog.Logger, request *model.Request, resolvers []*upstreamResolverStatus,
 ) (*model.Response, error) {
 	// second try (if retryWithDifferentResolver == true)
 	resolver := weightedRandom(*r.resolvers.Load(), resolvers)
-	logger.Debugf("using %s as second resolver", resolver.resolver)
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf("using %s as second resolver", resolver.resolver))
+	}
 
 	resp, err := resolver.resolve(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("resolution retry failed: %w", err)
 	}
 
-	logger.WithFields(logrus.Fields{
-		"resolver":     resolver.resolver,
-		logFieldAnswer: util.Obfuscate(util.AnswerToString(resp.Res.Answer)),
-	}).Debug("using response from resolver")
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"using response from resolver",
+			slog.Any("resolver", resolver.resolver),
+			slog.Any(logFieldAnswer, util.LogAnswer(resp.Res.Answer)),
+		)
+	}
 
 	return resp, nil
 }

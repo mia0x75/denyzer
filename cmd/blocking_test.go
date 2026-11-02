@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/sirupsen/logrus/hooks/test"
-
 	"github.com/mia0x75/denyzer/api"
 	"github.com/mia0x75/denyzer/log"
 
@@ -20,7 +18,7 @@ var _ = Describe("Blocking command", func() {
 	var (
 		ts         *httptest.Server
 		mockFn     func(w http.ResponseWriter, _ *http.Request)
-		loggerHook *test.Hook
+		loggerHook *log.Recorder
 	)
 	JustBeforeEach(func() {
 		ts = testHTTPAPIServer(mockFn)
@@ -30,8 +28,9 @@ var _ = Describe("Blocking command", func() {
 	})
 	BeforeEach(func() {
 		mockFn = func(w http.ResponseWriter, _ *http.Request) {}
-		loggerHook = test.NewGlobal()
-		log.Log().AddHook(loggerHook)
+		var cleanup func()
+		loggerHook, cleanup = log.Capture(log.Log())
+		DeferCleanup(cleanup)
 	})
 	AfterEach(func() {
 		loggerHook.Reset()
@@ -40,7 +39,7 @@ var _ = Describe("Blocking command", func() {
 		When("Enable blocking is called via REST", func() {
 			It("should enable the blocking status", func() {
 				Expect(disableBlocking(withContext(newBlockingCommand()), []string{})).Should(Succeed())
-				Expect(loggerHook.LastEntry().Message).Should(Equal("OK"))
+				Expect(loggerHook.LastRecord().Message).Should(Equal("OK"))
 			})
 		})
 		When("Wrong url is used", func() {
@@ -68,7 +67,7 @@ var _ = Describe("Blocking command", func() {
 		When("disable blocking is called via REST", func() {
 			It("should enable the blocking status", func() {
 				Expect(disableBlocking(withContext(newBlockingCommand()), []string{})).Should(Succeed())
-				Expect(loggerHook.LastEntry().Message).Should(Equal("OK"))
+				Expect(loggerHook.LastRecord().Message).Should(Equal("OK"))
 			})
 		})
 		When("Wrong url is used", func() {
@@ -110,7 +109,7 @@ var _ = Describe("Blocking command", func() {
 			})
 			It("should query the blocking status", func() {
 				Expect(statusBlocking(withContext(newBlockingCommand()), []string{})).Should(Succeed())
-				Expect(loggerHook.LastEntry().Message).Should(Equal("blocking enabled"))
+				Expect(loggerHook.LastRecord().Message).Should(Equal("blocking enabled"))
 			})
 		})
 		When("status blocking is called via REST and blocking is disabled", func() {
@@ -133,12 +132,12 @@ var _ = Describe("Blocking command", func() {
 			It("should show the blocking status with time", func() {
 				autoEnable = 5
 				Expect(statusBlocking(withContext(newBlockingCommand()), []string{})).Should(Succeed())
-				Expect(loggerHook.LastEntry().Message).Should(Equal("blocking disabled for groups: 'abc', for 5 seconds"))
+				Expect(loggerHook.LastRecord().Message).Should(Equal("blocking disabled for groups: 'abc', for 5 seconds"))
 			})
 			It("should show the blocking status", func() {
 				autoEnable = 0
 				Expect(statusBlocking(withContext(newBlockingCommand()), []string{})).Should(Succeed())
-				Expect(loggerHook.LastEntry().Message).Should(Equal("blocking disabled for groups: abc"))
+				Expect(loggerHook.LastRecord().Message).Should(Equal("blocking disabled for groups: abc"))
 			})
 		})
 		When("Wrong url is used", func() {

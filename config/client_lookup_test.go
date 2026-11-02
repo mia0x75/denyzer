@@ -59,8 +59,8 @@ var _ = Describe("ClientLookupConfig", func() {
 		It("should log configuration", func() {
 			cfg.LogConfig(logger)
 
-			Expect(hook.Calls).ShouldNot(BeEmpty())
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("client IP mapping:")))
+			Expect(hook.Records()).ShouldNot(BeEmpty())
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("client IP mapping:")))
 		})
 	})
 })

@@ -1,76 +1,74 @@
 package log
 
 import (
-	"io"
+	"context"
+	"log/slog"
 	"sync"
-	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
-// Buffer holds what is logged to its entry, at any level, until Replay logs it to
+// Buffer holds what is logged to its logger, at any level, until Replay logs it to
 // another logger. What is logged before that logger is set up still follows its
 // level, format and target.
 type Buffer struct {
-	logger *logrus.Logger
+	logger *slog.Logger
 
-	mu      sync.Mutex
-	entries []bufferedEntry
+	mu       sync.Mutex
+	replayMu sync.Mutex
+	entries  []bufferedRecord
 }
 
-type bufferedEntry struct {
-	level   logrus.Level
-	time    time.Time
-	message string
-	data    logrus.Fields
+type bufferedRecord struct {
+	record slog.Record
+	indent string
 }
 
 // NewBuffer returns an empty Buffer.
 func NewBuffer() *Buffer {
-	b := &Buffer{logger: logrus.New()}
-
-	b.logger.SetLevel(logrus.TraceLevel)
-	b.logger.SetFormatter(nopFormatter{}) // the target formats each entry on replay
-	b.logger.SetOutput(io.Discard)
-	b.logger.AddHook(b)
+	b := new(Buffer)
+	b.logger = slog.New(&recordHandler{sink: b})
 
 	return b
 }
 
-// Entry returns an entry logging to the buffer.
-func (b *Buffer) Entry() *logrus.Entry {
-	return logrus.NewEntry(b.logger)
-}
+// Logger returns a logger writing to the buffer.
+func (b *Buffer) Logger() *slog.Logger { return b.logger }
 
-// Levels implements `logrus.Hook`.
-func (b *Buffer) Levels() []logrus.Level {
-	return logrus.AllLevels
-}
+func (*Buffer) Enabled(context.Context, slog.Level) bool { return true }
 
-// Fire implements `logrus.Hook`.
-func (b *Buffer) Fire(entry *logrus.Entry) error {
+func (b *Buffer) Handle(_ context.Context, record slog.Record, indent string) error {
+	record = snapshotRecord(record)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.entries = append(b.entries, bufferedEntry{
-		level:   entry.Level,
-		time:    entry.Time,
-		message: entry.Message,
-		data:    entry.Data, // logrus hands each hook a copy
-	})
+	b.entries = append(b.entries, bufferedRecord{record: record, indent: indent})
 
 	return nil
 }
 
 // Replay logs the held entries to logger, as far as its level allows, and empties
 // the buffer.
-func (b *Buffer) Replay(logger *logrus.Logger) {
+func (b *Buffer) Replay(logger *slog.Logger) {
+	b.replayMu.Lock()
+	defer b.replayMu.Unlock()
+
 	b.mu.Lock()
 	entries := b.entries
 	b.entries = nil
 	b.mu.Unlock()
 
-	for _, e := range entries {
-		logger.WithFields(e.data).WithTime(e.time).Log(e.level, e.message)
+	ctx := context.TODO()
+	for _, entry := range entries {
+		handler := logger.Handler()
+		if !handler.Enabled(ctx, entry.record.Level) {
+			continue
+		}
+
+		if h, ok := handler.(*recordHandler); ok && entry.indent != "" {
+			handler = h.withIndent(entry.indent)
+		}
+
+		// Like slog.Logger, replay does not return handler errors. Managed output
+		// handlers report failures to stderr themselves.
+		_ = handler.Handle(ctx, entry.record.Clone())
 	}
 }

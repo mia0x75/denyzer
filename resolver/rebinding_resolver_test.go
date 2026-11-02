@@ -94,11 +94,11 @@ var _ = Describe("RebindingProtectionResolver", func() {
 
 	Describe("LogConfig", func() {
 		It("should log something", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 
 			sut.LogConfig(logger)
 
-			Expect(hook.Calls).ShouldNot(BeEmpty())
+			Expect(hook.Records()).ShouldNot(BeEmpty())
 		})
 	})
 
@@ -191,7 +191,8 @@ var _ = Describe("RebindingProtectionResolver", func() {
 				Target:   ".",
 				Value: []dns.SVCBKeyValue{
 					&dns.SVCBIPv4Hint{Hint: []net.IP{net.ParseIP("192.168.1.100")}},
-				}}
+				},
+			}
 			mockAnswer.Answer = []dns.RR{https}
 
 			Expect(sut.Resolve(ctx, newRequest("rebind.example.com.", HTTPS))).
@@ -227,7 +228,8 @@ var _ = Describe("RebindingProtectionResolver", func() {
 				Value: []dns.SVCBKeyValue{
 					&dns.SVCBIPv4Hint{Hint: []net.IP{net.ParseIP("1.2.3.4"), net.ParseIP("192.168.1.100")}},
 					&dns.SVCBIPv6Hint{Hint: []net.IP{net.ParseIP("fd00::1")}},
-				}}
+				},
+			}
 			mockAnswer.Answer = []dns.RR{https}
 
 			Expect(sut.Resolve(ctx, newRequest("rebind.example.com.", HTTPS))).
@@ -286,7 +288,8 @@ var _ = Describe("RebindingProtectionResolver", func() {
 			https := &dns.HTTPS{
 				Hdr:      dns.RR_Header{Name: "rebind.example.com.", Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: 300},
 				Priority: 1,
-				Target:   "target.example.com."}
+				Target:   "target.example.com.",
+			}
 			mockAnswer.Answer = []dns.RR{https}
 			mockAnswer.Extra = []dns.RR{rebindTestA("target.example.com.", "192.168.1.1")}
 
@@ -313,7 +316,7 @@ var _ = Describe("RebindingProtectionResolver", func() {
 		})
 
 		It("obfuscates the dropped IP in the debug log when log privacy is enabled", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 			loggedCtx, _ := log.NewCtx(ctx, logger)
 
 			util.LogPrivacy.Store(true)
@@ -326,8 +329,8 @@ var _ = Describe("RebindingProtectionResolver", func() {
 
 			// the IP is answer content; like the domain, it must not appear
 			// in clear text when log privacy is on
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("dropped answer")))
-			Expect(hook.Messages).ShouldNot(ContainElement(ContainSubstring("192.168.1.100")))
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("dropped answer")))
+			Expect(hook.Messages()).ShouldNot(ContainElement(ContainSubstring("192.168.1.100")))
 		})
 
 		It("filters CNAME chains ending in a private IP", func() {

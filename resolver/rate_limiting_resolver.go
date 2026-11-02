@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"time"
 
@@ -11,7 +12,6 @@ import (
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/util"
 
-	"github.com/sirupsen/logrus"
 	"golang.org/x/time/rate"
 )
 
@@ -33,7 +33,7 @@ type RateLimitingResolver struct {
 
 	store  *bucketStore
 	clock  func() time.Time
-	logger *logrus.Entry
+	logger *slog.Logger
 }
 
 func NewRateLimitingResolver(ctx context.Context, cfg config.RateLimit) *RateLimitingResolver {
@@ -66,7 +66,7 @@ func (r *RateLimitingResolver) Resolve(ctx context.Context, req *model.Request) 
 		return r.next.Resolve(ctx, req)
 	}
 	// entry is nil when the bucket store is full; the query is still dropped.
-	r.recordDrop(req, entry)
+	r.recordDrop(ctx, req, entry)
 
 	return nil, ErrRateLimited
 }
@@ -81,7 +81,7 @@ func (r *RateLimitingResolver) isAllowlisted(ip net.IP) bool {
 	return false
 }
 
-func (r *RateLimitingResolver) recordDrop(req *model.Request, e *bucketEntry) {
+func (r *RateLimitingResolver) recordDrop(ctx context.Context, req *model.Request, e *bucketEntry) {
 	if e == nil {
 		return
 	}
@@ -90,14 +90,17 @@ func (r *RateLimitingResolver) recordDrop(req *model.Request, e *bucketEntry) {
 	if now-prev < int64(time.Second) || !e.lastLogged.CompareAndSwap(prev, now) {
 		return
 	}
-	fields := logrus.Fields{
-		"client_ip":      req.ClientIP,
-		logFieldProtocol: req.Protocol,
-		"qname":          util.QuestionToString(req.Req.Question),
-		"bucket_tokens":  e.limiter.Tokens(),
+	if !r.logger.Enabled(ctx, slog.LevelWarn) {
+		return
+	}
+	fields := []slog.Attr{
+		slog.Any("client_ip", req.ClientIP),
+		slog.Any(logFieldProtocol, req.Protocol),
+		slog.Any("qname", util.LogQuestions(req.Req.Question)),
+		slog.Float64("bucket_tokens", e.limiter.Tokens()),
 	}
 	if len(req.Req.Question) > 0 {
-		fields["qtype"] = req.Req.Question[0].Qtype
+		fields = append(fields, slog.Any("qtype", req.Req.Question[0].Qtype))
 	}
-	r.logger.WithFields(fields).Warn("dropped query")
+	r.logger.LogAttrs(ctx, slog.LevelWarn, "dropped query", fields...)
 }

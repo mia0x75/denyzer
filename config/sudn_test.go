@@ -45,8 +45,8 @@ var _ = Describe("SUDNConfig", func() {
 		It("should log configuration", func() {
 			cfg.LogConfig(logger)
 
-			Expect(hook.Calls).ShouldNot(BeEmpty())
-			Expect(hook.Messages).Should(ContainElement(ContainSubstring("rfc6762-appendixG = true")))
+			Expect(hook.Records()).ShouldNot(BeEmpty())
+			Expect(hook.Messages()).Should(ContainElement(ContainSubstring("rfc6762-appendixG = true")))
 		})
 	})
 })

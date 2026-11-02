@@ -1,32 +1,29 @@
+// Package log provides configurable slog handlers, request attributes, startup
+// buffering and test capture while retaining Denyzer's logging output formats.
 package log
 
 //go:generate go tool go-enum -f=$GOFILE --marshal --names --template ../tools/schemagen/templates/enum_description.tmpl
 
 import (
-	"fmt"
 	"io"
-	"maps"
+	"log/slog"
 	"os"
-	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"github.com/creasty/defaults"
 	"github.com/mattn/go-colorable"
-	"github.com/sirupsen/logrus"
-	prefixed "github.com/x-cray/logrus-prefixed-formatter"
+	"golang.org/x/term"
 )
 
 const prefixField = "prefix"
 
-// Logger is the global logging instance
+// The global logger is stable: every derived logger shares its switching sink.
 //
 //nolint:gochecknoglobals
-var (
-	logger   *logrus.Logger
-	initDone atomic.Bool
-)
+var logger *slog.Logger
+
+//nolint:gochecknoinits // Reflection-based defaults need the generated enum maps initialized first.
+func init() { logger = NewLogger(DefaultConfig()) }
 
 // FormatType format for logging ENUM(
 // text // Human-readable text.
@@ -41,9 +38,9 @@ type FormatType int
 // )
 type TargetType int
 
-// Config defines all logging configurations
+// Config defines all logging configurations.
 type Config struct {
-	Level     logrus.Level `default:"info"   yaml:"level"`
+	Level     Level        `default:"info"   yaml:"level"`
 	Format    FormatType   `default:"text"   yaml:"format"`
 	Target    TargetType   `default:"stdout" yaml:"target"`
 	Syslog    SyslogConfig `yaml:"syslog"`
@@ -51,9 +48,9 @@ type Config struct {
 	Timestamp bool         `default:"true"   yaml:"timestamp"`
 }
 
-// SyslogConfig defines where and as what denyzer logs when the target is syslog
+// SyslogConfig defines where and as what denyzer logs when the target is syslog.
 type SyslogConfig struct {
-	// Network is empty for the local syslog socket, otherwise "udp" or "tcp"
+	// Network is empty for the local syslog socket, otherwise "udp" or "tcp".
 	Network  string         `default:""        yaml:"network"`
 	Address  string         `default:""        yaml:"address"`
 	Tag      string         `default:"denyzer" yaml:"tag"`
@@ -77,208 +74,109 @@ type SyslogFacility string
 // DefaultConfig returns a new Config initialized with default values.
 func DefaultConfig() *Config {
 	cfg := new(Config)
-
 	defaults.MustSet(cfg)
 
 	return cfg
 }
 
-//nolint:gochecknoinits
-func init() {
-	if !initDone.CompareAndSwap(false, true) {
-		return
-	}
-
-	newLogger := logrus.New()
-
-	ConfigureLogger(newLogger, DefaultConfig())
-
-	logger = newLogger
-}
-
-// Log returns the global logger
-func Log() *logrus.Logger {
-	return logger
-}
-
-// PrefixedLog return the global logger with prefix
-func PrefixedLog(prefix string) *logrus.Entry {
-	return logger.WithField(prefixField, prefix)
-}
-
-// SetPrefix sets prefix as the logger's prefix, replacing any prefix it already
-// carries. Use this to give each resolver its own prefix without accumulating the
-// prefixes of resolvers earlier in the chain. Contrast with WithPrefix, which
-// appends to build a dotted chain (a.b.c).
-func SetPrefix(logger *logrus.Entry, prefix string) *logrus.Entry {
-	return logger.WithField(prefixField, prefix)
-}
-
-// WithPrefix adds the given prefix to the logger.
-func WithPrefix(logger *logrus.Entry, prefix string) *logrus.Entry {
-	// avoid fmt.Sprintf here: this runs once per resolver per request on the hot path,
-	// and the values are plain strings, so a direct concat skips the interface boxing
-	// and format-string parsing.
-	if existingPrefix, ok := logger.Data[prefixField].(string); ok {
-		prefix = existingPrefix + "." + prefix
-	}
-
-	return logger.WithField(prefixField, prefix)
-}
-
-// EscapeInput removes line breaks from input
-func EscapeInput(input string) string {
-	result := strings.ReplaceAll(input, "\n", "")
-	result = strings.ReplaceAll(result, "\r", "")
+// NewLogger returns an independently configurable logger.
+func NewLogger(cfg *Config) *slog.Logger {
+	result := slog.New(&recordHandler{sink: new(switchSink)})
+	ConfigureLogger(result, cfg)
 
 	return result
 }
 
-// Configure applies configuration to the global logger.
-func Configure(cfg *Config) {
-	ConfigureLogger(logger, cfg)
-}
+// Log returns the global logger.
+func Log() *slog.Logger { return logger }
 
-// Configure applies configuration to the given logger.
-func ConfigureLogger(logger *logrus.Logger, cfg *Config) {
-	logger.SetLevel(cfg.Level)
+// PrefixedLog returns the global logger with prefix.
+func PrefixedLog(prefix string) *slog.Logger { return SetPrefix(logger, prefix) }
 
-	if cfg.Target != TargetTypeSyslog {
-		setOutput(logger, newFormatter(cfg), newOutput(cfg.Target))
+// SetPrefix replaces the logger's resolver prefix without accumulating earlier
+// resolvers' prefixes. Request-scoped fields remain in the logging context.
+func SetPrefix(logger *slog.Logger, prefix string) *slog.Logger {
+	if handler, ok := logger.Handler().(*recordHandler); ok {
+		attrs := handler.attrs
+		// A prefix describes the logger, not its current attribute group.
+		attrs.scopes = appendScope(attrs.scopes, attrScope{attrs: []slog.Attr{slog.String(prefixField, prefix)}})
 
-		return
+		return slog.New(&recordHandler{sink: handler.sink, attrs: attrs})
 	}
 
-	writer, err := newSyslogWriter(cfg.Syslog)
-	if err != nil {
-		setOutput(logger, newFormatter(cfg), newOutput(TargetTypeStderr))
-		logger.Errorf("can't log to syslog, using stderr instead: %v", err)
-
-		return
-	}
-
-	setOutput(logger, levelFormatter{newSyslogFormatter(cfg)}, writer)
+	return logger.With(prefixField, prefix)
 }
 
-// syslogOutput is a logger output writing to syslog, which must be closed once
-// the logger no longer writes to it.
-type syslogOutput interface {
-	io.Writer
-	closeSyslog() error
-}
-
-// setOutput points logger at formatter and out, then closes the syslog output it
-// replaces. logrus writes to Out under the lock SetOutput takes, so nothing writes
-// to the old output once SetOutput has returned. An entry formatted for the old
-// output but written to the new one while switching is logged either way.
-func setOutput(logger *logrus.Logger, formatter logrus.Formatter, out io.Writer) {
-	old := logger.Out
-
-	logger.SetFormatter(formatter)
-	logger.SetOutput(out)
-
-	if oldSyslog, ok := old.(syslogOutput); ok && old != out {
-		_ = oldSyslog.closeSyslog()
-	}
-}
-
-// newFormatter returns the formatter for the configured format.
-func newFormatter(cfg *Config) logrus.Formatter {
-	if cfg.Format == FormatTypeJson {
-		return &logrus.JSONFormatter{}
-	}
-
-	logFormatter := &prefixed.TextFormatter{
-		TimestampFormat:  "2006-01-02 15:04:05",
-		FullTimestamp:    true,
-		ForceFormatting:  true,
-		ForceColors:      false,
-		QuoteEmptyFields: true,
-		DisableTimestamp: !cfg.Timestamp,
-		DisableColors:    noColor(),
-	}
-
-	logFormatter.SetColorScheme(&prefixed.ColorScheme{
-		PrefixStyle:    "blue+b",
-		TimestampStyle: "white+h",
-	})
-
-	return logFormatter
-}
-
-// newSyslogFormatter returns the formatter for the configured format when logging
-// to syslog.
-func newSyslogFormatter(cfg *Config) logrus.Formatter {
-	if cfg.Format == FormatTypeJson {
-		return &logrus.JSONFormatter{}
-	}
-
-	return syslogFormatter{}
-}
-
-// levelMarker starts a formatted entry carrying its level, see levelFormatter.
-const levelMarker = 0
-
-// levelFormatter prefixes each entry with a marker and its level, so the syslog
-// writer can pick the record's priority and strip both again. The writer only
-// sees bytes, and logrus formats an entry after all hooks have run, so this is
-// the last point that still knows the entry's final message and level.
-type levelFormatter struct {
-	logrus.Formatter
-}
-
-// Format implements `logrus.Formatter`.
-func (f levelFormatter) Format(entry *logrus.Entry) ([]byte, error) {
-	line, err := f.Formatter.Format(entry)
-	if err != nil {
-		return nil, err
-	}
-
-	return append([]byte{levelMarker, byte(entry.Level)}, line...), nil //nolint:gosec // levels are 0-6
-}
-
-// splitLevel returns the level levelFormatter prefixed to p, and the rest of p.
-// Without the prefix, the entry is logged at info.
-func splitLevel(p []byte) (logrus.Level, []byte) {
-	if len(p) >= 2 && p[0] == levelMarker {
-		return logrus.Level(p[1]), p[2:]
-	}
-
-	return logrus.InfoLevel, p
-}
-
-// syslogFormatter renders an entry as plain text carrying neither timestamp nor
-// level: syslog records both itself, in the record's own header and priority.
-type syslogFormatter struct{}
-
-// Format implements `logrus.Formatter`.
-func (syslogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
-	var out strings.Builder
-
-	if prefix, ok := entry.Data[prefixField].(string); ok && prefix != "" {
-		out.WriteString(prefix)
-		out.WriteString(": ")
-	}
-
-	out.WriteString(entry.Message)
-
-	fields := make([]string, 0, len(entry.Data))
-
-	for field := range entry.Data {
-		if field != prefixField {
-			fields = append(fields, field)
+// WithPrefix appends a dotted suffix, such as blocking.client_id_cache.
+func WithPrefix(logger *slog.Logger, prefix string) *slog.Logger {
+	if handler, ok := logger.Handler().(*recordHandler); ok {
+		if existing, found := handler.attrs.prefix(); found {
+			prefix = existing + "." + prefix
 		}
 	}
 
-	slices.Sort(fields)
+	return SetPrefix(logger, prefix)
+}
 
-	for _, field := range fields {
-		fmt.Fprintf(&out, " %s=%v", field, entry.Data[field])
+// WithAttrs derives a logger from typed attributes.
+func WithAttrs(logger *slog.Logger, attrs ...slog.Attr) *slog.Logger {
+	return slog.New(logger.Handler().WithAttrs(attrs))
+}
+
+// WithIndent indents this callback's text messages, without modifying shared
+// loggers or changing JSON messages. Nested indentation is additive.
+func WithIndent(logger *slog.Logger, indent string, callback func(*slog.Logger)) {
+	if handler, ok := logger.Handler().(*recordHandler); ok {
+		logger = slog.New(handler.withIndent(indent))
 	}
 
-	out.WriteString("\n")
+	callback(logger)
+}
 
-	return []byte(out.String()), nil
+// EscapeInput removes line breaks from input.
+func EscapeInput(input string) string {
+	result := strings.ReplaceAll(input, "\n", "")
+
+	return strings.ReplaceAll(result, "\r", "")
+}
+
+// Configure applies configuration to the global logger.
+func Configure(cfg *Config) { ConfigureLogger(logger, cfg) }
+
+// ConfigureLogger configures a logger created by NewLogger (or derived from it).
+// A syslog setup failure falls back to stderr and logs the failure there.
+func ConfigureLogger(logger *slog.Logger, cfg *Config) {
+	sink := managedSink(logger)
+	output, err := configuredOutput(cfg)
+	sink.mu.Lock()
+	sink.cfg = *cfg
+	sink.replaceLocked(output, cfg.Level.Level())
+	sink.mu.Unlock()
+	if err != nil {
+		logger.Error("can't log to syslog, using stderr instead: " + err.Error())
+	}
+}
+
+func configuredOutput(cfg *Config) (*outputSink, error) {
+	if cfg.Target != TargetTypeSyslog {
+		return streamOutput(cfg, newOutput(cfg.Target)), nil
+	}
+
+	transport, err := newSyslogWriter(cfg.Syslog)
+	if err != nil {
+		return streamOutput(cfg, newOutput(TargetTypeStderr)), err
+	}
+
+	return &outputSink{syslog: transport, format: cfg.Format}, nil
+}
+
+func streamOutput(cfg *Config, out io.Writer) *outputSink {
+	colors := false
+	if file, ok := out.(*os.File); ok && !noColor() {
+		colors = term.IsTerminal(int(file.Fd()))
+	}
+
+	return &outputSink{out: out, format: cfg.Format, timestamp: cfg.Timestamp, colors: colors}
 }
 
 func newOutput(target TargetType) io.Writer {
@@ -294,83 +192,20 @@ func newOutput(target TargetType) io.Writer {
 		return os.Stdout
 	}
 
-	// Windows does not support ANSI colors
+	// Windows does not support ANSI colors natively.
 	return colorable.NewColorableStdout()
 }
 
-// Respect NO_COLOR env var (https://no-color.org/)
-func noColor() bool {
-	return os.Getenv("NO_COLOR") != ""
-}
+// Respect NO_COLOR (https://no-color.org/).
+func noColor() bool { return os.Getenv("NO_COLOR") != "" }
 
-// Silence disables the logger output
+// Silence disables the global output, but keeps the global logger identity.
+// Recorders installed afterwards can still capture enabled events.
 func Silence() {
-	initDone.Store(true)
-
-	logger = logrus.New()
-
-	logger.SetFormatter(nopFormatter{}) // skip expensive formatting
-
-	// not actually needed but doesn't hurt
-	logger.SetOutput(io.Discard)
-}
-
-type nopFormatter struct{}
-
-func (f nopFormatter) Format(*logrus.Entry) ([]byte, error) {
-	return nil, nil
-}
-
-func WithIndent(log *logrus.Entry, prefix string, callback func(*logrus.Entry)) {
-	undo := indentMessages(prefix, log.Logger)
-	defer undo()
-
-	callback(log)
-}
-
-// indentMessages modifies a logger and adds `prefix` to all messages.
-//
-// The returned function must be called to remove the prefix.
-func indentMessages(prefix string, logger *logrus.Logger) func() {
-	formatter := logger.Formatter
-	if level, ok := formatter.(levelFormatter); ok {
-		formatter = level.Formatter
-	}
-
-	switch formatter.(type) {
-	case *prefixed.TextFormatter, syslogFormatter:
-	default:
-		// log is not plaintext, do nothing
-		return func() {}
-	}
-
-	oldHooks := maps.Clone(logger.Hooks)
-
-	logger.AddHook(prefixMsgHook{
-		prefix: prefix,
-	})
-
-	var once sync.Once
-
-	return func() {
-		once.Do(func() {
-			logger.ReplaceHooks(oldHooks)
-		})
-	}
-}
-
-type prefixMsgHook struct {
-	prefix string
-}
-
-// Levels implements `logrus.Hook`.
-func (h prefixMsgHook) Levels() []logrus.Level {
-	return logrus.AllLevels
-}
-
-// Fire implements `logrus.Hook`.
-func (h prefixMsgHook) Fire(entry *logrus.Entry) error {
-	entry.Message = h.prefix + entry.Message
-
-	return nil
+	sink := managedSink(logger)
+	sink.mu.Lock()
+	sink.cfg = *DefaultConfig()
+	sink.recorders = nil
+	sink.replaceLocked(nil, slog.LevelInfo)
+	sink.mu.Unlock()
 }

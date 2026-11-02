@@ -32,20 +32,21 @@ func (v *Validator) validateDenialOfExistence(
 	// Validate the authority section RRsets first (must have valid signatures)
 	result := v.validateRRsets(ctx, response.Ns, question.Name, response.Ns, question.Name)
 	if result != ValidationResultSecure {
-		v.logger.Warnf("Authority section validation failed for denial of existence: %s", question.Name)
+		v.logger.WarnContext(ctx, "Authority section validation failed for denial of existence: "+question.Name)
 
 		return result
 	}
 
 	// Now validate the denial of existence proof
 	if hasNSEC3 {
-		return v.validateNSEC3DenialOfExistence(response, question)
-	} else if hasNSEC {
-		return v.validateNSECDenialOfExistence(response, question)
+		return v.validateNSEC3DenialOfExistence(ctx, response, question)
+	}
+	if hasNSEC {
+		return v.validateNSECDenialOfExistence(ctx, response, question)
 	}
 
 	// No NSEC or NSEC3 records found - cannot validate denial of existence
-	v.logger.Warnf("No NSEC/NSEC3 records found for denial of existence: %s", question.Name)
+	v.logger.WarnContext(ctx, "No NSEC/NSEC3 records found for denial of existence: "+question.Name)
 
 	return ValidationResultInsecure
 }

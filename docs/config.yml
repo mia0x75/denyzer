@@ -427,7 +427,7 @@ http3:
 
 # optional: logging configuration
 log:
-  # optional: Log level (one from trace, debug, info, warn, error). Default: info
+  # optional: Case-insensitive minimum level (trace, debug, info, warn/warning, error, fatal, panic). Default: info
   level: info
   # optional: Log format (text or json). Default: text
   format: text
@@ -443,7 +443,7 @@ log:
     tag: denyzer
     # optional: syslog facility (daemon, user or local0-local7). Default: daemon
     facility: daemon
-  # optional: log timestamps. Default: true
+  # optional: Include timestamps in text; JSON always retains time. Default: true
   timestamp: true
   # optional: obfuscate log output (replace all alphanumeric characters with *) for user sensitive data like request domains or responses to increase privacy. Default: false
   privacy: false

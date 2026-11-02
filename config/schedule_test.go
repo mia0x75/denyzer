@@ -1,14 +1,13 @@
 package config
 
 import (
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/mia0x75/denyzer/log"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
-	"github.com/sirupsen/logrus/hooks/test"
 )
 
 var _ = Describe("Schedule", func() {
@@ -143,13 +142,10 @@ var _ = Describe("Schedule", func() {
 		})
 
 		It("should warn about duplicate weekdays", func() {
-			testHook := &test.Hook{}
-			log.Log().AddHook(testHook)
-			log.Log().SetLevel(logrus.WarnLevel)
-
-			defer func() {
-				testHook.Reset()
-			}()
+			DeferCleanup(log.SaveSettings(log.Log()))
+			testHook, cleanup := log.Capture(log.Log())
+			DeferCleanup(cleanup)
+			log.SetLevel(log.Log(), slog.LevelWarn)
 
 			s := Schedule{
 				Start:    "09:00",
@@ -157,9 +153,9 @@ var _ = Describe("Schedule", func() {
 				Weekdays: []Weekday{Weekday(time.Monday), Weekday(time.Monday), Weekday(time.Monday)},
 			}
 			Expect(s.validate()).Should(Succeed())
-			Expect(testHook.Entries).Should(HaveLen(2))
-			Expect(testHook.Entries[0].Message).Should(ContainSubstring("duplicate weekday"))
-			Expect(testHook.Entries[0].Message).Should(ContainSubstring("Monday"))
+			Expect(testHook.Records()).Should(HaveLen(2))
+			Expect(testHook.Records()[0].Message).Should(ContainSubstring("duplicate weekday"))
+			Expect(testHook.Records()[0].Message).Should(ContainSubstring("Monday"))
 		})
 	})
 

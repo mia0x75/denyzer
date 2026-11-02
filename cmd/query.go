@@ -52,11 +52,11 @@ func query(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("response NOK, %s %s", resp.Status(), string(resp.Body))
 	}
 
-	log.Log().Infof("Query result for '%s' (%s):", req.Query, req.Type)
-	log.Log().Infof("\treason:        %20s", resp.JSON200.Reason)
-	log.Log().Infof("\tresponse type: %20s", resp.JSON200.ResponseType)
-	log.Log().Infof("\tresponse:      %20s", resp.JSON200.Response)
-	log.Log().Infof("\treturn code:   %20s", resp.JSON200.ReturnCode)
+	log.Log().Info(fmt.Sprintf("Query result for '%s' (%s):", req.Query, req.Type))
+	log.Log().Info(fmt.Sprintf("\treason:        %20s", resp.JSON200.Reason))
+	log.Log().Info(fmt.Sprintf("\tresponse type: %20s", resp.JSON200.ResponseType))
+	log.Log().Info(fmt.Sprintf("\tresponse:      %20s", resp.JSON200.Response))
+	log.Log().Info(fmt.Sprintf("\treturn code:   %20s", resp.JSON200.ReturnCode))
 
 	return nil
 }

@@ -24,7 +24,7 @@ var _ = Describe("NSEC validation", func() {
 		Expect(err).Should(Succeed())
 
 		mockUpstream := &mockResolver{}
-		logger, _ := log.NewMockEntry()
+		logger, _ := log.NewMockLogger()
 
 		sut = NewValidator(ctx, trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
 		ctx = withQueryBudget(ctx, 10)
@@ -90,7 +90,7 @@ var _ = Describe("NSEC validation", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSECDenialOfExistence(response, question)
+			result := sut.validateNSECDenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultInsecure))
 		})
 
@@ -112,7 +112,7 @@ var _ = Describe("NSEC validation", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSECDenialOfExistence(response, question)
+			result := sut.validateNSECDenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 
@@ -135,7 +135,7 @@ var _ = Describe("NSEC validation", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSECDenialOfExistence(response, question)
+			result := sut.validateNSECDenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 	})
@@ -147,7 +147,7 @@ var _ = Describe("NSEC validation", func() {
 				NextDomain: "z.example.com.",
 			}
 
-			result := sut.validateNSECNXDOMAIN([]*dns.NSEC{nsec}, "m.example.com.")
+			result := sut.validateNSECNXDOMAIN(ctx, []*dns.NSEC{nsec}, "m.example.com.")
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 
@@ -157,7 +157,7 @@ var _ = Describe("NSEC validation", func() {
 				NextDomain: "b.example.com.",
 			}
 
-			result := sut.validateNSECNXDOMAIN([]*dns.NSEC{nsec}, "z.example.com.")
+			result := sut.validateNSECNXDOMAIN(ctx, []*dns.NSEC{nsec}, "z.example.com.")
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -168,7 +168,7 @@ var _ = Describe("NSEC validation", func() {
 			}
 
 			// Test without trailing dot
-			result := sut.validateNSECNXDOMAIN([]*dns.NSEC{nsec}, "m.example.com")
+			result := sut.validateNSECNXDOMAIN(ctx, []*dns.NSEC{nsec}, "m.example.com")
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 
@@ -187,7 +187,7 @@ var _ = Describe("NSEC validation", func() {
 			}
 
 			// Query falls in second range (canonically between m and n)
-			result := sut.validateNSECNXDOMAIN([]*dns.NSEC{nsec1, nsec2, nsec3}, "ma.example.com.")
+			result := sut.validateNSECNXDOMAIN(ctx, []*dns.NSEC{nsec1, nsec2, nsec3}, "ma.example.com.")
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 
@@ -199,12 +199,12 @@ var _ = Describe("NSEC validation", func() {
 			}
 
 			// Query name that wraps around (after z or before a)
-			result := sut.validateNSECNXDOMAIN([]*dns.NSEC{nsec}, "zz.example.com.")
+			result := sut.validateNSECNXDOMAIN(ctx, []*dns.NSEC{nsec}, "zz.example.com.")
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 
 		It("should return Bogus for empty NSEC list", func() {
-			result := sut.validateNSECNXDOMAIN([]*dns.NSEC{}, "test.example.com.")
+			result := sut.validateNSECNXDOMAIN(ctx, []*dns.NSEC{}, "test.example.com.")
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 	})
@@ -217,7 +217,7 @@ var _ = Describe("NSEC validation", func() {
 				TypeBitMap: []uint16{dns.TypeA, dns.TypeNS},
 			}
 
-			result := sut.validateNSECNODATA([]*dns.NSEC{nsec}, "example.com.", dns.TypeAAAA)
+			result := sut.validateNSECNODATA(ctx, []*dns.NSEC{nsec}, "example.com.", dns.TypeAAAA)
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 
@@ -228,7 +228,7 @@ var _ = Describe("NSEC validation", func() {
 				TypeBitMap: []uint16{dns.TypeA, dns.TypeAAAA},
 			}
 
-			result := sut.validateNSECNODATA([]*dns.NSEC{nsec}, "example.com.", dns.TypeAAAA)
+			result := sut.validateNSECNODATA(ctx, []*dns.NSEC{nsec}, "example.com.", dns.TypeAAAA)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -239,7 +239,7 @@ var _ = Describe("NSEC validation", func() {
 				TypeBitMap: []uint16{dns.TypeA},
 			}
 
-			result := sut.validateNSECNODATA([]*dns.NSEC{nsec}, "example.com.", dns.TypeA)
+			result := sut.validateNSECNODATA(ctx, []*dns.NSEC{nsec}, "example.com.", dns.TypeA)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -251,7 +251,7 @@ var _ = Describe("NSEC validation", func() {
 			}
 
 			// Test without trailing dot
-			result := sut.validateNSECNODATA([]*dns.NSEC{nsec}, "example.com", dns.TypeAAAA)
+			result := sut.validateNSECNODATA(ctx, []*dns.NSEC{nsec}, "example.com", dns.TypeAAAA)
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 
@@ -267,12 +267,12 @@ var _ = Describe("NSEC validation", func() {
 				TypeBitMap: []uint16{dns.TypeA},
 			}
 
-			result := sut.validateNSECNODATA([]*dns.NSEC{nsec1, nsec2}, "test.example.com.", dns.TypeAAAA)
+			result := sut.validateNSECNODATA(ctx, []*dns.NSEC{nsec1, nsec2}, "test.example.com.", dns.TypeAAAA)
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 
 		It("should return Bogus for empty NSEC list", func() {
-			result := sut.validateNSECNODATA([]*dns.NSEC{}, "test.example.com.", dns.TypeA)
+			result := sut.validateNSECNODATA(ctx, []*dns.NSEC{}, "test.example.com.", dns.TypeA)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 	})

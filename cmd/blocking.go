@@ -111,10 +111,13 @@ func statusBlocking(cmd *cobra.Command, _ []string) error {
 		}
 
 		if resp.JSON200.AutoEnableInSec == nil || *resp.JSON200.AutoEnableInSec == 0 {
-			log.Log().Infof("blocking disabled for groups: %s", groupNames)
+			log.Log().Info("blocking disabled for groups: " + groupNames)
 		} else {
-			log.Log().Infof("blocking disabled for groups: '%s', for %d seconds",
-				groupNames, *resp.JSON200.AutoEnableInSec)
+			log.Log().Info(fmt.Sprintf(
+				"blocking disabled for groups: '%s', for %d seconds",
+				groupNames,
+				*resp.JSON200.AutoEnableInSec,
+			))
 		}
 	}
 

@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 // reverseLookuper resolves host names for an IP from local, in-memory data only
@@ -66,10 +66,10 @@ func NewClientNamesResolver(ctx context.Context,
 }
 
 // LogConfig implements `config.Configurable`.
-func (r *ClientNamesResolver) LogConfig(logger *logrus.Entry) {
+func (r *ClientNamesResolver) LogConfig(logger *slog.Logger) {
 	r.cfg.LogConfig(logger)
 
-	logger.Infof("cache entries = %d", r.cache.TotalCount())
+	logger.Info(fmt.Sprintf("cache entries = %d", r.cache.TotalCount()))
 }
 
 // Resolve tries to resolve the client name from the ip address
@@ -77,7 +77,7 @@ func (r *ClientNamesResolver) Resolve(ctx context.Context, request *model.Reques
 	clientNames := r.getClientNames(ctx, request)
 
 	request.ClientNames = clientNames
-	ctx, _ = log.CtxWithFields(ctx, logrus.Fields{"client_names": strings.Join(clientNames, "; ")})
+	ctx = log.CtxWithAttrs(ctx, slog.String("client_names", strings.Join(clientNames, "; ")))
 
 	return r.next.Resolve(ctx, request)
 }
@@ -139,8 +139,12 @@ func (r *ClientNamesResolver) resolveClientNames(ctx context.Context, ip net.IP)
 	if names := r.lookupLocalReverse(ip); len(names) > 0 {
 		result = applySingleNameOrder(names, r.cfg.SingleNameOrder)
 
-		logger.WithField("client_names", strings.Join(result, "; ")).
-			Debug("resolved client name(s) from local reverse lookup")
+		logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"resolved client name(s) from local reverse lookup",
+			slog.Any("client_names", strings.Join(result, "; ")),
+		)
 
 		return result
 	}
@@ -155,7 +159,7 @@ func (r *ClientNamesResolver) resolveClientNames(ctx context.Context, ip net.IP)
 		Req: util.NewMsgWithQuestion(reverse, dns.Type(dns.TypePTR)),
 	})
 	if err != nil {
-		logger.Error("can't resolve client name: ", err)
+		logger.ErrorContext(ctx, fmt.Sprint("can't resolve client name: ", err))
 
 		return []string{ip.String()}
 	}
@@ -163,7 +167,12 @@ func (r *ClientNamesResolver) resolveClientNames(ctx context.Context, ip net.IP)
 	clientNames := extractClientNamesFromAnswer(resp.Res.Answer, ip)
 	result = applySingleNameOrder(clientNames, r.cfg.SingleNameOrder)
 
-	logger.WithField("client_names", strings.Join(result, "; ")).Debug("resolved client name(s) from external resolver")
+	logger.LogAttrs(
+		ctx,
+		slog.LevelDebug,
+		"resolved client name(s) from external resolver",
+		slog.Any("client_names", strings.Join(result, "; ")),
+	)
 
 	return result
 }

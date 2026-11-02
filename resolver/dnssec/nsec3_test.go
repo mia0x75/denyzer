@@ -24,7 +24,7 @@ var _ = Describe("NSEC3 validation", func() {
 		Expect(err).Should(Succeed())
 
 		mockUpstream := &mockResolver{}
-		logger, _ := log.NewMockEntry()
+		logger, _ := log.NewMockLogger()
 
 		sut = NewValidator(ctx, trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
 		ctx = withQueryBudget(ctx, 10)
@@ -468,7 +468,7 @@ var _ = Describe("NSEC3 validation", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultInsecure))
 		})
 
@@ -489,7 +489,7 @@ var _ = Describe("NSEC3 validation", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -512,7 +512,7 @@ var _ = Describe("NSEC3 validation", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -541,7 +541,7 @@ var _ = Describe("NSEC3 validation", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -563,7 +563,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			// Will likely fail validation due to incomplete NSEC3 proof, but should attempt
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).ShouldNot(Equal(ValidationResultIndeterminate))
 		})
 
@@ -584,7 +584,7 @@ var _ = Describe("NSEC3 validation", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).ShouldNot(Equal(ValidationResultIndeterminate))
 		})
 	})
@@ -602,7 +602,7 @@ var _ = Describe("NSEC3 validation", func() {
 				TypeBitMap: []uint16{dns.TypeA, dns.TypeNS},
 			}
 
-			result := sut.checkDirectNSEC3Match([]*dns.NSEC3{nsec3}, "example.com.", hash, dns.TypeAAAA)
+			result := sut.checkDirectNSEC3Match(ctx, []*dns.NSEC3{nsec3}, "example.com.", hash, dns.TypeAAAA)
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 
@@ -618,7 +618,7 @@ var _ = Describe("NSEC3 validation", func() {
 				TypeBitMap: []uint16{dns.TypeA, dns.TypeAAAA},
 			}
 
-			result := sut.checkDirectNSEC3Match([]*dns.NSEC3{nsec3}, "example.com.", hash, dns.TypeAAAA)
+			result := sut.checkDirectNSEC3Match(ctx, []*dns.NSEC3{nsec3}, "example.com.", hash, dns.TypeAAAA)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -630,7 +630,7 @@ var _ = Describe("NSEC3 validation", func() {
 				},
 			}
 
-			result := sut.checkDirectNSEC3Match([]*dns.NSEC3{nsec3}, "example.com.", "HASH", dns.TypeA)
+			result := sut.checkDirectNSEC3Match(ctx, []*dns.NSEC3{nsec3}, "example.com.", "HASH", dns.TypeA)
 			Expect(result).Should(Equal(ValidationResultIndeterminate))
 		})
 	})
@@ -651,7 +651,7 @@ var _ = Describe("NSEC3 validation", func() {
 				TypeBitMap: []uint16{dns.TypeA},
 			}
 
-			result := sut.validateNSEC3NODATA([]*dns.NSEC3{nsec3}, "example.com.", dns.TypeAAAA, "example.com.", dns.SHA1, "", 0)
+			result := sut.validateNSEC3NODATA(ctx, []*dns.NSEC3{nsec3}, "example.com.", dns.TypeAAAA, "example.com.", dns.SHA1, "", 0)
 			Expect(result).Should(Equal(ValidationResultSecure))
 		})
 
@@ -667,6 +667,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NODATA(
+				ctx,
 				[]*dns.NSEC3{nsec3}, "test.example.com.", dns.TypeA, "example.com.", dns.SHA1, "", 0,
 			)
 			Expect(result).Should(Equal(ValidationResultBogus))
@@ -691,6 +692,7 @@ var _ = Describe("NSEC3 validation", func() {
 			// Ensure hash is covered
 			if nsec3HashInRange(hash, "AAAA", "ZZZZ") {
 				result := sut.validateNSEC3NODATA(
+					ctx,
 					[]*dns.NSEC3{nsec3}, "test.example.com.", dns.TypeDS, "example.com.", dns.SHA1, "", 0,
 				)
 				Expect(result).Should(Equal(ValidationResultInsecure))
@@ -710,7 +712,7 @@ var _ = Describe("NSEC3 validation", func() {
 				Iterations: 0,
 			}
 
-			result := sut.validateNSEC3NXDOMAIN([]*dns.NSEC3{nsec3}, "test.example.com.", "example.com.", dns.SHA1, "", 0)
+			result := sut.validateNSEC3NXDOMAIN(ctx, []*dns.NSEC3{nsec3}, "test.example.com.", "example.com.", dns.SHA1, "", 0)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -757,6 +759,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3NextCloser, nsec3Wildcard},
 				"test.example.com.", "example.com.", dns.SHA1, "", 0,
 			)
@@ -795,6 +798,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3OptOut}, "test.example.com.", "example.com.", dns.SHA1, "", 0,
 			)
 			// Result depends on whether next closer falls in opt-out span
@@ -804,7 +808,7 @@ var _ = Describe("NSEC3 validation", func() {
 		It("should return Bogus when next closer hash computation fails", func() {
 			// This test would require mocking the hash function, which is difficult
 			// But we can test with empty qname which might cause issues
-			result := sut.validateNSEC3NXDOMAIN([]*dns.NSEC3{}, "", "example.com.", dns.SHA1, "", 0)
+			result := sut.validateNSEC3NXDOMAIN(ctx, []*dns.NSEC3{}, "", "example.com.", dns.SHA1, "", 0)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -825,6 +829,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone}, "test.example.com.", "example.com.", dns.SHA1, "", 0,
 			)
 			Expect(result).Should(Equal(ValidationResultBogus))
@@ -864,6 +869,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3Cover}, "test.example.com.", "example.com.", dns.SHA1, "", 0,
 			)
 			// Should fail because wildcard is not covered
@@ -920,6 +926,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3CoverNext, nsec3CoverWild},
 				"sub.example.com.", "example.com.", dns.SHA1, "", 0,
 			)
@@ -947,6 +954,7 @@ var _ = Describe("NSEC3 validation", func() {
 
 			// Try to validate with qname equal to zone (no next closer possible)
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone}, "example.com.", "example.com.", dns.SHA1, "", 0,
 			)
 			Expect(result).Should(Equal(ValidationResultBogus))
@@ -983,6 +991,7 @@ var _ = Describe("NSEC3 validation", func() {
 
 			// Use unsupported hash algorithm (0) to trigger error
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3Cover}, "test.example.com.", "example.com.", 0, "", 0,
 			)
 			Expect(result).Should(Equal(ValidationResultBogus))
@@ -1019,6 +1028,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3OptOut}, "sub.example.com.", "example.com.", dns.SHA1, "", 0,
 			)
 
@@ -1040,6 +1050,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3}, "test.example.com.", dns.TypeA, "example.com.",
 				dns.SHA1, "", 0, "somehash",
 			)
@@ -1065,6 +1076,7 @@ var _ = Describe("NSEC3 validation", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3OptOut}, "sub.example.com.", dns.TypeDS, "example.com.",
 				dns.SHA1, "", 0, hashDS,
 			)
@@ -1092,6 +1104,7 @@ var _ = Describe("NSEC3 validation", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone}, "nonexist.example.com.", dns.TypeA, "example.com.",
 				dns.SHA1, "", 0, hashQuery,
 			)
@@ -1135,6 +1148,7 @@ var _ = Describe("NSEC3 validation", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3Wildcard}, "test.example.com.", dns.TypeMX,
 				"example.com.", dns.SHA1, "", 0, hashQuery,
 			)
@@ -1178,6 +1192,7 @@ var _ = Describe("NSEC3 validation", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3Wildcard}, "test.example.com.", dns.TypeMX,
 				"example.com.", dns.SHA1, "", 0, hashQuery,
 			)
@@ -1206,6 +1221,7 @@ var _ = Describe("NSEC3 validation", func() {
 
 			// Use unsupported hash algorithm to trigger wildcard hash error
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone}, "test.example.com.", dns.TypeA,
 				"example.com.", 0, "", 0, hashQuery, // hash algorithm 0 is unsupported
 			)
@@ -1232,6 +1248,7 @@ var _ = Describe("NSEC3 validation", func() {
 
 			// For DS query with opt-out covering the hash, should return Insecure
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3OptOut}, "sub.example.com.", dns.TypeDS, "example.com.",
 				dns.SHA1, "", 0, hashDS,
 			)
@@ -1274,6 +1291,7 @@ var _ = Describe("NSEC3 validation", func() {
 
 			// DS query with opt-out covering, no wildcard NSEC3 found
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3OptOut}, "test.example.com.", dns.TypeDS,
 				"example.com.", dns.SHA1, "", 0, hashDS,
 			)
@@ -1300,6 +1318,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NODATA(
+				ctx,
 				[]*dns.NSEC3{nsec3}, "www.example.com.", dns.TypeAAAA, "example.com.",
 				dns.SHA1, "", 0,
 			)
@@ -1323,6 +1342,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NODATA(
+				ctx,
 				[]*dns.NSEC3{nsec3}, "www.example.com.", dns.TypeA, "example.com.",
 				dns.SHA1, "", 0,
 			)
@@ -1342,6 +1362,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NODATA(
+				ctx,
 				[]*dns.NSEC3{nsec3}, "www.example.com.", dns.TypeA, "example.com.",
 				dns.SHA1, "", 0,
 			)
@@ -1499,6 +1520,7 @@ var _ = Describe("NSEC3 validation", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3Wildcard}, "nonexist.example.com.", dns.TypeAAAA,
 				"example.com.", dns.SHA1, "", 0, hashQuery,
 			)
@@ -1542,6 +1564,7 @@ var _ = Describe("NSEC3 validation", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3Wildcard}, "nonexist.example.com.", dns.TypeAAAA,
 				"example.com.", dns.SHA1, "", 0, hashQuery,
 			)
@@ -1566,6 +1589,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3OptOut}, "sub.example.com.", dns.TypeDS,
 				"example.com.", dns.SHA1, "", 0, hashQuery,
 			)
@@ -1589,6 +1613,7 @@ var _ = Describe("NSEC3 validation", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3}, "test.example.com.", dns.TypeA,
 				"example.com.", dns.SHA1, "", 0, hashQuery,
 			)
@@ -1698,7 +1723,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			// Should log about opt-out flag and continue validation
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).ShouldNot(Equal(ValidationResultIndeterminate))
 		})
 
@@ -1723,7 +1748,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			// Should extract sub.example.com. as zone name
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).ShouldNot(Equal(ValidationResultIndeterminate))
 		})
 
@@ -1746,7 +1771,7 @@ var _ = Describe("NSEC3 validation", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).ShouldNot(Equal(ValidationResultIndeterminate))
 		})
 
@@ -1783,6 +1808,7 @@ var _ = Describe("NSEC3 validation", func() {
 
 			// Use unsupported hash algorithm
 			result := sut.validateNSEC3NODATA(
+				ctx,
 				[]*dns.NSEC3{nsec3}, "test.example.com.", dns.TypeA,
 				"example.com.", 99, "", 0, // Unsupported algorithm
 			)
@@ -1813,7 +1839,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			// Should log opt-out detection and proceed
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).ShouldNot(Equal(ValidationResultIndeterminate))
 		})
 	})
@@ -1840,6 +1866,7 @@ var _ = Describe("NSEC3 validation", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone}, "test.example.com.", dns.TypeA,
 				"example.com.", dns.SHA1, "", 0, hashQuery,
 			)
@@ -1881,6 +1908,7 @@ var _ = Describe("NSEC3 validation", func() {
 			// Verify the opt-out covers the hash
 			if sut.nsec3CoversWithOptOut([]*dns.NSEC3{nsec3OptOut}, hashQuery) {
 				result := sut.checkWildcardNSEC3Match(
+					ctx,
 					[]*dns.NSEC3{nsec3Zone, nsec3OptOut}, "test.example.com.", dns.TypeDS,
 					"example.com.", dns.SHA1, "", 0, hashQuery,
 				)
@@ -1903,6 +1931,7 @@ var _ = Describe("NSEC3 validation", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Empty}, "test.example.com.", dns.TypeA,
 				"example.com.", dns.SHA1, "", 0, hashQuery,
 			)
@@ -1967,6 +1996,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3NextCloserCover, nsec3WildcardCover},
 				qname, zoneName, dns.SHA1, "AABBCCDD", 10,
 			)
@@ -1998,6 +2028,7 @@ var _ = Describe("NSEC3 validation", func() {
 			// Next closer and wildcard coverage are missing, so will return Bogus
 			// But this will still hit the "closest encloser found" logging path
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone}, qname, zoneName, dns.SHA1, "", 0,
 			)
 			// Should try to validate but fail on next closer coverage
@@ -2047,6 +2078,7 @@ var _ = Describe("NSEC3 validation", func() {
 				// Next closer covered but not by opt-out
 				// Will proceed to wildcard check
 				result := sut.validateNSEC3NXDOMAIN(
+					ctx,
 					[]*dns.NSEC3{nsec3Zone, nsec3Cover},
 					qname, zoneName, dns.SHA1, "", 0,
 				)
@@ -2095,6 +2127,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3Wildcard}, qname, dns.TypeAAAA,
 				zoneName, dns.SHA1, "SALT", 5, hashQuery,
 			)
@@ -2139,6 +2172,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3Other}, qname, dns.TypeA,
 				zoneName, dns.SHA1, "", 0, hashQuery,
 			)
@@ -2185,6 +2219,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3Wildcard}, qname, dns.TypeDS,
 				zoneName, dns.SHA1, "", 0, hashQuery,
 			)
@@ -2224,6 +2259,7 @@ var _ = Describe("NSEC3 validation", func() {
 			}
 
 			result := sut.checkWildcardNSEC3Match(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone, nsec3Wildcard}, qname, dns.TypeDS,
 				zoneName, dns.SHA1, "", 0, hashQuery,
 			)
@@ -2252,6 +2288,7 @@ var _ = Describe("NSEC3 validation", func() {
 
 			// Use unsupported hash algorithm to trigger error
 			result := sut.validateNSEC3NXDOMAIN(
+				ctx,
 				[]*dns.NSEC3{nsec3Zone}, "test.example.com.", "example.com.",
 				99, "", 0, // Unsupported hash algorithm
 			)
@@ -2297,6 +2334,7 @@ var _ = Describe("NSEC3 validation", func() {
 			if sut.nsec3Covers([]*dns.NSEC3{nsec3NextCloser}, hashNextCloser) &&
 				sut.nsec3Covers([]*dns.NSEC3{nsec3NextCloser}, hashWildcard) {
 				result := sut.validateNSEC3NXDOMAIN(
+					ctx,
 					[]*dns.NSEC3{nsec3Zone, nsec3NextCloser},
 					"test.example.com.", "example.com.", dns.SHA1, "", 0,
 				)

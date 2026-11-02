@@ -1,17 +1,17 @@
 package config
 
 import (
+	"log/slog"
 	"testing"
 
 	"github.com/mia0x75/denyzer/log"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
 )
 
 var (
-	logger *logrus.Entry
-	hook   *log.MockLoggerHook
+	logger *slog.Logger
+	hook   *log.Recorder
 )
 
 func init() {
@@ -25,6 +25,6 @@ func TestConfig(t *testing.T) {
 
 func suiteBeforeEach() {
 	BeforeEach(func() {
-		logger, hook = log.NewMockEntry()
+		logger, hook = log.NewMockLogger()
 	})
 }

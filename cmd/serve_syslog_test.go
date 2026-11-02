@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"bytes"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -13,8 +14,6 @@ import (
 	"github.com/mia0x75/denyzer/log"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
-	"github.com/sirupsen/logrus/hooks/test"
 )
 
 var _ = Describe("Serve command logging to syslog", func() {
@@ -31,9 +30,9 @@ var _ = Describe("Serve command logging to syslog", func() {
 		configPath = defaultConfigPath
 
 		out = new(bytes.Buffer)
-		log.Log().SetOutput(out)
-		log.Log().SetFormatter(&logrus.TextFormatter{DisableColors: true})
-		log.Log().SetLevel(logrus.InfoLevel)
+		log.Configure(log.DefaultConfig())
+		log.SetOutput(log.Log(), out)
+		log.SetLevel(log.Log(), slog.LevelInfo)
 
 		var err error
 		syslogConn, err = net.ListenPacket("udp", "127.0.0.1:0")
@@ -130,7 +129,8 @@ var _ = Describe("Serve command logging to syslog", func() {
 	)
 
 	DescribeTable("should load the config once when serve runs", func(args []string) {
-		hook := test.NewLocal(log.Log())
+		hook, cleanup := log.Capture(log.Log())
+		DeferCleanup(cleanup)
 
 		// a taken HTTP port makes the server fail once it has loaded the config, before it listens
 		taken, err := net.Listen("tcp", "127.0.0.1:0")
@@ -161,7 +161,7 @@ var _ = Describe("Serve command logging to syslog", func() {
 
 		n := 0
 
-		for _, entry := range hook.AllEntries() {
+		for _, entry := range hook.Records() {
 			if strings.Contains(entry.Message, "duration without a unit") {
 				n++
 			}

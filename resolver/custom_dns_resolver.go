@@ -3,16 +3,18 @@ package resolver
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"slices"
 	"strings"
+
+	"github.com/mia0x75/denyzer/log"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 type createAnswerFunc func(question dns.Question, ip net.IP, ttl uint32) (dns.RR, error)
@@ -135,7 +137,7 @@ func (r *CustomDNSResolver) handleReverseDNS(request *model.Request) *model.Resp
 // first.
 func (r *CustomDNSResolver) processRequest(
 	ctx context.Context,
-	logger *logrus.Entry,
+	logger *slog.Logger,
 	request *model.Request,
 	resolvedCnames []string,
 ) (handled bool, response *model.Response, err error) {
@@ -160,12 +162,17 @@ func (r *CustomDNSResolver) processRequest(
 				answers = append(answers, result...)
 			}
 
-			if len(answers) > 0 {
-				logger.WithFields(logrus.Fields{
-					logFieldAnswer: util.Obfuscate(util.AnswerToString(answers)),
-					logFieldDomain: util.Obfuscate(domain),
-				}).Debugf("returning custom dns entry")
-
+			hasAnswers := len(answers) > 0
+			if hasAnswers && logger.Enabled(ctx, slog.LevelDebug) {
+				logger.LogAttrs(
+					ctx,
+					slog.LevelDebug,
+					"returning custom dns entry",
+					slog.Any(logFieldAnswer, util.LogAnswer(answers)),
+					slog.Any(logFieldDomain, util.Obfuscated(domain)),
+				)
+			}
+			if hasAnswers {
 				return true, model.NewResponseWithAnswers(request, answers, model.ResponseTypeCUSTOMDNS, "CUSTOM DNS"), nil
 			}
 
@@ -196,7 +203,7 @@ func (r *CustomDNSResolver) processRequest(
 
 func (r *CustomDNSResolver) processDNSEntry(
 	ctx context.Context,
-	logger *logrus.Entry,
+	logger *slog.Logger,
 	request *model.Request,
 	resolvedCnames []string,
 	question dns.Question,
@@ -218,8 +225,14 @@ func (r *CustomDNSResolver) processDNSEntry(
 	// A zone can legitimately contain record types denyzer does not serve (SOA, NS,
 	// MX, HTTPS, RRSIG, ...). They are simply not answered here: failing the whole
 	// query would also break the supported records defined for the same name.
-	logger.WithField("rr_type", fmt.Sprintf("%T", entry)).
-		Debug("ignoring custom DNS entry with unsupported type")
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.LogAttrs(
+			ctx,
+			slog.LevelDebug,
+			"ignoring custom DNS entry with unsupported type",
+			slog.String("rr_type", fmt.Sprintf("%T", entry)),
+		)
+	}
 
 	return nil, nil
 }
@@ -235,7 +248,7 @@ func (r *CustomDNSResolver) Resolve(ctx context.Context, request *model.Request)
 
 	// Apply domain rewrites if configured
 	original := request.Req
-	rewritten, originalNames := rewriteRequest(logger, original, r.cfg.Rewrite)
+	rewritten, originalNames := rewriteRequest(ctx, logger, original, r.cfg.Rewrite)
 	if rewritten != nil {
 		request.Req = rewritten
 	}
@@ -247,7 +260,7 @@ func (r *CustomDNSResolver) Resolve(ctx context.Context, request *model.Request)
 	request.Req = original
 
 	if !handled {
-		logger.WithField("next_resolver", Name(r.next)).Trace("go to next resolver")
+		logger.LogAttrs(ctx, log.LevelTrace, "go to next resolver", slog.Any("next_resolver", Name(r.next)))
 
 		return r.next.Resolve(ctx, request)
 	}
@@ -255,7 +268,7 @@ func (r *CustomDNSResolver) Resolve(ctx context.Context, request *model.Request)
 	// The mapping failed or had nothing for this query: ask the rest of the
 	// chain, using the original name (`fallbackUpstream`).
 	if shouldFallbackUpstream(&r.cfg.RewriterConfig, response, err) {
-		logger.WithField("next_resolver", Name(r.next)).Trace("fallback to next resolver")
+		logger.LogAttrs(ctx, log.LevelTrace, "fallback to next resolver", slog.Any("next_resolver", Name(r.next)))
 
 		return r.next.Resolve(ctx, request)
 	}
@@ -318,7 +331,7 @@ func (r *CustomDNSResolver) processSRV(
 
 func (r *CustomDNSResolver) processCNAME(
 	ctx context.Context,
-	logger *logrus.Entry,
+	logger *slog.Logger,
 	request *model.Request,
 	targetCname dns.CNAME,
 	resolvedCnames []string,
@@ -355,7 +368,7 @@ func (r *CustomDNSResolver) processCNAME(
 
 	if !handled {
 		// the target is outside the mapping: resolve it via the rest of the chain
-		logger.WithField("next_resolver", Name(r.next)).Trace("go to next resolver")
+		logger.LogAttrs(ctx, log.LevelTrace, "go to next resolver", slog.Any("next_resolver", Name(r.next)))
 
 		if targetResp, err = r.next.Resolve(ctx, targetRequest); err != nil {
 			return nil, err

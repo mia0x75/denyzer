@@ -1,6 +1,8 @@
 package resolver
 
 import (
+	"context"
+	"log/slog"
 	"net"
 
 	"github.com/mia0x75/denyzer/log"
@@ -8,17 +10,18 @@ import (
 	"github.com/miekg/dns"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
 )
 
 var _ = Describe("RewriteHelper", func() {
 	var (
-		logger     *logrus.Entry
+		ctx        context.Context
+		logger     *slog.Logger
 		rewriteMap map[string]string
 	)
 
 	BeforeEach(func() {
-		logger = logrus.NewEntry(log.Log())
+		ctx = context.Background()
+		logger = log.Log()
 	})
 
 	BeforeEach(func() {
@@ -92,7 +95,7 @@ var _ = Describe("RewriteHelper", func() {
 				req := new(dns.Msg)
 				req.SetQuestion(dns.Fqdn("test.original"), dns.TypeA)
 
-				rewritten, originalNames := rewriteRequest(logger, req, rewriteMap)
+				rewritten, originalNames := rewriteRequest(ctx, logger, req, rewriteMap)
 
 				Expect(rewritten).ShouldNot(BeNil())
 				Expect(rewritten.Question[0].Name).Should(Equal("test.rewritten."))
@@ -105,7 +108,7 @@ var _ = Describe("RewriteHelper", func() {
 				req.SetQuestion(dns.Fqdn("test.original"), dns.TypeA)
 				originalQuestion := req.Question[0].Name
 
-				rewritten, _ := rewriteRequest(logger, req, rewriteMap)
+				rewritten, _ := rewriteRequest(ctx, logger, req, rewriteMap)
 
 				Expect(rewritten).ShouldNot(BeNil())
 				Expect(req.Question[0].Name).Should(Equal(originalQuestion))
@@ -120,7 +123,7 @@ var _ = Describe("RewriteHelper", func() {
 					{Name: dns.Fqdn("sub2.test.zone"), Qtype: dns.TypeAAAA, Qclass: dns.ClassINET},
 				}
 
-				rewritten, originalNames := rewriteRequest(logger, req, rewriteMap)
+				rewritten, originalNames := rewriteRequest(ctx, logger, req, rewriteMap)
 
 				Expect(rewritten).ShouldNot(BeNil())
 				Expect(rewritten.Question[0].Name).Should(Equal("sub1.rewritten."))
@@ -134,7 +137,7 @@ var _ = Describe("RewriteHelper", func() {
 				req := new(dns.Msg)
 				req.SetQuestion(dns.Fqdn("untouched.domain"), dns.TypeA)
 
-				rewritten, originalNames := rewriteRequest(logger, req, rewriteMap)
+				rewritten, originalNames := rewriteRequest(ctx, logger, req, rewriteMap)
 
 				Expect(rewritten).Should(BeNil())
 				Expect(originalNames).Should(BeEmpty())
@@ -146,7 +149,7 @@ var _ = Describe("RewriteHelper", func() {
 				req := new(dns.Msg)
 				req.SetQuestion(dns.Fqdn("any.domain"), dns.TypeA)
 
-				rewritten, originalNames := rewriteRequest(logger, req, map[string]string{})
+				rewritten, originalNames := rewriteRequest(ctx, logger, req, map[string]string{})
 
 				Expect(rewritten).Should(BeNil())
 				Expect(originalNames).Should(BeNil())
@@ -158,7 +161,7 @@ var _ = Describe("RewriteHelper", func() {
 				req := new(dns.Msg)
 				req.Question = []dns.Question{}
 
-				rewritten, originalNames := rewriteRequest(logger, req, rewriteMap)
+				rewritten, originalNames := rewriteRequest(ctx, logger, req, rewriteMap)
 
 				Expect(rewritten).Should(BeNil())
 				Expect(originalNames).Should(BeEmpty())
@@ -344,7 +347,7 @@ var _ = Describe("RewriteHelper", func() {
 			originalQuestion := originalReq.Question[0].Name
 
 			// Rewrite request
-			rewritten, originalNames := rewriteRequest(logger, originalReq, rewriteMap)
+			rewritten, originalNames := rewriteRequest(ctx, logger, originalReq, rewriteMap)
 			Expect(rewritten).ShouldNot(BeNil())
 			Expect(rewritten.Question[0].Name).Should(Equal("sub.rewritten."))
 

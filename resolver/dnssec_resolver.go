@@ -3,12 +3,12 @@ package resolver
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/resolver/dnssec"
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -63,14 +63,18 @@ func NewDNSSECResolver(ctx context.Context, cfg config.DNSSEC, upstream Resolver
 			cfg.ClockSkewToleranceSec,
 		)
 
-		logger.Infof("DNSSEC resolver initialized with %d root trust anchor(s)",
-			len(trustAnchors.GetRootTrustAnchors()))
+		logger.InfoContext(ctx, fmt.Sprintf(
+			"DNSSEC resolver initialized with %d root trust anchor(s)",
+			len(trustAnchors.GetRootTrustAnchors()),
+		))
 	}
 
 	return r, nil
 }
 
 // Resolve validates DNSSEC signatures if validation is enabled
+//
+//nolint:funlen,gocognit,nestif // Enabled guards avoid formatting disabled logs without splitting DNSSEC/AD handling
 func (r *DNSSECResolver) Resolve(ctx context.Context, request *model.Request) (*model.Response, error) {
 	ctx, logger := r.log(ctx)
 
@@ -87,11 +91,15 @@ func (r *DNSSECResolver) Resolve(ctx context.Context, request *model.Request) (*
 			if opt.UDPSize() < ednsUDPSize {
 				opt.SetUDPSize(ednsUDPSize)
 			}
-			logger.Debugf("DNSSEC DO bit set for query (existing EDNS0): %s", request.Req.Question[0].Name)
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.DebugContext(ctx, "DNSSEC DO bit set for query (existing EDNS0): "+request.Req.Question[0].Name)
+			}
 		} else {
 			// No EDNS0 present - add it with DO bit
 			request.Req.SetEdns0(ednsUDPSize, true)
-			logger.Debugf("DNSSEC DO bit set for query (new EDNS0): %s", request.Req.Question[0].Name)
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.DebugContext(ctx, "DNSSEC DO bit set for query (new EDNS0): "+request.Req.Question[0].Name)
+			}
 		}
 	}
 
@@ -116,8 +124,13 @@ func (r *DNSSECResolver) Resolve(ctx context.Context, request *model.Request) (*
 		if response != nil && response.Res != nil &&
 			response.RType != model.ResponseTypeRESOLVED && response.RType != model.ResponseTypeCACHED {
 			response.Res.AuthenticatedData = false
-			logger.Debugf("skipping DNSSEC validation for trusted-local/synthesized response (%s): %s",
-				response.RType, request.Req.Question[0].Name)
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.DebugContext(ctx, fmt.Sprintf(
+					"skipping DNSSEC validation for trusted-local/synthesized response (%s): %s",
+					response.RType,
+					request.Req.Question[0].Name,
+				))
+			}
 
 			return response, nil
 		}
@@ -125,17 +138,24 @@ func (r *DNSSECResolver) Resolve(ctx context.Context, request *model.Request) (*
 		// Preserve the originating client's identity so DS/DNSKEY sub-queries issued
 		// during validation resolve from the same upstream view as the answer.
 		validationCtx := dnssec.WithClientContext(ctx, request.ClientIP, request.ClientNames,
-			request.RequestClientID, r.upstreamGroup(logger, request))
+			request.RequestClientID, r.upstreamGroup(ctx, logger, request))
 		result := r.validator.ValidateResponse(validationCtx, response.Res, request.Req.Question[0])
 
-		logger.Debugf("DNSSEC validation result for %s: %s",
-			request.Req.Question[0].Name, result.String())
+		if logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, fmt.Sprintf(
+				"DNSSEC validation result for %s: %s",
+				request.Req.Question[0].Name,
+				result.String(),
+			))
+		}
 
 		switch result {
 		case dnssec.ValidationResultBogus:
 			// Invalid DNSSEC - return SERVFAIL
-			logger.Warnf("DNSSEC validation failed for %s - returning SERVFAIL",
-				request.Req.Question[0].Name)
+			logger.WarnContext(ctx, fmt.Sprintf(
+				"DNSSEC validation failed for %s - returning SERVFAIL",
+				request.Req.Question[0].Name,
+			))
 
 			return createServFailResponseDNSSEC(request, "DNSSEC validation failed: bogus signatures"), nil
 
@@ -143,14 +163,20 @@ func (r *DNSSECResolver) Resolve(ctx context.Context, request *model.Request) (*
 			// Valid DNSSEC - set AD flag. The server clears it again for clients that asked for
 			// neither DO nor AD, per RFC 6840 §5.8 (see clientQuery.normalizeResponse).
 			response.Res.AuthenticatedData = true
-			logger.Debugf("DNSSEC validation succeeded for %s - AD flag set",
-				request.Req.Question[0].Name)
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.DebugContext(ctx, "DNSSEC validation succeeded for "+request.Req.Question[0].Name+" - AD flag set")
+			}
 
 		case dnssec.ValidationResultInsecure, dnssec.ValidationResultIndeterminate:
 			// No DNSSEC or cannot validate - clear AD flag
 			response.Res.AuthenticatedData = false
-			logger.Debugf("DNSSEC validation result %s for %s - AD flag cleared",
-				result.String(), request.Req.Question[0].Name)
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.DebugContext(ctx, fmt.Sprintf(
+					"DNSSEC validation result %s for %s - AD flag cleared",
+					result.String(),
+					request.Req.Question[0].Name,
+				))
+			}
 		}
 	}
 
@@ -158,12 +184,12 @@ func (r *DNSSECResolver) Resolve(ctx context.Context, request *model.Request) (*
 }
 
 // upstreamGroup returns the upstream group that answers the DNSSEC sub-queries of a request
-func (r *DNSSECResolver) upstreamGroup(logger *logrus.Entry, request *model.Request) string {
+func (r *DNSSECResolver) upstreamGroup(ctx context.Context, logger *slog.Logger, request *model.Request) string {
 	if r.upstreams == nil {
 		return ""
 	}
 
-	return r.upstreams.upstreamGroupByClient(logger, request)
+	return r.upstreams.upstreamGroupByClient(ctx, logger, request)
 }
 
 // createServFailResponseDNSSEC creates a SERVFAIL response for a DNSSEC validation failure.

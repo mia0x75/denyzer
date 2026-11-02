@@ -2,6 +2,8 @@ package resolver
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"net/netip"
@@ -12,7 +14,6 @@ import (
 	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -99,7 +100,9 @@ func (r *DNS64Resolver) Resolve(ctx context.Context, request *model.Request) (*m
 	}
 
 	qname := request.Req.Question[0].Name
-	logger.Debugf("received AAAA query for %s, checking for synthesis", qname)
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf("received AAAA query for %s, checking for synthesis", qname))
+	}
 
 	// Pass query to next resolver
 	response, err := r.next.Resolve(ctx, request)
@@ -108,28 +111,34 @@ func (r *DNS64Resolver) Resolve(ctx context.Context, request *model.Request) (*m
 	}
 
 	// Check if response has AAAA records that are NOT all in exclusion set
-	if r.hasValidAAAARecords(response, logger) {
-		logger.Debug("existing valid AAAA found, skipping synthesis")
+	if r.hasValidAAAARecords(ctx, response, logger) {
+		logger.DebugContext(ctx, "existing valid AAAA found, skipping synthesis")
 
 		return response, nil
 	}
 
 	// No valid AAAA records, query for A records and synthesize
-	logger.Debug("no valid AAAA found, querying for A records")
+	logger.DebugContext(ctx, "no valid AAAA found, querying for A records")
 
 	return r.synthesizeFromA(ctx, request, response, logger)
 }
 
 // hasValidAAAARecords checks if response has any AAAA records not in exclusion set
-func (r *DNS64Resolver) hasValidAAAARecords(response *model.Response, logger *logrus.Entry) bool {
+func (r *DNS64Resolver) hasValidAAAARecords(
+	ctx context.Context,
+	response *model.Response,
+	logger *slog.Logger,
+) bool {
 	aaaaRecords := util.ExtractRecords[*dns.AAAA](response.Res)
 	if len(aaaaRecords) == 0 {
-		logger.Debug("no AAAA records in response")
+		logger.DebugContext(ctx, "no AAAA records in response")
 
 		return false
 	}
 
-	logger.Debugf("found %d AAAA record(s), checking exclusion set", len(aaaaRecords))
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf("found %d AAAA record(s), checking exclusion set", len(aaaaRecords)))
+	}
 
 	// Check if all AAAA records are in exclusion set
 	allExcluded := true
@@ -137,7 +146,9 @@ func (r *DNS64Resolver) hasValidAAAARecords(response *model.Response, logger *lo
 
 	for _, aaaa := range aaaaRecords {
 		if r.isInExclusionSet(aaaa.AAAA) {
-			logger.Debugf("AAAA record %s is in exclusion set", aaaa.AAAA)
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.DebugContext(ctx, fmt.Sprintf("AAAA record %s is in exclusion set", aaaa.AAAA))
+			}
 			excludedCount++
 		} else {
 			allExcluded = false
@@ -147,13 +158,20 @@ func (r *DNS64Resolver) hasValidAAAARecords(response *model.Response, logger *lo
 	}
 
 	if allExcluded {
-		logger.Debugf("all %d AAAA record(s) in exclusion set, will synthesize", excludedCount)
+		if logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, fmt.Sprintf("all %d AAAA record(s) in exclusion set, will synthesize", excludedCount))
+		}
 
 		return false
 	}
 
-	logger.Debugf("%d of %d AAAA record(s) not in exclusion set, using original response",
-		len(aaaaRecords)-excludedCount, len(aaaaRecords))
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf(
+			"%d of %d AAAA record(s) not in exclusion set, using original response",
+			len(aaaaRecords)-excludedCount,
+			len(aaaaRecords),
+		))
+	}
 
 	return true
 }
@@ -187,7 +205,7 @@ func (r *DNS64Resolver) synthesizeFromA(
 	ctx context.Context,
 	originalRequest *model.Request,
 	aaaaResponse *model.Response,
-	logger *logrus.Entry,
+	logger *slog.Logger,
 ) (*model.Response, error) {
 	// Create new A query for same name
 	aReq := util.NewMsgWithQuestion(originalRequest.Req.Question[0].Name, dns.Type(dns.TypeA))
@@ -210,7 +228,9 @@ func (r *DNS64Resolver) synthesizeFromA(
 	// Send A query through next resolver
 	aResponse, err := r.next.Resolve(ctx, aRequest)
 	if err != nil {
-		logger.Debugf("A query failed: %v", err)
+		if logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, fmt.Sprintf("A query failed: %v", err))
+		}
 
 		return aaaaResponse, nil // Return original AAAA response
 	}
@@ -218,7 +238,7 @@ func (r *DNS64Resolver) synthesizeFromA(
 	// Handle RCODE
 	if aResponse.Res.Rcode == dns.RcodeNameError {
 		// NXDOMAIN: return NXDOMAIN with original AAAA query in Question section
-		logger.Debug("A query returned NXDOMAIN, no synthesis")
+		logger.DebugContext(ctx, "A query returned NXDOMAIN, no synthesis")
 
 		// Build a synthetic NXDOMAIN response with the original AAAA query in the Question section
 		nxdomainResponse := new(dns.Msg)
@@ -238,7 +258,9 @@ func (r *DNS64Resolver) synthesizeFromA(
 
 	if aResponse.Res.Rcode != dns.RcodeSuccess {
 		// Other RCODEs: treat as empty response (alternative behavior from RFC 6147 Section 5.1.2)
-		logger.Debugf("A query returned RCODE %d, treating as empty", aResponse.Res.Rcode)
+		if logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, fmt.Sprintf("A query returned RCODE %d, treating as empty", aResponse.Res.Rcode))
+		}
 
 		return aaaaResponse, nil
 	}
@@ -246,27 +268,33 @@ func (r *DNS64Resolver) synthesizeFromA(
 	// Extract A records from response
 	aRecords := util.ExtractRecords[*dns.A](aResponse.Res)
 	if len(aRecords) == 0 {
-		logger.Debug("no A records found, returning empty AAAA response")
+		logger.DebugContext(ctx, "no A records found, returning empty AAAA response")
 
 		return aaaaResponse, nil
 	}
 
-	logger.Debugf("found %d A record(s) for synthesis", len(aRecords))
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf("found %d A record(s) for synthesis", len(aRecords)))
+	}
 
 	// Extract CNAME and DNAME records for TTL calculation
 	cnameRecords := util.ExtractRecords[*dns.CNAME](aResponse.Res)
 	dnameRecords := util.ExtractRecords[*dns.DNAME](aResponse.Res)
 
 	if len(cnameRecords) > 0 {
-		logger.Debugf("found %d CNAME record(s) in resolution chain", len(cnameRecords))
+		if logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, fmt.Sprintf("found %d CNAME record(s) in resolution chain", len(cnameRecords)))
+		}
 	}
 
 	if len(dnameRecords) > 0 {
-		logger.Debugf("found %d DNAME record(s) in resolution chain", len(dnameRecords))
+		if logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, fmt.Sprintf("found %d DNAME record(s) in resolution chain", len(dnameRecords)))
+		}
 	}
 
 	// Synthesize AAAA records
-	synthesizedAAAA := r.synthesizeAAAARecords(aRecords, cnameRecords, dnameRecords, logger)
+	synthesizedAAAA := r.synthesizeAAAARecords(ctx, aRecords, cnameRecords, dnameRecords, logger)
 
 	// Build response
 	syntheticResponse := new(dns.Msg)
@@ -289,7 +317,13 @@ func (r *DNS64Resolver) synthesizeFromA(
 	// Copy additional section unchanged (RFC 6147 Section 5.3.2)
 	syntheticResponse.Extra = aResponse.Res.Extra
 
-	logger.Infof("synthesized %d AAAA records from %d A records", len(synthesizedAAAA), len(aRecords))
+	if logger.Enabled(ctx, slog.LevelInfo) {
+		logger.InfoContext(ctx, fmt.Sprintf(
+			"synthesized %d AAAA records from %d A records",
+			len(synthesizedAAAA),
+			len(aRecords),
+		))
+	}
 
 	return &model.Response{
 		Res:    syntheticResponse,
@@ -300,19 +334,20 @@ func (r *DNS64Resolver) synthesizeFromA(
 
 // calculateMinimumTTL calculates the minimum TTL across all records in the resolution chain
 func calculateMinimumTTL(
+	ctx context.Context,
 	aRecords []*dns.A,
 	cnameRecords []*dns.CNAME,
 	dnameRecords []*dns.DNAME,
-	logger *logrus.Entry,
+	logger *slog.Logger,
 ) uint32 {
 	minTTL := uint32(math.MaxUint32)
-	ttlSources := make([]string, 0)
+	var source string
 
 	// Include A record TTLs
 	for _, aRecord := range aRecords {
 		if aRecord.Hdr.Ttl < minTTL {
 			minTTL = aRecord.Hdr.Ttl
-			ttlSources = []string{"A"} // Reset sources since we have a new minimum
+			source = "A"
 		}
 	}
 
@@ -320,7 +355,7 @@ func calculateMinimumTTL(
 	for _, cnameRecord := range cnameRecords {
 		if cnameRecord.Hdr.Ttl < minTTL {
 			minTTL = cnameRecord.Hdr.Ttl
-			ttlSources = []string{"CNAME"} // Reset sources since we have a new minimum
+			source = "CNAME"
 		}
 	}
 
@@ -328,12 +363,16 @@ func calculateMinimumTTL(
 	for _, dnameRecord := range dnameRecords {
 		if dnameRecord.Hdr.Ttl < minTTL {
 			minTTL = dnameRecord.Hdr.Ttl
-			ttlSources = []string{"DNAME"} // Reset sources since we have a new minimum
+			source = "DNAME"
 		}
 	}
 
-	if len(ttlSources) > 0 {
-		logger.Debugf("using minimum TTL %d from resolution chain (sources: %v)", minTTL, ttlSources)
+	if source != "" && logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf(
+			"using minimum TTL %d from resolution chain (sources: %v)",
+			minTTL,
+			[]string{source},
+		))
 	}
 
 	return minTTL
@@ -341,24 +380,27 @@ func calculateMinimumTTL(
 
 // synthesizeAAAARecords creates AAAA records from A records using configured prefixes
 func (r *DNS64Resolver) synthesizeAAAARecords(
+	ctx context.Context,
 	aRecords []*dns.A,
 	cnameRecords []*dns.CNAME,
 	dnameRecords []*dns.DNAME,
-	logger *logrus.Entry,
+	logger *slog.Logger,
 ) []*dns.AAAA {
 	// Calculate minimum TTL across ALL records in the resolution chain for cache coherency
-	minTTL := calculateMinimumTTL(aRecords, cnameRecords, dnameRecords, logger)
+	minTTL := calculateMinimumTTL(ctx, aRecords, cnameRecords, dnameRecords, logger)
 
 	// Synthesize AAAA records
 	var aaaaRecords []*dns.AAAA
 
-	logger.Debugf("synthesizing with %d prefix(es): %v", len(r.prefixes), r.prefixes)
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf("synthesizing with %d prefix(es): %v", len(r.prefixes), r.prefixes))
+	}
 
 	for _, aRecord := range aRecords {
 		for _, prefix := range r.prefixes {
 			ipv6 := embedIPv4InIPv6(aRecord.A, prefix)
 			if ipv6 == nil {
-				logger.Warnf("failed to embed IPv4 %s in prefix %s", aRecord.A, prefix)
+				logger.WarnContext(ctx, fmt.Sprintf("failed to embed IPv4 %s in prefix %s", aRecord.A, prefix))
 
 				continue
 			}
@@ -374,8 +416,16 @@ func (r *DNS64Resolver) synthesizeAAAARecords(
 			}
 			aaaaRecords = append(aaaaRecords, aaaa)
 
-			logger.Debugf("synthesized %s AAAA %s (from A %s, prefix %s, TTL %d)",
-				aaaa.Hdr.Name, ipv6, aRecord.A, prefix, minTTL)
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.DebugContext(ctx, fmt.Sprintf(
+					"synthesized %s AAAA %s (from A %s, prefix %s, TTL %d)",
+					aaaa.Hdr.Name,
+					ipv6,
+					aRecord.A,
+					prefix,
+					minTTL,
+				))
+			}
 		}
 	}
 

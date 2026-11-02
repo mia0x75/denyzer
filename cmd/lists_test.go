@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 
 	"github.com/mia0x75/denyzer/log"
-	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/spf13/cobra"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -16,7 +15,7 @@ var _ = Describe("Lists command", func() {
 	var (
 		ts         *httptest.Server
 		mockFn     func(w http.ResponseWriter, _ *http.Request)
-		loggerHook *test.Hook
+		loggerHook *log.Recorder
 		c          *cobra.Command
 		err        error
 	)
@@ -28,8 +27,9 @@ var _ = Describe("Lists command", func() {
 	})
 	BeforeEach(func() {
 		mockFn = func(w http.ResponseWriter, _ *http.Request) {}
-		loggerHook = test.NewGlobal()
-		log.Log().AddHook(loggerHook)
+		var cleanup func()
+		loggerHook, cleanup = log.Capture(log.Log())
+		DeferCleanup(cleanup)
 	})
 	AfterEach(func() {
 		loggerHook.Reset()
@@ -44,7 +44,7 @@ var _ = Describe("Lists command", func() {
 				err = c.Execute()
 				Expect(err).Should(Succeed())
 
-				Expect(loggerHook.LastEntry().Message).Should(ContainSubstring("OK"))
+				Expect(loggerHook.LastRecord().Message).Should(ContainSubstring("OK"))
 			})
 		})
 		When("Server returns 500", func() {

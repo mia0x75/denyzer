@@ -3,13 +3,13 @@ package resolver
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sync/atomic"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/util"
-
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -68,20 +68,34 @@ func (r *StrictResolver) Resolve(ctx context.Context, request *model.Request) (*
 
 	// start with first resolver
 	for _, resolver := range *r.resolvers.Load() {
-		logger.Debugf("using %s as resolver", resolver.resolver)
+		if logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, fmt.Sprintf("using %s as resolver", resolver.resolver))
+		}
 
 		resp, err := resolver.resolve(ctx, request)
 		if err != nil {
 			// log error and try next upstream
-			logger.WithField("resolver", resolver.resolver).Debug("resolution failed from resolver, cause: ", err)
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.LogAttrs(
+					ctx,
+					slog.LevelDebug,
+					fmt.Sprint("resolution failed from resolver, cause: ", err),
+					slog.Any("resolver", resolver.resolver),
+				)
+			}
 
 			continue
 		}
 
-		logger.WithFields(logrus.Fields{
-			"resolver":     resolver.resolver,
-			logFieldAnswer: util.Obfuscate(util.AnswerToString(resp.Res.Answer)),
-		}).Debug("using response from resolver")
+		if logger.Enabled(ctx, slog.LevelDebug) {
+			logger.LogAttrs(
+				ctx,
+				slog.LevelDebug,
+				"using response from resolver",
+				slog.Any("resolver", resolver.resolver),
+				slog.Any(logFieldAnswer, util.LogAnswer(resp.Res.Answer)),
+			)
+		}
 
 		return resp, nil
 	}

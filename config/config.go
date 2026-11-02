@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,7 +19,6 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 
 	"github.com/creasty/defaults"
 	. "github.com/mia0x75/denyzer/config/migration"
@@ -44,7 +44,7 @@ type Configurable interface {
 	// LogConfig logs the receiver's configuration.
 	//
 	// The behavior of this method is undefined when `IsEnabled` returns false.
-	LogConfig(logger *logrus.Entry)
+	LogConfig(logger *slog.Logger)
 }
 
 // NetProtocol resolver protocol ENUM(
@@ -86,14 +86,14 @@ func (ipv IPVersion) QTypes() []dns.Type {
 // )
 type TLSVersion int // values MUST match `tls.VersionTLS*`
 
-func (v *TLSVersion) validate(logger *logrus.Entry) {
+func (v *TLSVersion) validate(logger *slog.Logger) {
 	// So we get a linting error if it is considered insecure in the future
 	minAllowed := tls.Config{MinVersion: tls.VersionTLS12}.MinVersion
 
 	if *v < TLSVersion(minAllowed) {
 		def := mustDefault[Config]().MinTLSServeVer
 
-		logger.Warnf("TLS version %s is insecure, using %s instead", v, def)
+		logger.Warn(fmt.Sprintf("TLS version %s is insecure, using %s instead", v, def))
 		*v = def
 	}
 }
@@ -318,7 +318,7 @@ type Config struct {
 		Upstream            *UpstreamGroups `yaml:"upstream"`
 		UpstreamTimeout     *Duration       `yaml:"upstreamTimeout"`
 		DisableIPv6         *bool           `yaml:"disableIPv6"`
-		LogLevel            *logrus.Level   `yaml:"logLevel"`
+		LogLevel            *log.Level      `yaml:"logLevel"`
 		LogFormat           *log.FormatType `yaml:"logFormat"`
 		LogPrivacy          *bool           `yaml:"logPrivacy"`
 		LogTimestamp        *bool           `yaml:"logTimestamp"`
@@ -360,14 +360,14 @@ func (p ProxyProtocolListeners) Has(t ProxyProtocolType) bool {
 	return slices.Contains(p, t)
 }
 
-func (c *Ports) LogConfig(logger *logrus.Entry) {
-	logger.Infof("DNS      = %s", c.DNS)
-	logger.Infof("TLS      = %s", c.TLS)
-	logger.Infof("HTTP     = %s", c.HTTP)
-	logger.Infof("HTTPS    = %s", c.HTTPS)
-	logger.Infof("DOHPath  = %s", c.DOHPath)
-	logger.Infof("FreeBind = %t", c.FreeBind)
-	logger.Infof("PROXY protocol = %s", c.ProxyProtocol)
+func (c *Ports) LogConfig(logger *slog.Logger) {
+	logger.Info(fmt.Sprintf("DNS      = %s", c.DNS))
+	logger.Info(fmt.Sprintf("TLS      = %s", c.TLS))
+	logger.Info(fmt.Sprintf("HTTP     = %s", c.HTTP))
+	logger.Info(fmt.Sprintf("HTTPS    = %s", c.HTTPS))
+	logger.Info("DOHPath  = " + c.DOHPath)
+	logger.Info(fmt.Sprintf("FreeBind = %t", c.FreeBind))
+	logger.Info(fmt.Sprintf("PROXY protocol = %s", c.ProxyProtocol))
 }
 
 func (c *Ports) validate() error {
@@ -475,7 +475,7 @@ func (b *BootstrapDNS) IsEnabled() bool {
 	return len(*b) != 0
 }
 
-func (b *BootstrapDNS) LogConfig(*logrus.Entry) {
+func (b *BootstrapDNS) LogConfig(*slog.Logger) {
 	// This should not be called, at least for now:
 	// The Boostrap resolver is not in the chain and thus its config is not logged
 	panic("not implemented")
@@ -507,7 +507,7 @@ func (c *toEnable) IsEnabled() bool {
 }
 
 // LogConfig implements `config.Configurable`.
-func (c *toEnable) LogConfig(logger *logrus.Entry) {
+func (c *toEnable) LogConfig(logger *slog.Logger) {
 	logger.Info("enabled")
 }
 
@@ -516,8 +516,10 @@ type Init struct {
 	Strategy InitStrategy `default:"blocking" yaml:"strategy"`
 }
 
-func (c *Init) LogConfig(logger *logrus.Entry) {
-	logger.Debugf("strategy = %s", c.Strategy)
+func (c *Init) LogConfig(logger *slog.Logger) {
+	if logger.Enabled(context.TODO(), slog.LevelDebug) {
+		logger.Debug(fmt.Sprintf("strategy = %s", c.Strategy))
+	}
 }
 
 type SourceLoading struct {
@@ -536,20 +538,22 @@ type SourceLoading struct {
 	Downloads Downloader `yaml:"downloads"`
 }
 
-func (c *SourceLoading) LogConfig(logger *logrus.Entry) {
+func (c *SourceLoading) LogConfig(logger *slog.Logger) {
 	c.Init.LogConfig(logger)
-	logger.Infof("concurrency = %d", c.Concurrency)
+	logger.Info(fmt.Sprintf("concurrency = %d", c.Concurrency))
 
 	if c.GroupConcurrency > 0 {
-		logger.Infof("groupConcurrency = %d", c.GroupConcurrency)
+		logger.Info(fmt.Sprintf("groupConcurrency = %d", c.GroupConcurrency))
 	} else {
-		logger.Infof("groupConcurrency = auto")
+		logger.Info("groupConcurrency = auto")
 	}
 
-	logger.Debugf("maxErrorsPerSource = %d", c.MaxErrorsPerSource)
+	if logger.Enabled(context.TODO(), slog.LevelDebug) {
+		logger.Debug(fmt.Sprintf("maxErrorsPerSource = %d", c.MaxErrorsPerSource))
+	}
 
 	if c.RefreshPeriod.IsAboveZero() {
-		logger.Infof("refresh = every %s", c.RefreshPeriod)
+		logger.Info(fmt.Sprintf("refresh = every %s", c.RefreshPeriod))
 	} else {
 		logger.Debug("refresh = disabled")
 	}
@@ -631,13 +635,15 @@ type Downloader struct {
 	CachePath string `yaml:"cachePath"`
 }
 
-func (c *Downloader) LogConfig(logger *logrus.Entry) {
-	logger.Infof("timeout = %s", c.Timeout)
-	logger.Infof("attempts = %d", c.Attempts)
-	logger.Debugf("cooldown = %s", c.Cooldown)
+func (c *Downloader) LogConfig(logger *slog.Logger) {
+	logger.Info(fmt.Sprintf("timeout = %s", c.Timeout))
+	logger.Info(fmt.Sprintf("attempts = %d", c.Attempts))
+	if logger.Enabled(context.TODO(), slog.LevelDebug) {
+		logger.Debug(fmt.Sprintf("cooldown = %s", c.Cooldown))
+	}
 
 	if c.CachePath != "" {
-		logger.Infof("cachePath = %s", c.CachePath)
+		logger.Info("cachePath = " + c.CachePath)
 	} else {
 		logger.Debug("cachePath = (disabled, stateless downloads)")
 	}
@@ -664,13 +670,13 @@ func mustDefault[T any]() T {
 
 // LoadConfig creates new config from YAML file or a directory containing YAML files
 func LoadConfig(path string, mandatory bool) (rCfg *Config, rerr error) {
-	logger := logrus.NewEntry(log.Log())
+	logger := log.Log()
 
 	return loadConfig(logger, path, mandatory)
 }
 
 // LoadConfigWithLogger is LoadConfig logging what it finds in the config to logger
-func LoadConfigWithLogger(logger *logrus.Entry, path string, mandatory bool) (*Config, error) {
+func LoadConfigWithLogger(logger *slog.Logger, path string, mandatory bool) (*Config, error) {
 	return loadConfig(logger, path, mandatory)
 }
 
@@ -678,7 +684,7 @@ func LoadConfigWithLogger(logger *logrus.Entry, path string, mandatory bool) (*C
 // yaml decodes a value and so can't be handed one
 //
 //nolint:gochecknoglobals
-var loading atomic.Pointer[logrus.Entry]
+var loading atomic.Pointer[slog.Logger]
 
 // loadMu serializes loads, so loading belongs to one load at a time
 //
@@ -686,15 +692,15 @@ var loading atomic.Pointer[logrus.Entry]
 var loadMu sync.Mutex
 
 // loadLogger returns the logger of the config load in progress, or the global logger
-func loadLogger() *logrus.Entry {
+func loadLogger() *slog.Logger {
 	if logger := loading.Load(); logger != nil {
 		return logger
 	}
 
-	return logrus.NewEntry(log.Log())
+	return log.Log()
 }
 
-func loadConfig(logger *logrus.Entry, path string, mandatory bool) (rCfg *Config, rerr error) {
+func loadConfig(logger *slog.Logger, path string, mandatory bool) (rCfg *Config, rerr error) {
 	cfg, err := WithDefaults[Config]()
 	if err != nil {
 		return nil, fmt.Errorf("failed to apply default configuration: %w", err)
@@ -756,7 +762,7 @@ func loadConfig(logger *logrus.Entry, path string, mandatory bool) (rCfg *Config
 // merges and returns the per-file sources for post-merge error attribution.
 // prettyPath is the user-facing path used in error messages.
 func readConfigSource(
-	logger *logrus.Entry, path string, fs os.FileInfo,
+	logger *slog.Logger, path string, fs os.FileInfo,
 ) (data []byte, sources []configFile, prettyPath string, err error) {
 	if fs.IsDir() {
 		prettyPath = filepath.Join(path, "*")
@@ -838,7 +844,7 @@ func readFromDir(path string) ([]configFile, error) {
 
 // logConfigSources logs the merge order so users can tell which file wins a
 // conflict.
-func logConfigSources(logger *logrus.Entry, files []configFile) {
+func logConfigSources(logger *slog.Logger, files []configFile) {
 	if len(files) == 0 {
 		return
 	}
@@ -848,7 +854,7 @@ func logConfigSources(logger *logrus.Entry, files []configFile) {
 		paths = append(paths, f.path)
 	}
 
-	logger.Infof("loading config files in merge order (later files win conflicts): %s", strings.Join(paths, ", "))
+	logger.Info("loading config files in merge order (later files win conflicts): " + strings.Join(paths, ", "))
 }
 
 // isRegularFile follows symlinks, so the result is `true` for a symlink to a regular file.
@@ -866,7 +872,7 @@ func isRegularFile(path string) (bool, error) {
 // unmarshalConfig decodes data into cfg. sources, when non-empty, are the
 // individual files that were merged to produce data; they are used to attribute
 // schema findings to specific source files on the error path.
-func unmarshalConfig(logger *logrus.Entry, data []byte, cfg *Config, sources []configFile) error {
+func unmarshalConfig(logger *slog.Logger, data []byte, cfg *Config, sources []configFile) error {
 	err := yaml.UnmarshalStrict(data, cfg)
 	if err != nil {
 		// Enrich the already-failing path with field-path schema errors,
@@ -887,7 +893,7 @@ func unmarshalConfig(logger *logrus.Entry, data []byte, cfg *Config, sources []c
 	// schema, never a config error. Warn, never fail.
 	if schemaErrs, sErr := schema.ValidateYAML(data); sErr == nil && len(schemaErrs) > 0 {
 		for _, e := range schemaErrs {
-			logger.Warnf("config does not match schema (possible schema gap, please report): %s", e)
+			logger.Warn(fmt.Sprintf("config does not match schema (possible schema gap, please report): %s", e))
 		}
 	}
 
@@ -963,7 +969,7 @@ func reconcileSchemaErrors(data []byte, sources []configFile) []string {
 	return lines
 }
 
-func (cfg *Config) migrate(logger *logrus.Entry) bool {
+func (cfg *Config) migrate(logger *slog.Logger) bool {
 	usesDepredOpts := Migrate(logger, "", cfg.Deprecated, map[string]Migrator{
 		"upstream":        Move(To("upstreams.groups", &cfg.Upstreams)),
 		"upstreamTimeout": Move(To("upstreams.timeout", &cfg.Upstreams)),
@@ -996,13 +1002,13 @@ func (cfg *Config) migrate(logger *logrus.Entry) bool {
 	return usesDepredOpts
 }
 
-func (cfg *Config) validate(logger *logrus.Entry) error {
+func (cfg *Config) validate(logger *slog.Logger) error {
 	cfg.MinTLSServeVer.validate(logger)
 	cfg.Upstreams.validate(logger)
 
 	// Blocking validation
 	if err := cfg.Blocking.validate(); err != nil {
-		logger.Warn(err)
+		logger.Warn(fmt.Sprint(err))
 	}
 
 	// DNS64 validation

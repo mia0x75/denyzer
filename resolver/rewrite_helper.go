@@ -3,6 +3,8 @@ package resolver
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/mia0x75/denyzer/config"
@@ -10,12 +12,12 @@ import (
 	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 // rewriteRequest applies domain rewrites to the DNS request
 func rewriteRequest(
-	logger *logrus.Entry,
+	ctx context.Context,
+	logger *slog.Logger,
 	request *dns.Msg,
 	rewriteMap map[string]string,
 ) (rewritten *dns.Msg, originalNames map[string]string) {
@@ -42,9 +44,14 @@ func rewriteRequest(
 
 			rewritten.Question[i].Name = rewrittenFQDN
 
-			logger.WithFields(logrus.Fields{
-				"rewrite": util.Obfuscate(rewriteKey) + ":" + util.Obfuscate(rewriteMap[rewriteKey]),
-			}).Debugf("rewriting %q to %q", util.Obfuscate(domainOriginal), util.Obfuscate(domainRewritten))
+			if logger.Enabled(ctx, slog.LevelDebug) {
+				logger.LogAttrs(
+					ctx,
+					slog.LevelDebug,
+					fmt.Sprintf("rewriting %q to %q", util.Obfuscate(domainOriginal), util.Obfuscate(domainRewritten)),
+					slog.String("rewrite", util.Obfuscate(rewriteKey)+":"+util.Obfuscate(rewriteMap[rewriteKey])),
+				)
+			}
 		}
 	}
 

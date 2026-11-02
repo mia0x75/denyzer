@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -18,7 +19,6 @@ import (
 	"github.com/mia0x75/denyzer/querylog"
 	"github.com/mia0x75/denyzer/util"
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -67,7 +67,7 @@ func GetQueryLoggingWriter(ctx context.Context, cfg config.QueryLog, instanceID 
 
 // newIgnoreDomainsMatcher builds a matcher for the queryLog.ignore.domains rules.
 // Returns nil when no domains are configured, so the per-query path stays free.
-func newIgnoreDomainsMatcher(domains []string, logger *logrus.Entry) stringcache.GroupedStringCache {
+func newIgnoreDomainsMatcher(domains []string, logger *slog.Logger) stringcache.GroupedStringCache {
 	if len(domains) == 0 {
 		return nil
 	}
@@ -90,13 +90,13 @@ func newIgnoreDomainsMatcher(domains []string, logger *logrus.Entry) stringcache
 			// silently drop the whole query log.
 			inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(d, "/"), "/"))
 			if inner == "" {
-				logger.Warnf("ignoring invalid queryLog.ignore.domains entry: %q", d)
+				logger.Warn(fmt.Sprintf("ignoring invalid queryLog.ignore.domains entry: %q", d))
 
 				continue
 			}
 
 			if _, err := regexp.Compile(inner); err != nil {
-				logger.Warnf("ignoring invalid queryLog.ignore.domains entry: %q", d)
+				logger.Warn(fmt.Sprintf("ignoring invalid queryLog.ignore.domains entry: %q", d))
 
 				continue
 			}
@@ -125,7 +125,7 @@ func NewQueryLoggingResolver(ctx context.Context, cfg config.QueryLog) (*QueryLo
 	// was not configured at all. Keep the console behaviour instead of retrying
 	// against a database that has no path.
 	if cfg.Type == config.QueryLogTypeSqlite && cfg.Target == "" {
-		logger.Debug("no queryLog.target configured, logging to console")
+		logger.DebugContext(ctx, "no queryLog.target configured, logging to console")
 
 		cfg.Type = config.QueryLogTypeConsole
 	}
@@ -142,12 +142,15 @@ func NewQueryLoggingResolver(ctx context.Context, cfg config.QueryLog) (*QueryLo
 		retry.DelayType(retry.FixedDelay),
 		retry.Delay(cfg.CreationCooldown.ToDuration()),
 		retry.OnRetry(func(n uint, err error) {
-			logger.Warnf(
-				"Error occurred on query writer creation, retry attempt %d/%d: %v", n+1, cfg.CreationAttempts, err,
-			)
+			logger.WarnContext(ctx, fmt.Sprintf(
+				"Error occurred on query writer creation, retry attempt %d/%d: %v",
+				n+1,
+				cfg.CreationAttempts,
+				err,
+			))
 		}))
 	if err != nil {
-		logger.Error("can't create query log writer, using console as fallback: ", err)
+		logger.ErrorContext(ctx, fmt.Sprint("can't create query log writer, using console as fallback: ", err))
 
 		writer = querylog.NewLoggerWriter()
 		cfg.Type = config.QueryLogTypeConsole
@@ -217,9 +220,9 @@ func (r *QueryLoggingResolver) Resolve(ctx context.Context, request *model.Reque
 	if r.ignore(request, resp) {
 		// Build the entry only to explain (in the debug log) why it was ignored,
 		// and only when that debug line would actually be emitted.
-		if isDebugEnabled(logger) {
+		if logger.Enabled(ctx, slog.LevelDebug) {
 			if entry := r.createLogEntry(request, resp, start, duration); entry != nil {
-				logger.WithFields(querylog.LogEntryFields(entry)).Debug("ignored querylog entry")
+				logger.LogAttrs(ctx, slog.LevelDebug, "ignored querylog entry", querylog.LogEntryFields(entry)...)
 			}
 		}
 
@@ -300,7 +303,7 @@ func (r *QueryLoggingResolver) createLogEntry(request *model.Request, response *
 func (r *QueryLoggingResolver) closeWriter() {
 	if c, ok := r.writer.(io.Closer); ok {
 		if err := c.Close(); err != nil {
-			log.PrefixedLog(queryLoggingResolverType).WithError(err).Warn("failed to close query log writer")
+			log.PrefixedLog(queryLoggingResolverType).Warn("failed to close query log writer", slog.Any("error", err))
 		}
 	}
 }

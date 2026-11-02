@@ -63,9 +63,8 @@ func warnMissingPrivilegedPortCapability(ports config.Ports) {
 
 	effective, err := raiseNetBindService()
 	if err != nil {
-		log.Log().Warnf("could not adjust process capabilities (%v); binding "+
-			"privileged port(s) %s may fail — %s",
-			err, strings.Join(privileged, ", "), privilegedPortCapHint)
+		log.Log().Warn(fmt.Sprintf("could not adjust process capabilities (%v); binding "+
+			"privileged port(s) %s may fail — %s", err, strings.Join(privileged, ", "), privilegedPortCapHint))
 
 		return
 	}
@@ -74,8 +73,8 @@ func warnMissingPrivilegedPortCapability(ports config.Ports) {
 		return
 	}
 
-	log.Log().Warnf("configured to listen on privileged port(s) %s without "+
-		"CAP_NET_BIND_SERVICE; %s", strings.Join(privileged, ", "), privilegedPortCapHint)
+	log.Log().Warn(fmt.Sprintf("configured to listen on privileged port(s) %s without "+
+		"CAP_NET_BIND_SERVICE; %s", strings.Join(privileged, ", "), privilegedPortCapHint))
 }
 
 // loadServerConfig loads the config, sets up logging from it and logs the banner
@@ -119,20 +118,21 @@ func startServer(_ *cobra.Command, _ []string) error {
 	go func() {
 		select {
 		case <-signals:
-			log.Log().Infof("Terminating...")
+			log.Log().InfoContext(ctx, "Terminating...")
 
 			// Cancel background operations (periodic refresh, etc.)
 			cancelFn()
 
-			// Create timeout context for graceful shutdown
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			// Preserve logging fields, but do not cancel graceful shutdown with
+			// the background operations that were just stopped.
+			stopCtx, stopCancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 			defer stopCancel()
 
 			util.LogOnError(stopCtx, "can't stop server: ", srv.Stop(stopCtx))
 			done <- true
 
 		case err := <-errChan:
-			log.Log().Error("server start failed: ", err)
+			log.Log().ErrorContext(ctx, fmt.Sprint("server start failed: ", err))
 			terminationErr = err
 			done <- true
 		}
@@ -154,7 +154,7 @@ func printBanner() {
 	log.Log().Info("|   ███ ███ ███▀▀▀▀ ███ ███  ▀▀▀███   ██▀   ███▀▀▀▀ ███       |")
 	log.Log().Info("|   ███ ███ ███ ███ ███ ███ ███ ███ ▄██▀    ███ ███ ███       |")
 	log.Log().Info("|   ███▄██▀ ▀██▄██▀ ███ ███ ▀██▄██▀ ███████ ▀██▄██▀ ███       |")
-	log.Log().Infof("|   Version: %-14s Build time: %-18s    |", util.Version, util.BuildTime)
+	log.Log().Info(fmt.Sprintf("|   Version: %-14s Build time: %-18s    |", util.Version, util.BuildTime))
 	log.Log().Info("|                                                             |")
 	log.Log().Info("+-------------------------------------------------------------+")
 }

@@ -4,14 +4,19 @@ package log
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"log/slog"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
-	prefixed "github.com/x-cray/logrus-prefixed-formatter"
 )
 
 // listen returns a UDP socket standing in for a syslog server, and the lines it receives.
@@ -39,7 +44,7 @@ func receive(conn *net.UDPConn) string {
 var _ = Describe("Syslog target", func() {
 	var (
 		conn   *net.UDPConn
-		logger *logrus.Logger
+		logger *slog.Logger
 	)
 
 	BeforeEach(func() {
@@ -49,13 +54,13 @@ var _ = Describe("Syslog target", func() {
 		DeferCleanup(conn.Close)
 
 		cfg := DefaultConfig()
-		cfg.Level = logrus.TraceLevel
+		cfg.Level = Level(LevelTrace)
 		cfg.Target = TargetTypeSyslog
 		cfg.Syslog.Network = "udp"
 		cfg.Syslog.Address = address
 
-		logger = logrus.New()
-		ConfigureLogger(logger, cfg)
+		logger = NewLogger(cfg)
+		DeferCleanup(func() { SetOutput(logger, io.Discard) })
 	})
 
 	It("maps every declared facility to a syslog priority", func() {
@@ -67,16 +72,18 @@ var _ = Describe("Syslog target", func() {
 
 	// facility daemon (3) * 8 + severity
 	DescribeTable("logs each level at the matching priority",
-		func(write func(...any), priority string) {
-			write("hello")
+		func(level slog.Level, priority string) {
+			logger.Log(context.Background(), level, "hello")
 
 			Expect(receive(conn)).Should(HavePrefix(priority))
 		},
-		Entry("error is err", func(args ...any) { logger.Error(args...) }, "<27>"),
-		Entry("warn is warning", func(args ...any) { logger.Warn(args...) }, "<28>"),
-		Entry("info is info", func(args ...any) { logger.Info(args...) }, "<30>"),
-		Entry("debug is debug", func(args ...any) { logger.Debug(args...) }, "<31>"),
-		Entry("trace is debug", func(args ...any) { logger.Trace(args...) }, "<31>"),
+		Entry("error is err", slog.LevelError, "<27>"),
+		Entry("warn is warning", slog.LevelWarn, "<28>"),
+		Entry("info is info", slog.LevelInfo, "<30>"),
+		Entry("debug is debug", slog.LevelDebug, "<31>"),
+		Entry("trace is debug", LevelTrace, "<31>"),
+		Entry("fatal is crit", LevelFatal, "<26>"),
+		Entry("panic is crit", LevelPanic, "<26>"),
 	)
 
 	It("carries the message and the tag", func() {
@@ -97,13 +104,13 @@ var _ = Describe("Syslog target", func() {
 	})
 
 	It("keeps the prefix and any fields", func() {
-		PrefixedLogFor(logger, "resolver").WithField("upstream", "1.1.1.1").Warn("slow")
+		SetPrefix(logger, "resolver").With("upstream", "1.1.1.1").Warn("slow")
 
 		Expect(receive(conn)).Should(ContainSubstring("resolver: slow upstream=1.1.1.1"))
 	})
 
 	It("applies indentation before formatting the syslog entry", func() {
-		WithIndent(logger.WithField("prefix", "resolver"), "  ", func(entry *logrus.Entry) {
+		WithIndent(logger.With("prefix", "resolver"), "  ", func(entry *slog.Logger) {
 			entry.Info("indented")
 		})
 
@@ -113,10 +120,10 @@ var _ = Describe("Syslog target", func() {
 	It("stops sending to syslog when reconfigured away from it", func() {
 		ConfigureLogger(logger, DefaultConfig())
 
-		Expect(logger.Out).ShouldNot(BeAssignableToTypeOf(&syslogWriter{}))
+		Expect(managedSink(logger).output.syslog).Should(BeNil())
 
 		out := new(bytes.Buffer)
-		logger.SetOutput(out)
+		SetOutput(logger, out)
 		logger.Info("stdout")
 		Expect(out.String()).Should(ContainSubstring("stdout"))
 
@@ -125,10 +132,9 @@ var _ = Describe("Syslog target", func() {
 		Expect(err).Should(HaveOccurred(), "reconfigured logger must not send to its old syslog destination")
 	})
 
-	It("keeps the hooks registered before it", func() {
-		hook := &MockLoggerHook{}
-		hook.On("Fire").Return(nil)
-		logger.AddHook(hook)
+	It("keeps the recorders registered before it", func() {
+		recorder, cleanup := Capture(logger)
+		DeferCleanup(cleanup)
 
 		cfg := DefaultConfig()
 		cfg.Target = TargetTypeSyslog
@@ -138,7 +144,7 @@ var _ = Describe("Syslog target", func() {
 
 		logger.Info("hooked")
 
-		Expect(hook.Messages).Should(ContainElement("hooked"))
+		Expect(recorder.Messages()).Should(ContainElement("hooked"))
 		Expect(receive(conn)).Should(ContainSubstring("hooked"))
 	})
 
@@ -183,8 +189,8 @@ var _ = Describe("Syslog target", func() {
 	})
 
 	It("writes through its own output, never a discarding one", func() {
-		Expect(logger.Out).Should(BeAssignableToTypeOf(&syslogWriter{}))
-		Expect(logger.Out).ShouldNot(Equal(io.Discard))
+		Expect(managedSink(logger).output.syslog).Should(BeAssignableToTypeOf(&syslogWriter{}))
+		Expect(IsSilenced(logger)).Should(BeFalse())
 	})
 
 	When("syslog can't be used", func() {
@@ -207,14 +213,84 @@ var _ = Describe("Syslog target", func() {
 
 			ConfigureLogger(logger, cfg)
 
-			Expect(logger.Out).ShouldNot(BeAssignableToTypeOf(&syslogWriter{}))
-			Expect(logger.Formatter).Should(BeAssignableToTypeOf(&prefixed.TextFormatter{}))
+			Expect(managedSink(logger).output.syslog).Should(BeNil())
+			Expect(managedSink(logger).output.format).Should(Equal(FormatTypeText))
 		})
 	})
 })
 
-// PrefixedLogFor is PrefixedLog for a specific logger, so the spec can use the
-// one pointed at the test's syslog socket.
-func PrefixedLogFor(logger *logrus.Logger, prefix string) *logrus.Entry {
-	return logger.WithField("prefix", prefix)
+func TestSyslogFallback(t *testing.T) {
+	const helperEnv = "DENYZER_TEST_SYSLOG_FALLBACK"
+	if mode := os.Getenv(helperEnv); mode != "" {
+		runSyslogFallbackHelper(t, mode)
+
+		return
+	}
+	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"invalid facility", "address without network", "connection failure", "JSON fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestSyslogFallback$")
+			cmd.Env = append(os.Environ(), helperEnv+"="+mode, "NO_COLOR=1")
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("fallback helper: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+			}
+			if strings.Contains(stdout.String(), "still logging") {
+				t.Fatalf("syslog fallback wrote to stdout instead of stderr: %s", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "can't log to syslog, using stderr instead:") ||
+				!strings.Contains(stderr.String(), "still logging") {
+				t.Fatalf("syslog fallback was not reported on stderr: %s", stderr.String())
+			}
+			if mode == "JSON fallback" {
+				for line := range strings.SplitSeq(strings.TrimSpace(stderr.String()), "\n") {
+					if !strings.HasPrefix(line, "{") || !strings.Contains(line, `"prefix":"resolver"`) {
+						t.Fatalf("syslog fallback did not retain JSON formatting: %s", line)
+					}
+				}
+			}
+		})
+	}
+}
+
+func runSyslogFallbackHelper(t *testing.T, mode string) {
+	t.Helper()
+	logger := NewLogger(DefaultConfig())
+	SetOutput(logger, io.Discard)
+	logger = SetPrefix(logger.With("static", "field"), "resolver")
+	recorder, stop := Capture(logger)
+	defer stop()
+	cfg := DefaultConfig()
+	cfg.Target = TargetTypeSyslog
+	cfg.Timestamp = false
+	switch mode {
+	case "invalid facility", "JSON fallback":
+		cfg.Syslog.Facility = "not-a-facility"
+	case "address without network":
+		cfg.Syslog.Address = "loghost:514"
+	case "connection failure":
+		cfg.Syslog.Network = "unixgram"
+		cfg.Syslog.Address = filepath.Join(t.TempDir(), "missing.sock")
+	}
+	if mode == "JSON fallback" {
+		cfg.Format = FormatTypeJson
+	}
+	ConfigureLogger(logger, cfg)
+	logger.Info("still logging")
+	records := recorder.Records()
+	if len(records) != 2 || records[0].Level != slog.LevelError || records[1].Message != "still logging" {
+		t.Fatal("syslog fallback lost its diagnostic or subsequent event")
+	}
+	for _, record := range records {
+		fields := RecordFields(record)
+		if fields["prefix"] != "resolver" || fields["static"] != "field" {
+			t.Fatalf("fallback lost derived fields: %#v", fields)
+		}
+	}
 }

@@ -1,8 +1,11 @@
 package config
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
+
 	"github.com/mia0x75/denyzer/log"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -74,29 +77,35 @@ func (c *QueryLog) IsEnabled() bool {
 }
 
 // LogConfig implements `config.Configurable`.
-func (c *QueryLog) LogConfig(logger *logrus.Entry) {
-	logger.Infof("type: %s", c.Type)
+func (c *QueryLog) LogConfig(logger *slog.Logger) {
+	logger.Info(fmt.Sprintf("type: %s", c.Type))
 
 	if c.Target != "" {
-		logger.Infof("target: %s", c.Target.Reveal())
+		logger.Info("target: " + c.Target.Reveal())
 	}
 
-	logger.Infof("retention: history=%dmo", c.Retention.EffectiveHistoryMonths())
-	logger.Debugf("creationAttempts: %d", c.CreationAttempts)
-	logger.Debugf("creationCooldown: %s", c.CreationCooldown)
-	logger.Infof("flushInterval: %s", c.FlushInterval)
-	logger.Infof("batchSize: %d", c.BatchSize)
-	logger.Infof("fields: %s", c.Fields)
+	logger.Info(fmt.Sprintf("retention: history=%dmo", c.Retention.EffectiveHistoryMonths()))
+	if logger.Enabled(context.TODO(), slog.LevelDebug) {
+		logger.Debug(fmt.Sprintf("creationAttempts: %d", c.CreationAttempts))
+	}
+	if logger.Enabled(context.TODO(), slog.LevelDebug) {
+		logger.Debug(fmt.Sprintf("creationCooldown: %s", c.CreationCooldown))
+	}
+	logger.Info(fmt.Sprintf("flushInterval: %s", c.FlushInterval))
+	logger.Info(fmt.Sprintf("batchSize: %d", c.BatchSize))
+	logger.Info(fmt.Sprintf("fields: %s", c.Fields))
 
-	logger.Infof("ignore:")
-	log.WithIndent(logger, "  ", func(e *logrus.Entry) {
-		e.Infof("sudn: %t", c.Ignore.SUDN)
+	logger.Info("ignore:")
+	log.WithIndent(logger, "  ", func(e *slog.Logger) {
+		e.Info(fmt.Sprintf("sudn: %t", c.Ignore.SUDN))
 
 		if len(c.Ignore.Domains) > 0 {
-			e.Infof("domains (%d):", len(c.Ignore.Domains))
-			log.WithIndent(e, "  ", func(e *logrus.Entry) {
+			e.Info(fmt.Sprintf("domains (%d):", len(c.Ignore.Domains)))
+			log.WithIndent(e, "  ", func(e *slog.Logger) {
 				for _, d := range c.Ignore.Domains {
-					e.Debugf("- %s", d)
+					if e.Enabled(context.TODO(), slog.LevelDebug) {
+						e.Debug("- " + d)
+					}
 				}
 			})
 		}

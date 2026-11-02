@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"io"
+	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -15,7 +16,6 @@ import (
 	"github.com/mia0x75/denyzer/log"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 //nolint:gochecknoglobals
@@ -98,7 +98,7 @@ func CreateAnswerFromQuestion(question dns.Question, ip net.IP, remainingTTL uin
 		return a, nil
 	}
 
-	log.Log().Errorf("Using fallback for unsupported query type %s", dns.TypeToString[question.Qtype])
+	log.Log().Error("Using fallback for unsupported query type " + dns.TypeToString[question.Qtype])
 
 	rr, err := dns.NewRR(fmt.Sprintf("%s %d %s %s %s",
 		question.Name, remainingTTL, "IN", dns.TypeToString[question.Qtype], ip))
@@ -194,14 +194,14 @@ func IterateValueSorted(in map[string]int, fn func(string, int)) {
 // LogOnError logs the message only if error is not nil
 func LogOnError(ctx context.Context, message string, err error) {
 	if err != nil {
-		log.FromCtx(ctx).Error(message, err)
+		log.FromCtx(ctx).ErrorContext(ctx, fmt.Sprint(message, err))
 	}
 }
 
-// LogOnErrorWithEntry logs the message only if error is not nil
-func LogOnErrorWithEntry(logEntry *logrus.Entry, message string, err error) {
+// LogOnErrorWithLogger logs the message only if error is not nil.
+func LogOnErrorWithLogger(logger *slog.Logger, message string, err error) {
 	if err != nil {
-		logEntry.Error(message, err)
+		logger.Error(fmt.Sprint(message, err))
 	}
 }
 
@@ -210,12 +210,13 @@ func FatalOnError(message string, err error) {
 	if err != nil {
 		logger := log.Log()
 
-		// Make sure the error is printend even if the log has been silenced
-		if logger.Out == io.Discard {
+		// Make sure the error is printed even if the log has been silenced.
+		if log.IsSilenced(logger) {
 			log.ConfigureLogger(logger, log.DefaultConfig())
 		}
 
-		logger.Fatal(message, err)
+		logger.Log(context.TODO(), log.LevelFatal, fmt.Sprint(message, err))
+		os.Exit(1)
 	}
 }
 

@@ -81,7 +81,6 @@ linters:
     - usetesting
     - wastedassign
     - whitespace
-    - zerologlint
   disable:
     - forbidigo
     - gosmopolitan
@@ -99,6 +98,13 @@ linters:
       rules:
         - name: dot-imports
           disabled: true
+    sloglint:
+      no-global: default
+      context: scope
+      no-mixed-args: true
+      # Preserve existing messages and field names; this migration is not a
+      # logging-schema rewrite.
+      static-msg: false
     staticcheck:
       dot-import-whitelist:
         - github.com/onsi/ginkgo/v2

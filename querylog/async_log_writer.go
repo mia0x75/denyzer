@@ -237,7 +237,7 @@ func (w *AsyncLogWriter) flush(buf []*storage.QueryLogEntry, agg *aggregationMap
 
 	batch, err := storage.NewBatch()
 	if err != nil {
-		logger.Errorf("can't create storage batch, dropping %d query log entries: %v", len(buf), err)
+		logger.Error(fmt.Sprintf("can't create storage batch, dropping %d query log entries: %v", len(buf), err))
 
 		return
 	}
@@ -251,19 +251,19 @@ func (w *AsyncLogWriter) flush(buf []*storage.QueryLogEntry, agg *aggregationMap
 	}()
 
 	if err := storage.BatchInsertQueryLogs(buf, batch); err != nil {
-		logger.Errorf("batch insert query_logs failed: %v", err)
+		logger.Error(fmt.Sprintf("batch insert query_logs failed: %v", err))
 
 		return
 	}
 
 	if err := agg.persist(batch); err != nil {
-		logger.Errorf("can't stage metric updates: %v", err)
+		logger.Error(fmt.Sprintf("can't stage metric updates: %v", err))
 
 		return
 	}
 
 	if err := storage.CommitBatch(batch); err != nil {
-		logger.Errorf("can't commit query log and metric batch: %v", err)
+		logger.Error(fmt.Sprintf("can't commit query log and metric batch: %v", err))
 
 		return
 	}
@@ -474,10 +474,10 @@ func (w *AsyncLogWriter) ttlCleanup(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			logger.Debug("running history cleanup")
+			logger.DebugContext(ctx, "running history cleanup")
 
 			if _, err := storage.CleanUp(w.retention.EffectiveHistoryMonths()); err != nil {
-				logger.Errorf("history cleanup failed: %v", err)
+				logger.ErrorContext(ctx, fmt.Sprintf("history cleanup failed: %v", err))
 			}
 
 		case <-ctx.Done():
@@ -494,7 +494,7 @@ func (w *AsyncLogWriter) maintainWindows(ctx context.Context) {
 
 	maintain := func() {
 		if err := storage.MaintainWindowRollups(time.Now()); err != nil {
-			logger.Errorf("window rollup maintenance failed: %v", err)
+			logger.ErrorContext(ctx, fmt.Sprintf("window rollup maintenance failed: %v", err))
 		}
 	}
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -17,7 +18,6 @@ import (
 	. "github.com/mia0x75/denyzer/evt"
 	"github.com/mia0x75/denyzer/lists/parsers"
 	"github.com/mia0x75/denyzer/log"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/mock"
 
 	. "github.com/mia0x75/denyzer/helpertest"
@@ -408,12 +408,12 @@ var _ = Describe("ListCache", func() {
 	})
 	Describe("LogConfig", func() {
 		var (
-			logger *logrus.Entry
-			hook   *log.MockLoggerHook
+			logger *slog.Logger
+			hook   *log.Recorder
 		)
 
 		BeforeEach(func() {
-			logger, hook = log.NewMockEntry()
+			logger, hook = log.NewMockLogger()
 
 			lists = map[string][]config.BytesSource{
 				"gr1": config.NewBytesSources(server1.URL, server2.URL),
@@ -426,8 +426,8 @@ var _ = Describe("ListCache", func() {
 			Expect(err).Should(Succeed())
 
 			sut.LogConfig(logger)
-			Expect(hook.Calls).ShouldNot(BeEmpty())
-			Expect(hook.Messages).Should(ContainElements(
+			Expect(hook.Records()).ShouldNot(BeEmpty())
+			Expect(hook.Messages()).Should(ContainElements(
 				ContainSubstring("gr1:"),
 				ContainSubstring("gr2:"),
 				ContainSubstring("TOTAL:"),

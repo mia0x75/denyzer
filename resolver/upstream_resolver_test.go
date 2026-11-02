@@ -74,16 +74,16 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 
 	Describe("LogConfig", func() {
 		It("should log something", func() {
-			logger, hook := log.NewMockEntry()
+			logger, hook := log.NewMockLogger()
 
 			sut.LogConfig(logger)
 
-			Expect(hook.Calls).ShouldNot(BeEmpty())
+			Expect(hook.Records()).ShouldNot(BeEmpty())
 		})
 
 		When("certificate pinning is configured", func() {
 			It("logs the number of pinned hashes", func() {
-				logger, hook := log.NewMockEntry()
+				logger, hook := log.NewMockLogger()
 
 				cfg := newUpstreamConfig(config.Upstream{
 					Net: config.NetProtocolTcpTls, Host: "localhost",
@@ -92,7 +92,7 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 
 				cfg.LogConfig(logger)
 
-				Expect(hook.Calls).ShouldNot(BeEmpty())
+				Expect(hook.Records()).ShouldNot(BeEmpty())
 			})
 		})
 	})

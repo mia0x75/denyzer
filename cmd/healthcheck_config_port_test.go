@@ -1,13 +1,12 @@
 package cmd
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	"github.com/mia0x75/denyzer/helpertest"
 	"github.com/mia0x75/denyzer/log"
-	"github.com/sirupsen/logrus"
-	"github.com/sirupsen/logrus/hooks/test"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -106,7 +105,8 @@ var _ = Describe("Healthcheck derives the port from the config", func() {
 
 	It("keeps working and logs why when the config is invalid", func() {
 		keepGlobals()
-		hook := test.NewLocal(log.Log())
+		hook, cleanup := log.Capture(log.Log())
+		DeferCleanup(cleanup)
 
 		ip := "127.0.0.1"
 		port := helpertest.GetStringPort(65116)
@@ -127,8 +127,8 @@ var _ = Describe("Healthcheck derives the port from the config", func() {
 			return c.Execute()
 		}, "2s").Should(Succeed())
 
-		Expect(hook.AllEntries()).Should(ContainElement(SatisfyAll(
-			HaveField("Level", logrus.WarnLevel),
+		Expect(hook.Records()).Should(ContainElement(SatisfyAll(
+			HaveField("Level", slog.LevelWarn),
 			HaveField("Message", ContainSubstring("rate must be > 0 when enabled")),
 		)))
 	})

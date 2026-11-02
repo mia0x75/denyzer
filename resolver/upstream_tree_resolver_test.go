@@ -112,9 +112,9 @@ var _ = Describe("UpstreamTreeResolver", Label("upstreamTreeResolver"), func() {
 			It("should return configuration", func() {
 				Expect(sut.IsEnabled()).Should(BeTrue())
 
-				logger, hook := log.NewMockEntry()
+				logger, hook := log.NewMockLogger()
 				sut.LogConfig(logger)
-				Expect(hook.Calls).ToNot(BeEmpty())
+				Expect(hook.Records()).ToNot(BeEmpty())
 			})
 		})
 
@@ -266,7 +266,7 @@ var _ = Describe("UpstreamTreeResolver", Label("upstreamTreeResolver"), func() {
 						))
 			})
 			It("Should use one of the matching resolvers & log warning", func() {
-				logger, hook := log.NewMockEntry()
+				logger, hook := log.NewMockLogger()
 
 				ctx, _ = log.NewCtx(ctx, logger)
 
@@ -281,7 +281,7 @@ var _ = Describe("UpstreamTreeResolver", Label("upstreamTreeResolver"), func() {
 							HaveReturnCode(dns.RcodeSuccess),
 						))
 
-				Expect(hook.Messages).Should(ContainElement(ContainSubstring("client matches multiple groups")))
+				Expect(hook.Messages()).Should(ContainElement(ContainSubstring("client matches multiple groups")))
 			})
 			It("Should pick the same group every time for a client that matches several", func() {
 				for range 20 {

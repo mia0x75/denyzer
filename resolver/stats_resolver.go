@@ -62,7 +62,7 @@ func NewStatsResolver(ctx context.Context, cfg config.Statistics) *StatsResolver
 
 	// Subscribe before starting the consumer so subscriptions is fully written
 	// before the goroutine that reads it on shutdown begins.
-	r.subscribeEvents()
+	r.subscribeEvents() //nolint:contextcheck // subscription failures are process-wide FatalOnError events
 
 	go r.consume(ctx)
 
@@ -149,8 +149,11 @@ func (r *StatsResolver) send(ctx context.Context, s stats.Sample) {
 	default:
 		if n := r.dropped.Add(1); isPowerOfTen(n) {
 			_, logger := r.log(ctx)
-			logger.Warnf("statistics sample buffer (%d) full; dropped %d sample(s) so far, stats undercount under load",
-				statsChannelBuffer, n)
+			logger.WarnContext(ctx, fmt.Sprintf(
+				"statistics sample buffer (%d) full; dropped %d sample(s) so far, stats undercount under load",
+				statsChannelBuffer,
+				n,
+			))
 		}
 	}
 }

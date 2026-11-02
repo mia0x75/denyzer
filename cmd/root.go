@@ -116,7 +116,7 @@ func loadConfig(mandatory bool, configure func(*config.Config)) (*config.Config,
 	// on return, so after configure, and also if loading the config panics
 	defer func() { loaded.Replay(log.Log()) }()
 
-	cfg, err := config.LoadConfigWithLogger(loaded.Entry(), configPath, mandatory)
+	cfg, err := config.LoadConfigWithLogger(loaded.Logger(), configPath, mandatory)
 	if err == nil {
 		// reject a listen address the commands can't parse
 		err = setListenAddresses(cfg.Ports)

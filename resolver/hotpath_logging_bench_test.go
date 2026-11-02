@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/mia0x75/denyzer/log"
@@ -9,22 +10,18 @@ import (
 	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
-// loggingPassthrough mimics a real chained resolver's per-request logger plumbing:
-// it derives the prefixed context logger (`r.log(ctx)`) exactly as every resolver does
-// at the top of Resolve, discards the logger (nothing is logged at Info level), and
-// delegates to the next resolver. A chain of these measures the Tier-1 cost: the
-// logrus Entry copies + Data-map clone + context.WithValue paid per resolver per
-// request regardless of log level.
+// loggingPassthrough performs the same logger lookup as a real resolver, then
+// delegates without emitting a record. Keep its backend cost separate from the
+// isolated plumbing benchmark below.
 type loggingPassthrough struct {
 	typed
 	NextResolver
 }
 
-func (loggingPassthrough) IsEnabled() bool         { return true }
-func (loggingPassthrough) LogConfig(*logrus.Entry) {}
+func (loggingPassthrough) IsEnabled() bool        { return true }
+func (loggingPassthrough) LogConfig(*slog.Logger) {}
 
 func (r *loggingPassthrough) Resolve(ctx context.Context, req *model.Request) (*model.Response, error) {
 	ctx, logger := r.log(ctx)
@@ -33,18 +30,18 @@ func (r *loggingPassthrough) Resolve(ctx context.Context, req *model.Request) (*
 	return r.next.Resolve(ctx, req)
 }
 
-// BenchmarkChainLoggingPlumbing measures the per-request logger overhead of a chain
-// of resolvers at the default (Info) level, where Debug/Trace lines never print but
-// the prefixed context logger is still rebuilt in every resolver.
+// BenchmarkChainLoggingPlumbing measures a 15-resolver chain at Info level,
+// INCLUDING benchBackend's DNS response construction. Its total allocations are
+// not an isolated measurement of logging overhead.
 //
 //	go test -run=^$ -bench=BenchmarkChainLoggingPlumbing -benchmem ./resolver/
 func BenchmarkChainLoggingPlumbing(b *testing.B) {
 	const chainDepth = 15 // ~ resolvers traversed on a cache miss
 
 	// production default: Info — Debug/Trace disabled
-	prev := log.Log().Level
-	log.Log().SetLevel(logrus.InfoLevel)
-	b.Cleanup(func() { log.Log().SetLevel(prev) })
+	prev := log.GetLevel(log.Log())
+	log.SetLevel(log.Log(), slog.LevelInfo)
+	b.Cleanup(func() { log.SetLevel(log.Log(), prev) })
 
 	resolvers := make([]Resolver, 0, chainDepth+1)
 	for i := range chainDepth {
@@ -59,13 +56,13 @@ func BenchmarkChainLoggingPlumbing(b *testing.B) {
 		Protocol: model.RequestProtocolUDP,
 	}
 
-	// seed the request context with the same fields the server attaches per request
-	// (req_id / question / client_ip), so the cloned Data map has a realistic size.
-	baseCtx, _ := log.CtxWithFields(context.Background(), logrus.Fields{
-		"req_id":    "00000000-0000-0000-0000-000000000000",
-		"question":  "A (example.com.)",
-		"client_ip": "192.168.1.100",
-	})
+	// Seed the same request fields as the server. Context construction is outside
+	// the timed loop in this complete-chain comparison.
+	baseCtx := log.CtxWithAttrs(context.Background(),
+		slog.String("req_id", "00000000-0000-0000-0000-000000000000"),
+		slog.String("question", "A (example.com.)"),
+		slog.String("client_ip", "192.168.1.100"),
+	)
 
 	b.ReportAllocs()
 
@@ -74,10 +71,57 @@ func BenchmarkChainLoggingPlumbing(b *testing.B) {
 	}
 }
 
+// BenchmarkResolverLoggingPlumbing isolates logging from DNS message/model
+// construction, parsers, caches and networking. The first case reuses request
+// attributes; the second includes their per-request attachment and question
+// snapshot, but deliberately excludes UUID generation.
+func BenchmarkResolverLoggingPlumbing(b *testing.B) {
+	b.Cleanup(log.SaveSettings(log.Log()))
+	log.SetLevel(log.Log(), slog.LevelInfo)
+	resolvers := make([]typed, 15)
+	for i := range resolvers {
+		resolvers[i] = withType(chainNodeName(i))
+	}
+	questions := []dns.Question{{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}}
+	base := context.Background()
+	requestCtx := log.CtxWithAttrs(
+		base,
+		slog.String("req_id", "00000000-0000-0000-0000-000000000000"),
+		slog.Any("question", util.LogQuestions(questions)),
+		slog.String("client_ip", "192.168.1.100"),
+	)
+	b.Run("resolver_chain", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := requestCtx
+			for i := range resolvers {
+				loggedCtx, logger := resolvers[i].log(ctx)
+				ctx = loggedCtx
+				logger.DebugContext(ctx, "disabled")
+			}
+		}
+	})
+	b.Run("request_and_chain", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := log.CtxWithAttrs(
+				base,
+				slog.String("req_id", "00000000-0000-0000-0000-000000000000"),
+				slog.Any("question", util.LogQuestions(questions)),
+				slog.String("client_ip", "192.168.1.100"),
+			)
+			for i := range resolvers {
+				loggedCtx, logger := resolvers[i].log(ctx)
+				ctx = loggedCtx
+				logger.DebugContext(ctx, "disabled")
+			}
+		}
+	})
+}
+
 // BenchmarkDebugFieldBuild_Avoided measures the per-call cost of building the
-// answer log field (util.Obfuscate(util.AnswerToString(...))) that the IsLevelEnabled
-// guards now skip on the cache-miss path when Debug is disabled (the production default).
-// Each guarded site (upstream logResponse, parallel_best, conditional) avoids this work.
+// answer log field that Enabled guards skip when Debug is disabled. It measures
+// the old eager formatting control, NOT the now-guarded production path.
 //
 //	go test -run=^$ -bench=BenchmarkDebugFieldBuild_Avoided -benchmem ./resolver/
 func BenchmarkDebugFieldBuild_Avoided(b *testing.B) {

@@ -1,12 +1,13 @@
 package config
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 // CustomDNS custom DNS configuration
@@ -99,14 +100,18 @@ func (c *CustomDNS) IsEnabled() bool {
 }
 
 // LogConfig implements `config.Configurable`.
-func (c *CustomDNS) LogConfig(logger *logrus.Entry) {
-	logger.Debugf("TTL = %s", c.CustomTTL)
-	logger.Debugf("filterUnmappedTypes = %t", c.FilterUnmappedTypes)
+func (c *CustomDNS) LogConfig(logger *slog.Logger) {
+	if logger.Enabled(context.TODO(), slog.LevelDebug) {
+		logger.Debug(fmt.Sprintf("TTL = %s", c.CustomTTL))
+	}
+	if logger.Enabled(context.TODO(), slog.LevelDebug) {
+		logger.Debug(fmt.Sprintf("filterUnmappedTypes = %t", c.FilterUnmappedTypes))
+	}
 
 	logger.Info("mapping:")
 
 	for key, val := range c.Mapping {
-		logger.Infof("  %s = %s", key, val)
+		logger.Info(fmt.Sprintf("  %s = %s", key, val))
 	}
 }
 

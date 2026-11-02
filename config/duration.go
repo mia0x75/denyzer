@@ -49,7 +49,7 @@ func (c *Duration) UnmarshalText(data []byte) error {
 		// number without unit: use minutes to ensure back compatibility
 		*c = Duration(time.Duration(minutes) * time.Minute)
 
-		loadLogger().Warnf("Setting a duration without a unit is deprecated. Please use '%s min' instead.", input)
+		loadLogger().Warn(fmt.Sprintf("Setting a duration without a unit is deprecated. Please use '%s min' instead.", input))
 
 		return nil
 	}

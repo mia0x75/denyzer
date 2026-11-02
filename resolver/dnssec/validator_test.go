@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/miekg/dns"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -261,7 +261,7 @@ var _ = Describe("DNSSECValidator", func() {
 		sut          *Validator
 		trustStore   *TrustAnchorStore
 		mockUpstream *mockResolver
-		logger       *logrus.Entry
+		logger       *slog.Logger
 		ctx          context.Context
 		budget       int
 	)
@@ -279,7 +279,7 @@ var _ = Describe("DNSSECValidator", func() {
 		mockUpstream = &mockResolver{}
 
 		// Create logger
-		logger, _ = log.NewMockEntry()
+		logger, _ = log.NewMockLogger()
 
 		// Create validator with default config values
 		sut = NewValidator(ctx, trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
@@ -650,7 +650,7 @@ var _ = Describe("DNSSECValidator", func() {
 			}
 			resp := &dns.Msg{Ns: []dns.RR{inZoneNSEC}}
 
-			Expect(sut.validateDSAbsenceProof("www.example.com.", resp, true)).
+			Expect(sut.validateDSAbsenceProof(ctx, "www.example.com.", resp, true)).
 				ShouldNot(Equal(ValidationResultSecure),
 					"NSEC without the NS bit was accepted as proof of an insecure delegation")
 		})
@@ -666,7 +666,7 @@ var _ = Describe("DNSSECValidator", func() {
 			}
 			resp := &dns.Msg{Ns: []dns.RR{delegationNSEC}}
 
-			Expect(sut.validateDSAbsenceProof("unsigned.example.com.", resp, true)).
+			Expect(sut.validateDSAbsenceProof(ctx, "unsigned.example.com.", resp, true)).
 				Should(Equal(ValidationResultSecure),
 					"valid insecure-delegation NSEC was wrongly rejected as a DS-absence proof")
 		})
@@ -1181,7 +1181,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Algorithm: 8,
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, dnskey, nil, "")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, dnskey, nil, "")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("expired"))
 		})
@@ -1230,7 +1230,7 @@ var _ = Describe("DNSSECValidator", func() {
 				SignerName:  "example.com.",
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, dnskey, nil, "")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, dnskey, nil, "")
 			// Should be rejected: now > expiration + tolerance
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("expired"))
@@ -1250,7 +1250,7 @@ var _ = Describe("DNSSECValidator", func() {
 				SignerName:  "example.com.",
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, dnskey, nil, "")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, dnskey, nil, "")
 			// Should be accepted: time >= inception
 			// (Note: Will fail on crypto verification, but time check should pass)
 			if err != nil {
@@ -1273,7 +1273,7 @@ var _ = Describe("DNSSECValidator", func() {
 				SignerName:  "example.com.",
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, dnskey, nil, "")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, dnskey, nil, "")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("not yet valid"))
 		})
@@ -1292,7 +1292,7 @@ var _ = Describe("DNSSECValidator", func() {
 				SignerName:  "example.com.",
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, dnskey, nil, "")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, dnskey, nil, "")
 			// Should be accepted: time < expiration
 			// (Note: Will fail on crypto verification, but time check should pass)
 			if err != nil {
@@ -1314,7 +1314,7 @@ var _ = Describe("DNSSECValidator", func() {
 				SignerName:  "example.com.",
 			}
 
-			err := sut.verifyRRSIG(rrset, rrsig, dnskey, nil, "")
+			err := sut.verifyRRSIG(ctx, rrset, rrsig, dnskey, nil, "")
 			// Should be rejected (either expired or not yet valid)
 			Expect(err).Should(HaveOccurred())
 		})
@@ -1443,7 +1443,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -1490,7 +1490,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -1522,7 +1522,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultBogus))
 		})
 
@@ -1538,7 +1538,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Qclass: dns.ClassINET,
 			}
 
-			result := sut.validateNSEC3DenialOfExistence(response, question)
+			result := sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			Expect(result).Should(Equal(ValidationResultInsecure))
 		})
 	})
@@ -1576,7 +1576,7 @@ var _ = Describe("DNSSECValidator", func() {
 			// Call the validation function - it should at least detect the Opt-Out flag
 			// Note: This may return Bogus due to incomplete NXDOMAIN proof, but
 			// the important part is that the Opt-Out flag is detected (logged)
-			_ = sut.validateNSEC3DenialOfExistence(response, question)
+			_ = sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			// The Opt-Out flag detection is verified in the actual implementation
 		})
 
@@ -1701,7 +1701,7 @@ var _ = Describe("DNSSECValidator", func() {
 			}
 
 			// Call should detect and log the Opt-Out flag
-			_ = sut.validateNSEC3DenialOfExistence(response, question)
+			_ = sut.validateNSEC3DenialOfExistence(ctx, response, question)
 			// Note: Actual log verification would require a mock logger,
 			// but this at least exercises the code path
 		})
@@ -2079,7 +2079,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Digest:     dns.HashName(validKey.ToDS(dns.SHA256).Digest, dns.SHA1, 0, ""),
 			}
 
-			result := sut.validateAnyDNSKEY([]*dns.DNSKEY{revokedKey, validKey}, []*dns.DS{ds}, "example.com.")
+			result := sut.validateAnyDNSKEY(ctx, []*dns.DNSKEY{revokedKey, validKey}, []*dns.DS{ds}, "example.com.")
 
 			// Should succeed because valid key matches DS
 			// (In reality this test will fail because we're not doing full crypto validation,
@@ -2128,7 +2128,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Digest:     "ABCDEF123456",
 			}
 
-			result := sut.validateAnyDNSKEY([]*dns.DNSKEY{revokedKey1, revokedKey2}, []*dns.DS{ds}, "example.com.")
+			result := sut.validateAnyDNSKEY(ctx, []*dns.DNSKEY{revokedKey1, revokedKey2}, []*dns.DS{ds}, "example.com.")
 
 			// Should fail because all keys are revoked
 			Expect(result).Should(BeFalse())
@@ -2605,7 +2605,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Ns:     []dns.RR{nsec, signRRset([]dns.RR{nsec}, dns.TypeNSEC, parentKey, parentPriv, "com.")},
 			}
 
-			dsRecords, result := sut.extractAndValidateDSRecords("example.com.", []*dns.DNSKEY{parentKey}, response, &budget)
+			dsRecords, result := sut.extractAndValidateDSRecords(ctx, "example.com.", []*dns.DNSKEY{parentKey}, response, &budget)
 
 			Expect(dsRecords).Should(BeNil())
 			Expect(result).Should(Equal(ValidationResultInsecure))
@@ -2624,7 +2624,7 @@ var _ = Describe("DNSSECValidator", func() {
 				{nsec},
 				{nsec, signRRset([]dns.RR{nsec}, dns.TypeNSEC, otherKey, otherPriv, "com.")},
 			} {
-				dsRecords, result := sut.extractAndValidateDSRecords("example.com.", []*dns.DNSKEY{parentKey},
+				dsRecords, result := sut.extractAndValidateDSRecords(ctx, "example.com.", []*dns.DNSKEY{parentKey},
 					&dns.Msg{Ns: ns}, &budget)
 
 				Expect(dsRecords).Should(BeNil())
@@ -2659,7 +2659,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Ns:     []dns.RR{nsec3, signRRset([]dns.RR{nsec3}, dns.TypeNSEC3, parentKey, parentPriv, "com.")},
 			}
 
-			dsRecords, result := sut.extractAndValidateDSRecords("example.com.", []*dns.DNSKEY{parentKey}, response, &budget)
+			dsRecords, result := sut.extractAndValidateDSRecords(ctx, "example.com.", []*dns.DNSKEY{parentKey}, response, &budget)
 
 			Expect(dsRecords).Should(BeNil())
 			Expect(result).Should(Equal(ValidationResultInsecure))
@@ -2683,7 +2683,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Ns:     []dns.RR{nsec},
 			}
 
-			dsRecords, result := sut.extractAndValidateDSRecords("example.com.", nil, response, &budget)
+			dsRecords, result := sut.extractAndValidateDSRecords(ctx, "example.com.", nil, response, &budget)
 
 			Expect(dsRecords).Should(BeNil())
 			Expect(result).Should(Equal(ValidationResultBogus))
@@ -2707,7 +2707,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Ns:     []dns.RR{nsec},
 			}
 
-			dsRecords, result := sut.extractAndValidateDSRecords("example.com.", nil, response, &budget)
+			dsRecords, result := sut.extractAndValidateDSRecords(ctx, "example.com.", nil, response, &budget)
 
 			Expect(dsRecords).Should(BeNil())
 			Expect(result).Should(Equal(ValidationResultBogus))
@@ -2719,7 +2719,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Ns:     []dns.RR{}, // No NSEC/NSEC3 proof
 			}
 
-			dsRecords, result := sut.extractAndValidateDSRecords("example.com.", nil, response, &budget)
+			dsRecords, result := sut.extractAndValidateDSRecords(ctx, "example.com.", nil, response, &budget)
 
 			Expect(dsRecords).Should(BeNil())
 			Expect(result).Should(Equal(ValidationResultIndeterminate))
@@ -2749,7 +2749,7 @@ var _ = Describe("DNSSECValidator", func() {
 				Ns:     []dns.RR{nsec3},
 			}
 
-			dsRecords, result := sut.extractAndValidateDSRecords("example.com.", nil, response, &budget)
+			dsRecords, result := sut.extractAndValidateDSRecords(ctx, "example.com.", nil, response, &budget)
 
 			Expect(dsRecords).Should(BeNil())
 			Expect(result).Should(Equal(ValidationResultBogus))
@@ -3022,7 +3022,7 @@ var _ = Describe("DNSSECValidator", func() {
 				&model.Response{Res: &dns.Msg{Answer: []dns.RR{}}}, nil,
 			)
 
-			err := validator.verifyRRSIG(rrset, rrsig, dnskey, []dns.RR{}, "example.com.")
+			err := validator.verifyRRSIG(ctx, rrset, rrsig, dnskey, []dns.RR{}, "example.com.")
 
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("signature not yet valid"))
@@ -3063,7 +3063,7 @@ var _ = Describe("DNSSECValidator", func() {
 				&model.Response{Res: &dns.Msg{Answer: []dns.RR{}}}, nil,
 			)
 
-			err := validator.verifyRRSIG(rrset, rrsig, dnskey, []dns.RR{}, "example.com.")
+			err := validator.verifyRRSIG(ctx, rrset, rrsig, dnskey, []dns.RR{}, "example.com.")
 
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("signature expired"))
@@ -3092,7 +3092,7 @@ var _ = Describe("DNSSECValidator", func() {
 			}
 			nsRecords := []dns.RR{nsec}
 
-			err := sut.validateWildcardExpansion(rrsetName, rrsig, nsRecords, qname)
+			err := sut.validateWildcardExpansion(ctx, rrsetName, rrsig, nsRecords, qname)
 			Expect(err).ShouldNot(HaveOccurred())
 		})
 
@@ -3120,7 +3120,7 @@ var _ = Describe("DNSSECValidator", func() {
 
 			nsRecords := []dns.RR{nsec}
 
-			err := sut.validateWildcardExpansion(rrsetName, rrsig, nsRecords, qname)
+			err := sut.validateWildcardExpansion(ctx, rrsetName, rrsig, nsRecords, qname)
 			Expect(err).ShouldNot(HaveOccurred())
 		})
 
@@ -3135,7 +3135,7 @@ var _ = Describe("DNSSECValidator", func() {
 
 			// Per RFC 4035 §5.3.4, for positive responses the cryptographic signature
 			// is sufficient proof. NSEC/NSEC3 is primarily for negative responses.
-			err := sut.validateWildcardExpansion(rrsetName, rrsig, nsRecords, qname)
+			err := sut.validateWildcardExpansion(ctx, rrsetName, rrsig, nsRecords, qname)
 			Expect(err).ShouldNot(HaveOccurred())
 		})
 
@@ -3148,7 +3148,7 @@ var _ = Describe("DNSSECValidator", func() {
 			qname := "test.example.com."
 			nsRecords := []dns.RR{}
 
-			err := sut.validateWildcardExpansion(rrsetName, rrsig, nsRecords, qname)
+			err := sut.validateWildcardExpansion(ctx, rrsetName, rrsig, nsRecords, qname)
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("not within signer zone"))
 		})
@@ -3164,7 +3164,7 @@ var _ = Describe("DNSSECValidator", func() {
 			qname := "test.example.com."
 			nsRecords := []dns.RR{}
 
-			err := sut.validateWildcardExpansion(rrsetName, rrsig, nsRecords, qname)
+			err := sut.validateWildcardExpansion(ctx, rrsetName, rrsig, nsRecords, qname)
 			// Should NOT error - this is not a wildcard expansion
 			Expect(err).ShouldNot(HaveOccurred())
 		})
@@ -3188,7 +3188,7 @@ var _ = Describe("DNSSECValidator", func() {
 					NextDomain: "z.example.com.",
 				}
 
-				err := sut.validateWildcardExpansion(rrsetName, rrsig, []dns.RR{nsec}, qname)
+				err := sut.validateWildcardExpansion(ctx, rrsetName, rrsig, []dns.RR{nsec}, qname)
 				Expect(err).ShouldNot(HaveOccurred())
 			})
 
@@ -3198,7 +3198,7 @@ var _ = Describe("DNSSECValidator", func() {
 					NextDomain: "zzz.example.org.",
 				}
 
-				err := sut.validateWildcardExpansion(rrsetName, rrsig, []dns.RR{nsec}, qname)
+				err := sut.validateWildcardExpansion(ctx, rrsetName, rrsig, []dns.RR{nsec}, qname)
 				Expect(err).Should(HaveOccurred())
 				Expect(err.Error()).Should(ContainSubstring("target.example.com."))
 			})
@@ -3216,7 +3216,7 @@ var _ = Describe("DNSSECValidator", func() {
 					NextDomain: nextHash,
 				}
 
-				err = sut.validateWildcardExpansion(rrsetName, rrsig, []dns.RR{nsec3}, qname)
+				err = sut.validateWildcardExpansion(ctx, rrsetName, rrsig, []dns.RR{nsec3}, qname)
 				Expect(err).ShouldNot(HaveOccurred())
 			})
 		})
@@ -3737,7 +3737,7 @@ var _ = Describe("DNSSECValidator", func() {
 					},
 				}
 
-				result := sut.findDSRRSIG(response, "example.com.")
+				result := sut.findDSRRSIG(ctx, response, "example.com.")
 				Expect(result).ShouldNot(BeNil())
 				Expect(result.TypeCovered).Should(Equal(dns.TypeDS))
 			})
@@ -3766,7 +3766,7 @@ var _ = Describe("DNSSECValidator", func() {
 					},
 				}
 
-				result := sut.findDSRRSIG(response, "example.com.")
+				result := sut.findDSRRSIG(ctx, response, "example.com.")
 				Expect(result).ShouldNot(BeNil())
 				Expect(result.TypeCovered).Should(Equal(dns.TypeDS))
 			})
@@ -3787,7 +3787,7 @@ var _ = Describe("DNSSECValidator", func() {
 					},
 				}
 
-				result := sut.findDSRRSIG(response, "example.com.")
+				result := sut.findDSRRSIG(ctx, response, "example.com.")
 				Expect(result).Should(BeNil())
 			})
 		})
@@ -3962,7 +3962,7 @@ var _ = Describe("Additional Validator Coverage", func() {
 		Expect(err).Should(Succeed())
 
 		mockUpstream = &mockResolver{}
-		logger, _ := log.NewMockEntry()
+		logger, _ := log.NewMockLogger()
 
 		sut = NewValidator(ctx, trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
 		ctx = withQueryBudget(ctx, 10)
@@ -4014,7 +4014,7 @@ var _ = Describe("Additional Validator Coverage", func() {
 			_, _, anchor := newSignedZoneKey("example.com.")
 			store, err := NewTrustAnchorStore([]string{anchor})
 			Expect(err).Should(Succeed())
-			testLogger, _ := log.NewMockEntry()
+			testLogger, _ := log.NewMockLogger()
 			signedZone := NewValidator(ctx, store, testLogger, mockUpstream, 1, 10, 150, 30, 3600)
 			mockUpstream.ResolveFn = benignEmptyResolve
 
@@ -4055,14 +4055,14 @@ var _ = Describe("Additional Validator Coverage", func() {
 
 	Describe("NewValidator initialization", func() {
 		It("should initialize validator", func() {
-			logger, _ := log.NewMockEntry()
+			logger, _ := log.NewMockLogger()
 			validator := NewValidator(context.Background(), trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
 			Expect(validator).ShouldNot(BeNil())
 			Expect(validator.trustAnchors).ShouldNot(BeNil())
 		})
 
 		It("should initialize all fields correctly", func() {
-			logger, _ := log.NewMockEntry()
+			logger, _ := log.NewMockLogger()
 			validator := NewValidator(ctx, trustStore, logger, mockUpstream, 2, 20, 100, 60, 7200)
 
 			Expect(validator.trustAnchors).Should(Equal(trustStore))
@@ -4117,7 +4117,7 @@ var _ = Describe("Additional Validator Coverage", func() {
 			anchor, fn := authenticatedInsecureDelegation("net.", "unsigned.net.")
 			store, err := NewTrustAnchorStore([]string{anchor})
 			Expect(err).Should(Succeed())
-			testLogger, _ := log.NewMockEntry()
+			testLogger, _ := log.NewMockLogger()
 			mockUpstream.ResolveFn = fn
 			validator := NewValidator(ctx, store, testLogger, mockUpstream, 1, 10, 150, 30, 3600)
 

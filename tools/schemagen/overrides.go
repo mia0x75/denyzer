@@ -8,10 +8,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mia0x75/denyzer/log"
+
 	"github.com/invopop/jsonschema"
 	"github.com/mia0x75/denyzer/config"
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 // qtypeNames returns the sorted DNS query-type names denyzer accepts. It is the
@@ -138,8 +139,9 @@ func stringForms() map[reflect.Type]stringSpec {
 		reflect.TypeFor[config.ZoneFileDNS](): {
 			"Inline DNS zone file content.", nil,
 		},
-		reflect.TypeFor[logrus.Level](): {
-			"Log level: trace, debug, info, warn, error, fatal.", []string{"info", "debug"},
+		reflect.TypeFor[log.Level](): {
+			"Log level (case-insensitive): trace, debug, info, warn, warning, error, fatal, panic.",
+			[]string{"info", "debug", "warn"},
 		},
 	}
 }

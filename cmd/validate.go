@@ -3,11 +3,11 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/log"
-	"github.com/sirupsen/logrus"
 
 	"github.com/spf13/cobra"
 )
@@ -25,7 +25,7 @@ func NewValidateCommand() *cobra.Command {
 }
 
 func validateConfiguration(_ *cobra.Command, _ []string) error {
-	log.Log().Infof("Validating configuration file: %s", configPath)
+	log.Log().Info("Validating configuration file: " + configPath)
 
 	_, err := os.Stat(configPath)
 	if err != nil && errors.Is(err, os.ErrNotExist) {
@@ -36,7 +36,7 @@ func validateConfiguration(_ *cobra.Command, _ []string) error {
 		logCfg := commandLogConfig(cfg)
 
 		// validate reports what loading the config logs, so log.level must not hide it
-		logCfg.Level = max(logCfg.Level, logrus.InfoLevel)
+		logCfg.Level = min(logCfg.Level, log.Level(slog.LevelInfo))
 
 		log.Configure(&logCfg)
 	})

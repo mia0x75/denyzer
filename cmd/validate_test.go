@@ -1,12 +1,12 @@
 package cmd
 
 import (
+	"log/slog"
+
 	"github.com/mia0x75/denyzer/helpertest"
 	"github.com/mia0x75/denyzer/log"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
-	"github.com/sirupsen/logrus/hooks/test"
 )
 
 var _ = Describe("Validate command", func() {
@@ -41,7 +41,8 @@ var _ = Describe("Validate command", func() {
 	When("Validate is called with a configuration file that only logs errors", func() {
 		It("should still report the configuration's warnings", func() {
 			keepGlobals()
-			hook := test.NewLocal(log.Log())
+			hook, cleanup := log.Capture(log.Log())
+			DeferCleanup(cleanup)
 
 			cfgFile := tmpDir.CreateStringFile("config.yaml",
 				"upstreams:",
@@ -58,11 +59,11 @@ var _ = Describe("Validate command", func() {
 
 			Expect(c.Execute()).Should(Succeed())
 
-			Expect(hook.AllEntries()).Should(ContainElement(SatisfyAll(
-				HaveField("Level", logrus.WarnLevel),
+			Expect(hook.Records()).Should(ContainElement(SatisfyAll(
+				HaveField("Level", slog.LevelWarn),
 				HaveField("Message", ContainSubstring("duration without a unit")),
 			)))
-			Expect(hook.LastEntry().Message).Should(Equal("Configuration is valid"))
+			Expect(hook.LastRecord().Message).Should(Equal("Configuration is valid"))
 		})
 	})
 

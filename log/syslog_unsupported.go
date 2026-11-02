@@ -7,6 +7,6 @@ import (
 )
 
 // newSyslogWriter reports that this platform has no syslog.
-func newSyslogWriter(SyslogConfig) (syslogOutput, error) {
+func newSyslogWriter(SyslogConfig) (syslogTransport, error) {
 	return nil, errors.New("syslog is not available on this platform")
 }

@@ -3,8 +3,10 @@ package dnssec
 // This file contains wildcard expansion validation per RFC 4035 §5.3.4.
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/miekg/dns"
@@ -22,6 +24,7 @@ import (
 // match any existing name within the zone by checking for the existence of
 // an NSEC RR proving that the QNAME does not exist."
 func (v *Validator) validateWildcardExpansion(
+	ctx context.Context,
 	rrsetName string, rrsig *dns.RRSIG, nsRecords []dns.RR, qname string,
 ) error {
 	// RFC 4035 §5.3.4: Check if this is a wildcard expansion
@@ -37,8 +40,14 @@ func (v *Validator) validateWildcardExpansion(
 	// RRSIG Labels field indicates original owner name label count
 	rrsigLabels := int(rrsig.Labels)
 
-	v.logger.Debugf("Wildcard check: %s has %d labels, RRSIG claims %d labels",
-		rrsetName, rrsetLabels, rrsigLabels)
+	if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf(
+			"Wildcard check: %s has %d labels, RRSIG claims %d labels",
+			rrsetName,
+			rrsetLabels,
+			rrsigLabels,
+		))
+	}
 
 	// If RRset has same or fewer labels than RRSIG, it's not a wildcard expansion
 	if rrsetLabels <= rrsigLabels {
@@ -46,14 +55,21 @@ func (v *Validator) validateWildcardExpansion(
 	}
 
 	// This is a wildcard expansion - validate it
-	v.logger.Debugf("Detected wildcard expansion for %s (RRset labels: %d > RRSIG labels: %d)",
-		rrsetName, rrsetLabels, rrsigLabels)
+	if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf(
+			"Detected wildcard expansion for %s (RRset labels: %d > RRSIG labels: %d)",
+			rrsetName,
+			rrsetLabels,
+			rrsigLabels,
+		))
+	}
 
-	return v.validateWildcardExpansionDetails(rrsetName, signerName, rrsigLabels, nsRecords, qname)
+	return v.validateWildcardExpansionDetails(ctx, rrsetName, signerName, rrsigLabels, nsRecords, qname)
 }
 
 // validateWildcardExpansionDetails performs the actual wildcard validation logic
 func (v *Validator) validateWildcardExpansionDetails(
+	ctx context.Context,
 	rrsetName, signerName string, rrsigLabels int, nsRecords []dns.RR, qname string,
 ) error {
 	// RFC 4035 §5.3.4: Construct the wildcard name
@@ -68,7 +84,9 @@ func (v *Validator) validateWildcardExpansionDetails(
 	wildcardLabels := append([]string{"*"}, labels[len(labels)-rrsigLabels:]...)
 	wildcardName := dns.Fqdn(strings.Join(wildcardLabels, "."))
 
-	v.logger.Debugf("Wildcard expansion detected: %s expanded to %s", wildcardName, rrsetName)
+	if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf("Wildcard expansion detected: %s expanded to %s", wildcardName, rrsetName))
+	}
 
 	// Verify wildcard name is within the signer's zone
 	if !dns.IsSubDomain(signerName, wildcardName) {
@@ -76,21 +94,28 @@ func (v *Validator) validateWildcardExpansionDetails(
 	}
 
 	// RFC 4035 §5.3.4: Verify that NSEC/NSEC3 proves the query name doesn't exist
-	return v.validateWildcardProof(wildcardName, rrsetName, nsRecords, qname)
+	return v.validateWildcardProof(ctx, wildcardName, rrsetName, nsRecords, qname)
 }
 
 // validateWildcardProof verifies NSEC/NSEC3 proof that the expanded name (rrsetName) doesn't exist.
 // After a CNAME the expanded name is the CNAME target, not qname.
 func (v *Validator) validateWildcardProof(
+	ctx context.Context,
 	wildcardName, rrsetName string, nsRecords []dns.RR, qname string,
 ) error {
 	// Try NSEC validation first
 	nsecRecords := extractNSECRecords(nsRecords)
 	if len(nsecRecords) > 0 {
-		if err := v.validateWildcardNSEC(nsecRecords, rrsetName); err != nil {
+		if err := v.validateWildcardNSEC(ctx, nsecRecords, rrsetName); err != nil {
 			return fmt.Errorf("wildcard NSEC validation failed: %w", err)
 		}
-		v.logger.Debugf("Wildcard NSEC validation succeeded: %s expanded to %s", wildcardName, rrsetName)
+		if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, fmt.Sprintf(
+				"Wildcard NSEC validation succeeded: %s expanded to %s",
+				wildcardName,
+				rrsetName,
+			))
+		}
 
 		return nil
 	}
@@ -98,10 +123,16 @@ func (v *Validator) validateWildcardProof(
 	// Try NSEC3 validation
 	nsec3Records := extractNSEC3Records(nsRecords)
 	if len(nsec3Records) > 0 {
-		if err := v.validateWildcardNSEC3(nsec3Records, rrsetName); err != nil {
+		if err := v.validateWildcardNSEC3(ctx, nsec3Records, rrsetName); err != nil {
 			return fmt.Errorf("wildcard NSEC3 validation failed: %w", err)
 		}
-		v.logger.Debugf("Wildcard NSEC3 validation succeeded: %s expanded to %s", wildcardName, rrsetName)
+		if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, fmt.Sprintf(
+				"Wildcard NSEC3 validation succeeded: %s expanded to %s",
+				wildcardName,
+				rrsetName,
+			))
+		}
 
 		return nil
 	}
@@ -118,21 +149,25 @@ func (v *Validator) validateWildcardProof(
 	//
 	// RFC 4035 §5.3.4 is ambiguous on this point, but practical implementation follows the more
 	// permissive interpretation for positive responses to maintain compatibility with real-world DNS.
-	v.logger.Debugf("Wildcard expansion for %s (expanded to %s) without NSEC/NSEC3 proof - "+
-		"accepting based on cryptographic signature validation", qname, rrsetName)
+	if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, fmt.Sprintf("Wildcard expansion for %s (expanded to %s) without NSEC/NSEC3 proof - "+
+			"accepting based on cryptographic signature validation", qname, rrsetName))
+	}
 
 	return nil
 }
 
 // validateWildcardNSEC validates wildcard expansion using NSEC records
 // Per RFC 4035 §5.3.4: Must prove the query name doesn't exist
-func (v *Validator) validateWildcardNSEC(nsecRecords []*dns.NSEC, qname string) error {
+func (v *Validator) validateWildcardNSEC(ctx context.Context, nsecRecords []*dns.NSEC, qname string) error {
 	qname = dns.Fqdn(qname)
 
 	// Check if any NSEC covers the query name (proving it doesn't exist)
 	for _, nsec := range nsecRecords {
 		if v.nsecCoversName(nsec, qname) {
-			v.logger.Debugf("NSEC record covers wildcard query name %s", qname)
+			if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+				logger.DebugContext(ctx, "NSEC record covers wildcard query name "+qname)
+			}
 
 			return nil
 		}
@@ -143,7 +178,7 @@ func (v *Validator) validateWildcardNSEC(nsecRecords []*dns.NSEC, qname string) 
 
 // validateWildcardNSEC3 validates wildcard expansion using NSEC3 records
 // Per RFC 5155 §7.2.6: Must prove the query name doesn't exist
-func (v *Validator) validateWildcardNSEC3(nsec3Records []*dns.NSEC3, qname string) error {
+func (v *Validator) validateWildcardNSEC3(ctx context.Context, nsec3Records []*dns.NSEC3, qname string) error {
 	if len(nsec3Records) == 0 {
 		return errors.New("no NSEC3 records available")
 	}
@@ -181,7 +216,9 @@ func (v *Validator) validateWildcardNSEC3(nsec3Records []*dns.NSEC3, qname strin
 
 	// Check if any NSEC3 covers the query name hash
 	if v.nsec3Covers(nsec3Records, qnameHash) {
-		v.logger.Debugf("NSEC3 record covers wildcard query name hash for %s", qname)
+		if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
+			logger.DebugContext(ctx, "NSEC3 record covers wildcard query name hash for "+qname)
+		}
 
 		return nil
 	}

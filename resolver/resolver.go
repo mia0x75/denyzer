@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -14,8 +16,6 @@ import (
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/util"
 	"github.com/miekg/dns"
-
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -169,27 +169,36 @@ func ForEach(resolver Resolver, callback func(Resolver)) {
 }
 
 // LogResolverConfig logs the resolver's type and config.
-func LogResolverConfig(res Resolver, logger *logrus.Entry) {
+func LogResolverConfig(res Resolver, logger *slog.Logger) {
 	// Use the type, not the full typeName, to avoid redundant information with the config
 	typeName := res.Type()
 
 	if !res.IsEnabled() {
-		logger.Debugf("-> %s: disabled", typeName)
+		if logger.Enabled(context.TODO(), slog.LevelDebug) {
+			logger.Debug(fmt.Sprintf("-> %s: disabled", typeName))
+		}
 
 		return
 	}
 
-	logger.Infof("-> %s:", typeName)
+	logger.Info(fmt.Sprintf("-> %s:", typeName))
 	log.WithIndent(logger, "     ", res.LogConfig)
 }
 
 // Should be embedded in a Resolver to auto-implement `Resolver.Type`.
 type typed struct {
 	typeName string
+	logger   *slog.Logger
+	logAttrs []slog.Attr
 }
 
-func withType(t string) typed {
-	return typed{typeName: t}
+func withType(t string, attrs ...slog.Attr) typed {
+	logger := log.PrefixedLog(t)
+	if len(attrs) > 0 {
+		logger = log.WithAttrs(logger, attrs...)
+	}
+
+	return typed{typeName: t, logger: logger, logAttrs: slices.Clone(attrs)}
 }
 
 // Type implements `Resolver`.
@@ -202,33 +211,29 @@ func (t *typed) String() string {
 	return t.Type()
 }
 
-func (t *typed) log(ctx context.Context) (context.Context, *logrus.Entry) {
-	return t.logWith(ctx, func(logger *logrus.Entry) *logrus.Entry { return logger })
-}
-
-func (t *typed) logWithFields(ctx context.Context, fields logrus.Fields) (context.Context, *logrus.Entry) {
-	return t.logWith(ctx, func(logger *logrus.Entry) *logrus.Entry {
-		return logger.WithFields(fields)
-	})
-}
-
-func (t *typed) logWith(ctx context.Context, wrap func(*logrus.Entry) *logrus.Entry) (context.Context, *logrus.Entry) {
-	return log.WrapCtx(ctx, func(logger *logrus.Entry) *logrus.Entry {
-		// per-resolver prefix: each resolver replaces the prefix with its own type rather
-		// than accumulating earlier resolvers' prefixes (avoids the dotted chain and the
-		// string concat that built it). The request-scoped fields (req_id/question/
-		// client_ip) the logger already carries are preserved.
+func (t *typed) log(ctx context.Context) (context.Context, *slog.Logger) {
+	// The normal request path reuses a logger built once with the resolver.
+	// Only explicit initialization/test loggers need a derived local logger.
+	if logger, ok := log.LoggerInCtx(ctx); ok {
 		logger = log.SetPrefix(logger, t.Type())
+		if len(t.logAttrs) > 0 {
+			logger = log.WithAttrs(logger, t.logAttrs...)
+		}
 
-		return wrap(logger)
-	})
+		return ctx, logger
+	}
+
+	if t.logger == nil {
+		return ctx, log.PrefixedLog(t.Type())
+	}
+
+	return ctx, t.logger
 }
 
-// isDebugEnabled reports whether logger would emit at Debug level. Use it to guard
-// construction of expensive Debug-only log fields on the hot path, since Go evaluates
-// log-call arguments before logrus checks the level.
-func isDebugEnabled(logger *logrus.Entry) bool {
-	return logger.Logger.IsLevelEnabled(logrus.DebugLevel)
+func (t *typed) logWith(ctx context.Context, wrap func(*slog.Logger) *slog.Logger) (context.Context, *slog.Logger) {
+	_, logger := t.log(ctx)
+
+	return ctx, wrap(logger)
 }
 
 // Should be embedded in a Resolver to auto-implement `config.Configurable`.
@@ -246,12 +251,12 @@ func (c *configurable[T]) IsEnabled() bool {
 }
 
 // LogConfig implements `config.Configurable`.
-func (c *configurable[T]) LogConfig(logger *logrus.Entry) {
+func (c *configurable[T]) LogConfig(logger *slog.Logger) {
 	c.cfg.LogConfig(logger)
 }
 
 type initializable interface {
-	log(ctx context.Context) (context.Context, *logrus.Entry)
+	log(ctx context.Context) (context.Context, *slog.Logger)
 	setResolvers(resolvers []*upstreamResolverStatus)
 }
 
@@ -272,7 +277,12 @@ func initGroupResolvers[T initializable](
 	onErr := func(err error) {
 		_, logger := r.log(ctx)
 
-		logger.WithError(err).Error("upstream verification error, will continue to use bootstrap DNS")
+		logger.LogAttrs(
+			ctx,
+			slog.LevelError,
+			"upstream verification error, will continue to use bootstrap DNS",
+			slog.Any("error", err),
+		)
 	}
 
 	err := cfg.Init.Strategy.Do(ctx, init, onErr)

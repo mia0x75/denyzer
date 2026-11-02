@@ -54,7 +54,7 @@ func (s *Server) createOpenAPIInterfaceImpl() (impl api.StrictServerInterface, e
 	// construction of the entire API.
 	statsProvider, err := resolver.GetFromChainWithType[api.StatsProvider](s.queryResolver)
 	if err != nil {
-		log.Log().Warnf("no stats API implementation found, /api/stats will be unavailable: %v", err)
+		log.Log().Warn(fmt.Sprintf("no stats API implementation found, /api/stats will be unavailable: %v", err))
 
 		statsProvider = nil
 	}
@@ -141,7 +141,7 @@ func (s *Server) dohPostRequestHandler(rw http.ResponseWriter, req *http.Request
 func (s *Server) processDohMessage(rawMsg []byte, rw http.ResponseWriter, httpReq *http.Request) {
 	msg := new(dns.Msg)
 	if err := msg.Unpack(rawMsg); err != nil {
-		logger().Error("can't deserialize message: ", err)
+		logger().ErrorContext(httpReq.Context(), fmt.Sprint("can't deserialize message: ", err))
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 
 		return
@@ -286,7 +286,7 @@ func configureRootHandler(router *chi.Mux) {
 
 func logAndResponseWithError(err error, message string, writer http.ResponseWriter) {
 	if err != nil {
-		log.Log().Error(message, log.EscapeInput(err.Error()))
+		log.Log().Error(fmt.Sprint(message, log.EscapeInput(err.Error())))
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 	}
 }

@@ -1,6 +1,7 @@
 package stringcache
 
 import (
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -95,7 +96,7 @@ func (f *wildcardCacheFactory) addEntry(entry string) bool {
 	}
 
 	if !strings.HasPrefix(entry, "*.") || globCount > 1 {
-		log.Log().Warnf("unsupported wildcard '%s': must start with '*.' and contain no other '*'", entry)
+		log.Log().Warn(fmt.Sprintf("unsupported wildcard '%s': must start with '*.' and contain no other '*'", entry))
 
 		return true // invalid but handled
 	}
@@ -104,7 +105,7 @@ func (f *wildcardCacheFactory) addEntry(entry string) bool {
 
 	domain := collapseDots(normalizeWildcard(entry))
 	if domain == "" {
-		log.Log().Warnf("empty wildcard '%s': it has no domain and matches nothing", entry)
+		log.Log().Warn(fmt.Sprintf("empty wildcard '%s': it has no domain and matches nothing", entry))
 
 		return true // invalid but handled
 	}

@@ -27,7 +27,7 @@ func NewHealthcheckCommand() *cobra.Command {
 			_ = args
 
 			if err := initConfig(); err != nil {
-				log.Log().Warnf("using the flag defaults: %v", err)
+				log.Log().Warn(fmt.Sprintf("using the flag defaults: %v", err))
 			}
 
 			return nil

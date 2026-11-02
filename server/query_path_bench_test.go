@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"regexp"
 	"strings"
@@ -17,7 +18,6 @@ import (
 	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -153,20 +153,18 @@ func benchQueryPathRequest(domain string) *model.Request {
 // benchmark and restores the previous level and output afterwards. The output is
 // discarded, but the entries are still formatted, so the measurement includes the
 // cost of emitting the log lines.
-func benchQueryPathLogLevel(b *testing.B, level logrus.Level) {
+func benchQueryPathLogLevel(b *testing.B, level slog.Level) {
 	b.Helper()
 
 	logger := log.Log()
-	oldLevel := logger.GetLevel()
-	oldOut := logger.Out
+	b.Cleanup(log.SaveSettings(logger))
 
-	logger.SetOutput(io.Discard)
-	logger.SetLevel(level)
-
-	b.Cleanup(func() {
-		logger.SetLevel(oldLevel)
-		logger.SetOutput(oldOut)
-	})
+	// The package suite silences logging at init. Explicit configuration makes
+	// enabled-level benchmarks include real formatting, not a silent handler.
+	cfg := log.DefaultConfig()
+	cfg.Level = log.Level(level)
+	log.ConfigureLogger(logger, cfg)
+	log.SetOutput(logger, io.Discard)
 }
 
 // benchQueryPathResolve runs the benchmark body for one query case.
@@ -255,6 +253,7 @@ func benchQueryPathExpect(
 //
 //     go test -run=^$ -bench=BenchmarkQueryPath -benchmem ./server/
 func BenchmarkQueryPath(b *testing.B) {
+	benchQueryPathLogLevel(b, slog.LevelInfo)
 	exactGroup := []string{"grp-exact"}
 	wildcardGroup := []string{"grp-wildcard"}
 	regexGroup := []string{"grp-regex"}
@@ -400,13 +399,12 @@ func BenchmarkQueryPath(b *testing.B) {
 
 // BenchmarkQueryPathLogLevel measures the same query path with the log level
 // turned up. The cost of a log line is only visible when the line is actually
-// emitted, so the Debug and Trace cases are what the lazy logging plumbing of
-// the next phase has to keep cheap.
+// emitted. Debug and Trace include formatting even though output is discarded.
 //
 //	go test -run=^$ -bench=BenchmarkQueryPathLogLevel -benchmem ./server/
 func BenchmarkQueryPathLogLevel(b *testing.B) {
-	for _, level := range []logrus.Level{logrus.InfoLevel, logrus.DebugLevel, logrus.TraceLevel} {
-		b.Run(level.String(), func(b *testing.B) {
+	for _, level := range []slog.Level{slog.LevelInfo, slog.LevelDebug, log.LevelTrace} {
+		b.Run(log.Level(level).String(), func(b *testing.B) {
 			benchQueryPathLogLevel(b, level)
 
 			env := newBenchQueryPathEnv(b, benchQueryPathConfig{
@@ -421,11 +419,12 @@ func BenchmarkQueryPathLogLevel(b *testing.B) {
 	}
 }
 
-// BenchmarkNewRequest measures the server boundary cost: the request-scoped log
-// entry and the model.Request the resolver chain receives.
+// BenchmarkNewRequest measures the server boundary cost: request-scoped logging
+// attributes, the UUID and the model.Request the resolver chain receives.
 //
 //	go test -run=^$ -bench=BenchmarkNewRequest -benchmem ./server/
 func BenchmarkNewRequest(b *testing.B) {
+	benchQueryPathLogLevel(b, slog.LevelInfo)
 	msg := util.NewMsgWithQuestion("new-request."+benchQueryPathDomain, dns.Type(dns.TypeA))
 	clientIP := net.ParseIP(benchQueryPathClientIP)
 
@@ -438,5 +437,64 @@ func BenchmarkNewRequest(b *testing.B) {
 		if request == nil {
 			b.Fatal("no request")
 		}
+	}
+}
+
+// BenchmarkQueryPathWithRequest includes ingress logging fields and a fresh
+// model.Request for each query, unlike BenchmarkQueryPath's reused request. The
+// miss case also includes the real UDP exchange with the mock upstream.
+func BenchmarkQueryPathWithRequest(b *testing.B) {
+	benchQueryPathLogLevel(b, slog.LevelInfo)
+	cases := []struct {
+		name   string
+		domain string
+		cfg    benchQueryPathConfig
+		want   model.ResponseType
+	}{
+		{
+			name: "upstream_miss", domain: "allowed." + benchQueryPathDomain,
+			cfg:  benchQueryPathConfig{},
+			want: model.ResponseTypeRESOLVED,
+		},
+		{
+			name: "upstream_hit", domain: "cached." + benchQueryPathDomain,
+			cfg:  benchQueryPathConfig{cache: true},
+			want: model.ResponseTypeCACHED,
+		},
+		{
+			name: "blocked_exact", domain: "exact-blocked." + benchQueryPathDomain,
+			cfg: benchQueryPathConfig{
+				clientGroups: map[string][]string{"default": {"grp-exact"}},
+				denylists:    map[string][]string{"grp-exact": {"exact-blocked." + benchQueryPathDomain}},
+			},
+			want: model.ResponseTypeBLOCKED,
+		},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			env := newBenchQueryPathEnv(b, tc.cfg)
+			if tc.cfg.cache {
+				benchQueryPathPrimeCache(b, env, benchQueryPathRequest(tc.domain))
+			}
+			msg := util.NewMsgWithQuestion(tc.domain, dns.Type(dns.TypeA))
+			ip := net.ParseIP(benchQueryPathClientIP)
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx, request := newRequest(
+					b.Context(),
+					ip,
+					"",
+					model.RequestProtocolUDP,
+					msg,
+				)
+				response, err := env.server.resolve(ctx, request)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if response.RType != tc.want {
+					b.Fatalf("response type = %s, want %s", response.RType, tc.want)
+				}
+			}
+		})
 	}
 }
