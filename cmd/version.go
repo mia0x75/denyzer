@@ -13,13 +13,18 @@ func NewVersionCommand() *cobra.Command {
 		Use:   "version",
 		Args:  cobra.NoArgs,
 		Short: "Print the version number of denyzer",
-		Run:   printVersion,
+		RunE:  printVersion,
 	}
 }
 
-func printVersion(_ *cobra.Command, _ []string) {
-	fmt.Println("denyzer")
-	fmt.Printf("Version: %s\n", util.Version)
-	fmt.Printf("Build time: %s\n", util.BuildTime)
-	fmt.Printf("Architecture: %s\n", util.Architecture)
+func printVersion(cmd *cobra.Command, _ []string) error {
+	_, err := fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"Version: %s\nBuild time: %s\nArchitecture: %s\n",
+		util.Version,
+		util.BuildTime,
+		util.Architecture,
+	)
+
+	return err
 }

@@ -59,8 +59,16 @@ function LogTableControls({
     >
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground text-sm">Rows</span>
-        <Select value={pageSize.toString()} onValueChange={onPageSizeChange}>
-          <SelectTrigger size="sm" className="h-7 w-18 text-xs">
+        <Select
+          name="query-log-page-size"
+          value={pageSize.toString()}
+          onValueChange={onPageSizeChange}
+        >
+          <SelectTrigger
+            aria-label="Rows per page"
+            size="sm"
+            className="h-7 w-18 text-xs"
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

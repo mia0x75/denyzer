@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -24,9 +26,14 @@ func newHTTPServer(name string, handler http.Handler, cfg *config.Config) *httpS
 		readTimeout       = cfg.Blocking.Loading.Downloads.ReadTimeout
 		readHeaderTimeout = cfg.Blocking.Loading.Downloads.ReadHeaderTimeout
 	)
+	errorHandler := &httpErrorLogHandler{
+		Handler:    logger().With("listener", name).Handler(),
+		selfSigned: cfg.CertFile == "" && cfg.KeyFile == "",
+	}
 
 	return &httpServer{
 		inner: http.Server{
+			ErrorLog:          slog.NewLogLogger(errorHandler, slog.LevelWarn),
 			ReadTimeout:       time.Duration(readTimeout),
 			ReadHeaderTimeout: time.Duration(readHeaderTimeout),
 			WriteTimeout:      time.Duration(writeTimeout),
@@ -35,6 +42,29 @@ func newHTTPServer(name string, handler http.Handler, cfg *config.Config) *httpS
 
 		name: name,
 	}
+}
+
+type httpErrorLogHandler struct {
+	slog.Handler
+
+	selfSigned bool
+}
+
+func (h *httpErrorLogHandler) Handle(ctx context.Context, record slog.Record) error {
+	if h.selfSigned && strings.HasPrefix(record.Message, "http: TLS handshake error") {
+		// The startup warning already explains why clients reject the generated certificate.
+		switch {
+		case strings.HasSuffix(record.Message, "remote error: tls: unknown certificate"),
+			strings.HasSuffix(record.Message, "remote error: tls: bad certificate"),
+			strings.HasSuffix(record.Message, "remote error: tls: unknown certificate authority"):
+			record.Level = slog.LevelDebug
+		}
+	}
+	if !h.Enabled(ctx, record.Level) {
+		return nil
+	}
+
+	return h.Handler.Handle(ctx, record)
 }
 
 func (s *httpServer) String() string {
@@ -62,7 +92,6 @@ func withCommonMiddleware(inner http.Handler) *chi.Mux {
 
 	mux.Use(
 		secureHeadersMiddleware,
-		newCORSMiddleware(),
 	)
 
 	mux.Mount("/", inner)
@@ -74,10 +103,11 @@ type httpMiddleware = func(http.Handler) http.Handler
 
 func secureHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		if r.TLS != nil {
 			w.Header().Set("Strict-Transport-Security", "max-age=63072000")
-			w.Header().Set("X-Frame-Options", "DENY")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("X-XSS-Protection", "1; mode=block")
 		}
 
@@ -89,19 +119,12 @@ func newCORSMiddleware() httpMiddleware {
 	const corsMaxAge = 5 * time.Minute
 
 	options := cors.Options{
-		AllowCredentials: true,
-		// Allow all request headers: web UIs send tool-specific headers
-		// (e.g. Grafana action buttons always add 'X-Grafana-Action') and a
-		// disallowed header makes the preflight fail. The API attaches no
-		// security semantics to request headers, and rs/cors answers a
-		// wildcard by echoing the requested headers, which is spec-compliant
-		// also for 'Authorization'.
-		AllowedHeaders: []string{"*"},
+		// DoH is public; management routes never use this middleware.
+		AllowedHeaders: []string{"Content-Type"},
 		AllowedMethods: []string{"GET", "POST"},
 		AllowedOrigins: []string{"*"},
 		// Allow Chromium's Private Network Access preflights, sent when a
-		// public site addresses a private IP (e.g. a hosted Grafana
-		// dashboard calling the denyzer API on a LAN)
+		// public site addresses a private DoH endpoint.
 		AllowPrivateNetwork: true,
 		ExposedHeaders:      []string{"Link"},
 		MaxAge:              int(corsMaxAge.Seconds()),

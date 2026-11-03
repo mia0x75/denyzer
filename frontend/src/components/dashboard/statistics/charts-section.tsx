@@ -38,10 +38,15 @@ export function ChartsSection() {
             <div className="flex items-center gap-2">
               <span className="text-muted-foreground text-xs">Rows</span>
               <Select
+                name="top-list-rows"
                 value={String(rowsPerTable)}
                 onValueChange={handleRowsChange}
               >
-                <SelectTrigger size="sm" className="w-18 text-xs">
+                <SelectTrigger
+                  aria-label="Rows per top list"
+                  size="sm"
+                  className="w-18 text-xs"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

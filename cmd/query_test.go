@@ -85,8 +85,8 @@ var _ = Describe("Blocking command", func() {
 		When("Type is wrong", func() {
 			It("should end with error", func() {
 				command := NewQueryCommand()
-				command.SetArgs([]string{"--type", "X", "google.de"})
-				err := command.Execute()
+				Expect(command.Flags().Set("type", "X")).Should(Succeed())
+				err := query(withContext(command), []string{"google.de"})
 				Expect(err).Should(HaveOccurred())
 				Expect(err.Error()).Should(ContainSubstring("unknown query type 'X'"))
 			})

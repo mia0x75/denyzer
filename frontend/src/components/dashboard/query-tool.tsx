@@ -136,16 +136,24 @@ export function QueryTool() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row">
             <Input
+              id="query-domain"
+              name="query"
+              aria-label="Domain"
               placeholder="Enter domain (e.g., example.com)"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="flex-1"
             />
             <Select
+              name="query-type"
               value={type}
               onValueChange={(value: DNS_RECORD_TYPE) => setType(value)}
             >
-              <SelectTrigger className="w-full sm:w-26">
+              <SelectTrigger
+                id="query-type"
+                aria-label="DNS record type"
+                className="w-full sm:w-26"
+              >
                 <SelectValue placeholder="Type" />
               </SelectTrigger>
               <SelectContent>

@@ -36,8 +36,16 @@ To print runtime configuration / statistics, you can send `SIGUSR1` signal to ru
 
 ## Debug / Profiling
 
-If http listener is enabled, [pprof](https://golang.org/pkg/net/http/pprof/) endpoint (`/debug/pprof`) is enabled
-automatically.
+[pprof](https://golang.org/pkg/net/http/pprof/) is disabled by default. Enable
+`debug.pprof: true` to serve `/debug/pprof/` on the HTTPS management listener
+(`ports.admin`). It is never served on public HTTP, HTTPS or HTTP/3 DoH.
+When authentication is enabled, profiling requests require a Bearer token;
+the dashboard's page cookie is not accepted.
+
+```sh
+curl https://<denyzer-host>:<admin-port>/debug/pprof/ \
+  -H "Authorization: Bearer $DENYZER_API_TOKEN"
+```
 
 ## List sources
 

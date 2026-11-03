@@ -1,5 +1,7 @@
 {
   "$schema": "./node_modules/knip/schema.json",
+  // Keep generated shadcn primitives even when the dashboard does not use them.
+  "ignore": ["src/components/ui/**"],
   "ignoreExportsUsedInFile": {
     "interface": true,
     "type": true

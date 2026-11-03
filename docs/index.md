@@ -54,7 +54,7 @@ flowchart LR
 
 - **Integration** - :notebook_with_decorative_cover: various integration
 
-    * Embedded web dashboard (DenyzerUI) served at `/dashboard/`
+    * Embedded web dashboard (DenyzerUI) served at `/` on a separate HTTPS management listener
     * Query logging to an embedded SQLite store (per-day / per-client) with configurable retention - no external database
       required
     * Various REST API endpoints
@@ -76,4 +76,3 @@ flowchart LR
 ## Contribution
 
 Issues, feature suggestions and pull requests are welcome! Denyzer lives on :material-github:[GitHub](https://github.com/mia0x75/denyzer).
-

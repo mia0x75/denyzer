@@ -12,8 +12,7 @@ import {
   type TopClientEntry,
   type TopDomainEntry,
 } from "./api-types";
-
-const API_BASE = "";
+import { apiFetch } from "~/lib/auth";
 
 // --- Denyzer OpenAPI endpoints (generated) ---
 
@@ -26,16 +25,14 @@ interface GoTopEntry {
 }
 
 async function fetchJSON<T>(url: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${url}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  const res = await apiFetch(url);
   return res.json() as Promise<T>;
 }
 
 // postJSON sends a request without a body and turns a failed response into an
 // error, so the mutations can report the failure to the user.
 async function postJSON(url: string): Promise<Response> {
-  const res = await fetch(`${API_BASE}${url}`, { method: "POST" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  const res = await apiFetch(url, { method: "POST" });
   return res;
 }
 
@@ -156,12 +153,11 @@ export async function executeQuery(
   query: string,
   type: string,
 ): Promise<QueryResult> {
-  const res = await fetch(`${API_BASE}/api/query`, {
+  const res = await apiFetch("/api/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, type }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
 
   const raw = (await res.json()) as {
     reason: string;

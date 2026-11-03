@@ -58,7 +58,7 @@ var _ = Describe("Statistics client identity", func() {
 			statistics:
 			  enable: true
 			ports:
-			  http: 4000
+			  admin: 4000
 			`))
 		Expect(err).Should(Succeed())
 	})
@@ -67,7 +67,10 @@ var _ = Describe("Statistics client identity", func() {
 		func(ctx context.Context) {
 			host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 			Expect(err).Should(Succeed())
-			statsURL := "http://" + net.JoinHostPort(host, port) + "/api/stats"
+			baseURL := "https://" + net.JoinHostPort(host, port)
+			client, err := newManagementClient(ctx, baseURL)
+			Expect(err).Should(Succeed())
+			statsURL := baseURL + "/api/stats"
 
 			ecsQuery := func(question string, qType dns.Type) (*dns.Msg, error) {
 				msg := util.NewMsgWithQuestion(question, qType)
@@ -100,7 +103,7 @@ var _ = Describe("Statistics client identity", func() {
 
 			By("reading /api/stats (collection is async, so poll)", func() {
 				Eventually(func(g Gomega) {
-					res := fetchStats(ctx, g, statsURL)
+					res := fetchStats(ctx, g, client, statsURL)
 					g.Expect(res.Summary.Queries).Should(BeNumerically("==", 3))
 					// all three queries are attributed to the one client, none to its IP
 					g.Expect(res.TopClients).Should(ConsistOf(api.ApiNameCount{Name: "ecsclient", Count: 3}))

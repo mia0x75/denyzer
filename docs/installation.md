@@ -29,12 +29,32 @@ blocking:
       - ads
 ports:
   dns: 53 # (3)!
-  http: 4000
+  admin: 4000
 ```
 
 1.  Upstream DNS resolvers denyzer forwards allowed queries to. Plain IPs as well as `tcp-tls:` (DoT) and `https://` (DoH) endpoints are supported.
 2.  A named denylist group. Each entry is a URL or local file with hosts/domains to block; reference it from `clientGroupsBlock`.
-3.  Listening ports — `dns` serves DNS (UDP/TCP), `http` serves the REST API and the dashboard.
+3.  Listening ports — `dns` serves DNS (UDP/TCP), `admin` serves the HTTPS management API and dashboard. Optional `http`/`https` ports serve DoH only.
+
+### Set the administrator password
+
+After downloading the binary, set credentials before starting this configuration:
+
+```sh
+./denyzer auth --config config.yml --username admin
+```
+
+The command prompts twice without echoing the password and atomically writes an
+Argon2id hash with file permissions `0600`. Use the same command to reset the
+password. The server user must be able to read the resulting file; the CLI user
+needs write access to its directory. Docker users can use the one-off command
+below instead.
+
+The dashboard is at `https://<denyzer-host>:4000/`, with login at `/login/`.
+Configure `certFile` and `keyFile` with a trusted certificate matching this
+hostname/IP. The generated self-signed certificate is not trusted by default,
+may not match the access address, and is rejected by the CLI. See
+[Management authentication](configuration.md#management-authentication).
 
 ## Run Denyzer
 
@@ -58,6 +78,23 @@ ports:
         is not in the bounding set.
 
 === "Docker"
+
+    Keep the configuration in a directory so the running container can see
+    atomic credential replacements. Prepare credentials as the image's UID 100:
+
+    ```sh
+    mkdir -p config
+    cp config.yml config/config.yml
+    sudo chown 100:100 config config/config.yml
+    docker run --rm -it -v "$PWD/config:/config" mia0x75/denyzer \
+      auth --config /config --username admin
+    ```
+
+    Rerun the same one-off auth command to reset a running container's password.
+    The server can keep the configuration directory mounted read-only; the
+    one-off auth container needs the writable mount shown above. Do not mount a
+    single config file for live resets: replacing it on the host can leave the
+    running container reading the old inode until the container is recreated.
 
     !!! note "Running under a restricted runtime"
 
@@ -94,7 +131,9 @@ ports:
           `docker run -u "$(id -u):$(id -g)" ...`, or in compose
           `user: "1000:1000"`.
 
-        Read-only mounts such as `config.yml` are unaffected.
+        Configuration and TLS private-key files must also be readable by UID 100.
+        The auth command writes credentials with mode `0600`, so preserve the
+        container user's ownership rather than making them world-readable.
 
     Denyzer docker images are deployed to DockerHub (`mia0x75/denyzer`) and GitHub Container Registry (`ghcr.io/mia0x75/denyzer`).
 
@@ -103,7 +142,9 @@ ports:
         Execute the following command from the command line:
 
         ```sh
-        docker run --name denyzer -v /path/to/config.yml:/app/config.yml -p 4000:4000 -p 53:53/udp mia0x75/denyzer
+        docker run --name denyzer -v /path/to/config:/config:ro \
+          -e DENYZER_CONFIG_FILE=/config -p 127.0.0.1:4000:4000 \
+          -p 53:53/tcp -p 53:53/udp mia0x75/denyzer
         ```
 
     === "docker-compose"
@@ -122,14 +163,15 @@ ports:
             ports:
               - "53:53/tcp"
               - "53:53/udp"
-              - "4000:4000/tcp"
+              - "127.0.0.1:4000:4000/tcp" # HTTPS management; change the host bind for trusted LAN access
             environment:
+              - DENYZER_CONFIG_FILE=/config
               - TZ=Europe/Berlin # Optional to synchronize the log timestamp with host
             volumes:
               # Optional to synchronize the log timestamp with host
               - /etc/localtime:/etc/localtime:ro
-              # config file
-              - ./config.yml:/app/config.yml:ro
+              # config directory, prepared with the auth command above
+              - ./config:/config:ro
         ```
 
         Then start the container with:
@@ -169,12 +211,13 @@ path like '/app/allowlists/allowlist.txt' in the config file.
         ports:
           - "53:53/tcp"
           - "53:53/udp"
-          - "4000:4000/tcp" # REST API and dashboard
+          - "127.0.0.1:4000:4000/tcp" # HTTPS management API and dashboard
         environment:
+          - DENYZER_CONFIG_FILE=/config
           - TZ=Europe/Berlin
         volumes:
-          # config file
-          - ./config.yml:/app/config.yml:ro
+          # config directory, including administrator credentials
+          - ./config:/config:ro
           # write query logs in this volume
           - queryLogs:/logs
           # put your custom allow/denylists in these directories
@@ -200,7 +243,9 @@ path like '/app/allowlists/allowlist.txt' in the config file.
 
 ## Multiple configuration files
 
-For complex setups, splitting the configuration between multiple YAML files might be desired. In this case, folder containing YAML files is passed on startup, Denyzer will join all the files.
+For complex setups, pass a folder containing YAML files. Denyzer recursively
+merges them in lexical path order; later scalar and list values override earlier
+ones. See [Multiple configuration files](configuration.md#multiple-configuration-files).
 
 ```sh
 ./denyzer --config ./config/
@@ -208,7 +253,8 @@ For complex setups, splitting the configuration between multiple YAML files migh
 
 !!! warning
 
-    Denyzer simply joins the multiple YAML files. If an option (e.g. `upstream`) is present in multiple files, the configuration will not load and start will fail.
+    Duplicate keys within a single YAML document are rejected. In directory mode,
+    `denyzer auth --config ./config/ --username admin` updates the last YAML file.
 
 ## Other installation types
 

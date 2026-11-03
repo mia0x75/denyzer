@@ -26,7 +26,7 @@ func NewHealthcheckCommand() *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			_ = args
 
-			if err := initConfig(); err != nil {
+			if _, err := initConfig(); err != nil {
 				log.Log().Warn(fmt.Sprintf("using the flag defaults: %v", err))
 			}
 

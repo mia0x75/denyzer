@@ -2,7 +2,8 @@ package: api
 generate:
   models: true
 output: api_types.gen.go
-# Dashboard-only operations are documented (and served) but not code-generated.
+# Dashboard and authentication operations use handwritten handlers.
 output-options:
   exclude-tags:
     - dashboard
+    - auth

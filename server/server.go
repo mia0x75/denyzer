@@ -80,7 +80,8 @@ func retrieveCertificate(cfg *config.Config) (cert tls.Certificate, err error) {
 			return tls.Certificate{}, fmt.Errorf("unable to generate self-signed certificate: %w", err)
 		}
 
-		log.Log().Info("using self-signed certificate")
+		log.Log().Warn("using self-signed certificate; configure certFile/keyFile with a trusted certificate " +
+			"matching the access hostname or IP")
 	} else {
 		cert, err = tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 		if err != nil {
@@ -111,11 +112,14 @@ func newTLSConfig(cfg *config.Config) (*tls.Config, error) {
 
 // NewServer creates new server instance with passed config
 //
-//nolint:funlen
+//nolint:funlen // Keep listener construction and rollback together.
 func NewServer(ctx context.Context, cfg *config.Config) (server *Server, err error) {
+	if err := cfg.ValidateAdminListeners(logger()); err != nil {
+		return nil, err
+	}
 	var tlsCfg *tls.Config
 
-	if len(cfg.Ports.HTTPS) > 0 || len(cfg.Ports.TLS) > 0 {
+	if len(cfg.Ports.Admin) > 0 || len(cfg.Ports.HTTPS) > 0 || len(cfg.Ports.TLS) > 0 {
 		tlsCfg, err = newTLSConfig(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create TLS configuration: %w", err)
@@ -132,9 +136,25 @@ func NewServer(ctx context.Context, cfg *config.Config) (server *Server, err err
 		return nil, fmt.Errorf("server creation failed: %w", err)
 	}
 
-	httpListeners, httpsListeners, http3PacketConns, err := createHTTPListeners(ctx, cfg, tlsCfg)
+	var httpListeners, httpsListeners, adminListeners []net.Listener
+	var http3PacketConns []net.PacketConn
+	defer func() {
+		if err != nil {
+			closeDNSServers(dnsServers)
+			closeAll(httpListeners)
+			closeAll(httpsListeners)
+			closeAll(adminListeners)
+			closeAll(http3PacketConns)
+		}
+	}()
+
+	httpListeners, httpsListeners, http3PacketConns, err = createHTTPListeners(ctx, cfg, tlsCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP/HTTPS listeners: %w", err)
+	}
+	adminListeners, err = newTLSListeners(ctx, "admin", cfg.Ports.Admin, tlsCfg, false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create management listeners: %w", err)
 	}
 
 	bootstrap, err := resolver.NewBootstrap(ctx, cfg)
@@ -168,29 +188,29 @@ func NewServer(ctx context.Context, cfg *config.Config) (server *Server, err err
 
 	server.registerDNSHandlers(ctx)
 
-	openAPIImpl, err := server.createOpenAPIInterfaceImpl()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create OpenAPI interface implementation: %w", err)
-	}
-
-	var listCounts listCountsProvider
-	if lc, lcErr := resolver.GetFromChainWithType[listCountsProvider](server.queryResolver); lcErr == nil {
-		listCounts = lc
-	}
-
-	httpRouter := createHTTPRouter(openAPIImpl, listCounts, server.cacheEntryCount)
+	// Public DNS listeners never register management endpoints or authentication middleware.
+	httpRouter := chi.NewRouter()
+	httpRouter.Use(newCORSMiddleware())
 	server.registerDoHEndpoints(httpRouter, cfg)
+	if len(adminListeners) > 0 {
+		adminHandler, err := server.createAdminHandler()
+		if err != nil {
+			return nil, err
+		}
+		srv := newHTTPServer("admin", adminHandler, cfg)
+		for _, listener := range adminListeners {
+			server.servers[listener] = srv
+		}
+	}
 
 	if len(http3PacketConns) > 0 {
 		server.http3Server = newHTTP3Server(httpRouter, newH3TLSConfig(tlsCfg))
 	}
 
-	if len(cfg.Ports.HTTP) != 0 {
-		srv := newHTTPServer("http", httpRouter, cfg)
+	srv := newHTTPServer("http", httpRouter, cfg)
 
-		for _, l := range httpListeners {
-			server.servers[l] = srv
-		}
+	for _, l := range httpListeners {
+		server.servers[l] = srv
 	}
 
 	if len(cfg.Ports.HTTPS) != 0 {
@@ -247,6 +267,8 @@ func createServers(ctx context.Context, cfg *config.Config, tlsCfg *tls.Config) 
 		}, cfg.Ports.TLS))
 
 	if multiErr := err.ErrorOrNil(); multiErr != nil {
+		closeDNSServers(dnsServers)
+
 		return nil, fmt.Errorf("failed to create DNS servers: %w", multiErr)
 	}
 
@@ -297,6 +319,17 @@ func closeAll[T io.Closer](closers []T) {
 	}
 }
 
+func closeDNSServers(servers []*dns.Server) {
+	for _, server := range servers {
+		if server.Listener != nil {
+			_ = server.Listener.Close()
+		}
+		if server.PacketConn != nil {
+			_ = server.PacketConn.Close()
+		}
+	}
+}
+
 func newTCPListeners(
 	ctx context.Context, proto string, addresses config.ListenConfig, proxyProtocol bool,
 ) ([]net.Listener, error) {
@@ -306,6 +339,8 @@ func newTCPListeners(
 	for _, address := range addresses {
 		listener, err := lc.Listen(ctx, networkTCP, address)
 		if err != nil {
+			closeAll(listeners)
+
 			return nil, fmt.Errorf("start %s listener on %s failed: %w", proto, address, err)
 		}
 
@@ -358,13 +393,16 @@ func createDNSServer(ctx context.Context, network, address string, tlsCfg *tls.C
 		Addr:    address,
 		Net:     network,
 		Handler: dns.NewServeMux(),
-		NotifyStartedFunc: func() {
-			logger().InfoContext(ctx, fmt.Sprintf(
-				"%s server is up and running on address %s",
-				strings.ToUpper(network),
-				address,
-			))
-		},
+	}
+	srv.NotifyStartedFunc = func() {
+		var boundAddress net.Addr
+		if network == networkUDP {
+			boundAddress = srv.PacketConn.LocalAddr()
+		} else {
+			boundAddress = srv.Listener.Addr()
+		}
+		logger().InfoContext(ctx, fmt.Sprintf("%s server is up and running on address %s",
+			strings.ToUpper(network), boundAddress))
 	}
 
 	if network == networkUDP {
@@ -676,7 +714,8 @@ func (s *Server) Start(ctx context.Context, errCh chan<- error) {
 
 	for listener, srv := range s.servers {
 		go func() {
-			logger().InfoContext(ctx, fmt.Sprintf("%s server is up and running on addr/port %s", srv, listener.Addr()))
+			logger().InfoContext(ctx, fmt.Sprintf("%s server is up and running on address %s",
+				strings.ToUpper(srv.String()), listener.Addr()))
 
 			err := srv.Serve(ctx, listener)
 			if err != nil {
@@ -688,7 +727,8 @@ func (s *Server) Start(ctx context.Context, errCh chan<- error) {
 	if s.http3Server != nil {
 		for _, pc := range s.http3PacketConns {
 			go func() {
-				logger().InfoContext(ctx, fmt.Sprintf("%s server is up and running on addr/port %s", s.http3Server, pc.LocalAddr()))
+				logger().InfoContext(ctx, fmt.Sprintf("%s server is up and running on address %s",
+					strings.ToUpper(s.http3Server.String()), pc.LocalAddr()))
 
 				err := s.http3Server.inner.Serve(pc)
 				if err != nil &&

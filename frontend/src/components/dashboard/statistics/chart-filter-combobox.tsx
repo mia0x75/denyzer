@@ -82,6 +82,7 @@ export function ChartFilterCombobox({
       <PopoverContent className="w-[300px] p-0" align="start">
         <Command shouldFilter={false}>
           <CommandInput
+            name="chartClientFilter"
             placeholder="Search clients..."
             value={search}
             onValueChange={setSearch}

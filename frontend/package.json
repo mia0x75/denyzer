@@ -13,7 +13,8 @@
     "preview": "next build && next start",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "verify": "bun run --parallel lint format:check typecheck knip checkdupe",
+    "test": "bun test",
+    "verify": "bun run --parallel lint format:check typecheck test knip checkdupe",
     "knip": "knip",
     "checkdupe": "jscpd"
   },

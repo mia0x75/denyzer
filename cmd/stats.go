@@ -199,6 +199,9 @@ func getJSON(ctx context.Context, path string, query url.Values, out any) error 
 	if err != nil {
 		return fmt.Errorf("can't create request: %w", err)
 	}
+	if err := authorizeAPIRequest(ctx, req); err != nil {
+		return err
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

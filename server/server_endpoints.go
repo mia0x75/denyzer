@@ -201,10 +201,11 @@ func (s *Server) Query(
 	return s.resolve(ctx, req)
 }
 
-func createHTTPRouter(
+func createAdminRouter(
 	openAPIImpl api.StrictServerInterface,
 	listCounts listCountsProvider,
 	cacheEntryCount func() int,
+	pprof bool,
 ) *chi.Mux {
 	router := chi.NewRouter()
 
@@ -225,7 +226,9 @@ func createHTTPRouter(
 	router.Post("/api/stats/cleanup", handleCleanupHistory)
 	registerStatsListsHandler(router, listCounts)
 
-	configureDebugHandler(router)
+	if pprof {
+		configureDebugHandler(router)
+	}
 
 	configureDocsHandler(router)
 
@@ -233,11 +236,28 @@ func createHTTPRouter(
 
 	configureDashboardHandler(router)
 
-	configureRootHandler(router)
-
 	configureRobotsHandler(router)
 
 	return router
+}
+
+func (s *Server) createAdminHandler() (http.Handler, error) {
+	openAPIImpl, err := s.createOpenAPIInterfaceImpl()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OpenAPI interface implementation: %w", err)
+	}
+	var listCounts listCountsProvider
+	if provider, err := resolver.GetFromChainWithType[listCountsProvider](s.queryResolver); err == nil {
+		listCounts = provider
+	}
+
+	authentication := newAuthService(s.cfg)
+	router := createAdminRouter(openAPIImpl, listCounts, s.cacheEntryCount, s.cfg.Debug.Pprof)
+	router.Get("/api/login", authentication.loginStatus)
+	router.Post("/api/login", authentication.login)
+	router.Post("/api/logout", authentication.logout)
+
+	return authentication.middleware(router), nil
 }
 
 func configureDocsHandler(router *chi.Mux) {
@@ -268,20 +288,11 @@ func configureDashboardHandler(router *chi.Mux) {
 
 	dashboardFS := http.FileServer(http.FS(fsys))
 
-	router.Get("/dashboard", func(writer http.ResponseWriter, request *http.Request) {
-		http.Redirect(writer, request, "/dashboard/", http.StatusMovedPermanently)
-	})
-	router.Handle("/dashboard/*", http.StripPrefix("/dashboard", dashboardFS))
+	router.Handle("/*", dashboardFS)
 }
 
 func configureRobotsHandler(router *chi.Mux) {
 	router.Handle("/robots.txt", http.FileServer(http.FS(web.WebFs)))
-}
-
-func configureRootHandler(router *chi.Mux) {
-	router.Get("/", func(writer http.ResponseWriter, request *http.Request) {
-		http.Redirect(writer, request, "/dashboard/", http.StatusMovedPermanently)
-	})
 }
 
 func logAndResponseWithError(err error, message string, writer http.ResponseWriter) {

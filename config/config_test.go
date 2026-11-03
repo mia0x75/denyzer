@@ -1604,6 +1604,7 @@ var _ = Describe("Ports", func() {
 		It("should log all port configurations", func() {
 			cfg := Ports{
 				DNS:      ListenConfig{":53"},
+				Admin:    ListenConfig{"127.0.0.1:4000"},
 				HTTP:     ListenConfig{":4000"},
 				HTTPS:    ListenConfig{":443"},
 				TLS:      ListenConfig{":853"},
@@ -1622,6 +1623,7 @@ var _ = Describe("Ports", func() {
 			Expect(hook.Records()).ShouldNot(BeEmpty())
 			Expect(hook.Messages()).Should(ContainElements(
 				ContainSubstring("DNS"),
+				ContainSubstring("ADMIN"),
 				ContainSubstring("HTTP"),
 				ContainSubstring("HTTPS"),
 				ContainSubstring("TLS"),
@@ -1630,6 +1632,27 @@ var _ = Describe("Ports", func() {
 				ContainSubstring("PROXY protocol = [dns http https tls]"),
 			))
 		})
+
+		DescribeTable("warns only when DoH has no management listener", func(cfg Ports, shouldWarn bool) {
+			cfg.LogConfig(logger)
+
+			warning := SatisfyAll(
+				HaveField("Level", slog.LevelWarn),
+				HaveField("Message", "ports.http/ports.https serve DoH only; set ports.admin for the dashboard and API"),
+			)
+			if shouldWarn {
+				Expect(hook.Records()).Should(ContainElement(warning))
+			} else {
+				Expect(hook.Records()).ShouldNot(ContainElement(warning))
+			}
+		},
+			Entry("HTTP", Ports{HTTP: ListenConfig{":80"}}, true),
+			Entry("HTTPS", Ports{HTTPS: ListenConfig{":443"}}, true),
+			Entry("management is configured", Ports{
+				Admin: ListenConfig{"127.0.0.1:4000"}, HTTP: ListenConfig{":80"},
+			}, false),
+			Entry("no web listener", Ports{}, false),
+		)
 	})
 	Describe("validate", func() {
 		It("should accept the default path", func() {

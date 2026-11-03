@@ -51,7 +51,7 @@ var _ = Describe("Statistics functional tests", func() {
 					caching:
 					  minTime: 5m
 					ports:
-					  http: 4000
+					  admin: 4000
 					statistics:
 					  enable: true
 					`))
@@ -61,7 +61,10 @@ var _ = Describe("Statistics functional tests", func() {
 			It("aggregates queries and serves them as JSON", func(ctx context.Context) {
 				host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 				Expect(err).Should(Succeed())
-				statsURL := "http://" + net.JoinHostPort(host, port) + "/api/stats"
+				baseURL := "https://" + net.JoinHostPort(host, port)
+				client, err := newManagementClient(ctx, baseURL)
+				Expect(err).Should(Succeed())
+				statsURL := baseURL + "/api/stats"
 
 				By("driving three distinct query outcomes", func() {
 					// 1. forwarded (resolved upstream)
@@ -77,7 +80,7 @@ var _ = Describe("Statistics functional tests", func() {
 
 				By("reading /api/stats (collection is async, so poll)", func() {
 					Eventually(func(g Gomega) {
-						res := fetchStats(ctx, g, statsURL)
+						res := fetchStats(ctx, g, client, statsURL)
 						g.Expect(res.Summary.Queries).Should(BeNumerically("==", 3))
 						g.Expect(res.Summary.Blocked).Should(BeNumerically("==", 1))
 						g.Expect(res.Summary.Cached).Should(BeNumerically("==", 1))
@@ -104,7 +107,7 @@ var _ = Describe("Statistics functional tests", func() {
 					    default:
 					      - moka1
 					ports:
-					  http: 4000
+					  admin: 4000
 					`))
 				Expect(err).Should(Succeed())
 			})
@@ -113,11 +116,14 @@ var _ = Describe("Statistics functional tests", func() {
 				host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 				Expect(err).Should(Succeed())
 
+				baseURL := "https://" + net.JoinHostPort(host, port)
+				client, err := newManagementClient(ctx, baseURL)
+				Expect(err).Should(Succeed())
 				req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-					"http://"+net.JoinHostPort(host, port)+"/api/stats", nil)
+					baseURL+"/api/stats", nil)
 				Expect(err).Should(Succeed())
 
-				resp, err := http.DefaultClient.Do(req)
+				resp, err := client.Do(req)
 				Expect(err).Should(Succeed())
 				defer resp.Body.Close()
 				Expect(resp.StatusCode).Should(Equal(http.StatusServiceUnavailable))
@@ -126,11 +132,11 @@ var _ = Describe("Statistics functional tests", func() {
 	})
 })
 
-func fetchStats(ctx context.Context, g Gomega, url string) api.ApiStats {
+func fetchStats(ctx context.Context, g Gomega, client *http.Client, url string) api.ApiStats {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	g.Expect(err).Should(Succeed())
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	g.Expect(err).Should(Succeed())
 	defer resp.Body.Close()
 	g.Expect(resp.StatusCode).Should(Equal(http.StatusOK))

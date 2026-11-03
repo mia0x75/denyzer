@@ -265,10 +265,11 @@ queryLog:
   # optional: Maximum number of entries accumulated before a flush is triggered, default: 100
   batchSize: 100
 
-# optional: Mininal TLS version that the DoH and DoT server will use
+# optional: Minimum TLS version for HTTPS management, DoH and DoT
 minTlsServeVersion: 1.3
 
-# if https port > 0: path to cert and key file for SSL encryption. if not set, self-signed certificate will be generated
+# Shared TLS certificate/key for management, DoH and DoT; otherwise one self-signed certificate is generated.
+# Use a trusted certificate matching the hostname/IP used by management clients.
 #certFile: server.crt
 #keyFile: server.key
 
@@ -400,12 +401,15 @@ ports:
   # default: none
   # example: [853, :853, 127.0.0.1:853, [::1]:853]
   tls: 853
-  # optional: Port(s) and optional bind ip address(es) for HTTPS (dashboard, pprof, REST API, DoH).
+  # optional: HTTPS management only (dashboard at /, REST API, optional pprof).
+  # Without auth only explicit loopback IPs are allowed; run denyzer auth before exposing this to a LAN.
+  admin: 127.0.0.1:4000
+  # optional: Port(s) and optional bind ip address(es) for public HTTPS DoH only.
   # example: [443, :443, 127.0.0.1:443, [::1]:443]
   https: 443
-  # optional: Port(s) and optional bind ip address(es) for HTTP (dashboard, pprof, REST API, DoH).
-  # example: [4000, :4000, 127.0.0.1:4000, [::1]:4000]
-  http: 4000
+  # optional: Port(s) and optional bind ip address(es) for HTTP DoH only, e.g. behind a TLS reverse proxy.
+  # example: [8080, :8080, 127.0.0.1:8080, [::1]:8080]
+  http: 8080
   # optional: URL path for DoH queries.
   # default: /dns-query
   dohPath: /dns-query
@@ -419,6 +423,16 @@ ports:
   #           trusted proxy.
   # default: empty
   proxyProtocol: []
+
+# optional: single administrator credentials, written by denyzer auth --config config.yml --username admin.
+# Both empty disables authentication on loopback only; never put a plaintext password here.
+auth:
+  username: ""
+  passwordHash: ""
+
+# optional: profiling on the HTTPS management listener, never on public DoH.
+debug:
+  pprof: false
 
 # optional: configuration for DOH  over HTTP/3
 http3:

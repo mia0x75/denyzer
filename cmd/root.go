@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -58,18 +60,19 @@ Complete documentation is available at https://github.com/mia0x75/denyzer`,
 		newStatsCommand(),
 		NewHealthcheckCommand(),
 		newCacheCommand(),
+		newAuthCommand(),
 		NewValidateCommand())
 
 	return c
 }
 
 func apiURL() string {
-	return fmt.Sprintf("http://%s%s", net.JoinHostPort(apiHost, strconv.Itoa(int(apiPort))), "/api")
+	return fmt.Sprintf("https://%s%s", net.JoinHostPort(apiHost, strconv.Itoa(int(apiPort))), "/api")
 }
 
 // newAPIClient creates a new API client with the configured URL
 func newAPIClient() (*api.ClientWithResponses, error) {
-	client, err := api.NewClientWithResponses(apiURL())
+	client, err := api.NewClientWithResponses(apiURL(), api.WithRequestEditorFn(authorizeAPIRequest))
 	if err != nil {
 		return nil, fmt.Errorf("can't create client: %w", err)
 	}
@@ -77,21 +80,46 @@ func newAPIClient() (*api.ClientWithResponses, error) {
 	return client, nil
 }
 
-func initConfigPreRun(cmd *cobra.Command, args []string) error {
-	return initConfig()
+func authorizeAPIRequest(_ context.Context, request *http.Request) error {
+	if token := os.Getenv("DENYZER_API_TOKEN"); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	return nil
 }
 
-func initConfig() error {
-	_, err := loadConfig(false, func(cfg *config.Config) {
+func initConfigPreRun(cmd *cobra.Command, _ []string) error {
+	host, port := apiHost, apiPort
+	cfg, err := initConfig()
+	if err != nil {
+		return err
+	}
+	hostChanged := cmd.Flags().Changed("apiHost")
+	portChanged := cmd.Flags().Changed("apiPort")
+	if hostChanged {
+		apiHost = host
+	}
+	if portChanged {
+		apiPort = port
+	}
+	if len(cfg.Ports.Admin) == 0 && !hostChanged && !portChanged {
+		return errors.New("ports.admin is not configured")
+	}
+
+	return nil
+}
+
+func initConfig() (*config.Config, error) {
+	cfg, err := loadConfig(false, func(cfg *config.Config) {
 		logCfg := commandLogConfig(cfg)
 
 		log.Configure(&logCfg)
 	})
 	if err != nil {
-		return fmt.Errorf("unable to load configuration file '%s': %w", configPath, err)
+		return nil, fmt.Errorf("unable to load configuration file '%s': %w", configPath, err)
 	}
 
-	return nil
+	return cfg, nil
 }
 
 // commandLogConfig returns the log settings a command logs with. A command answers in
@@ -146,12 +174,12 @@ func resolveConfigPath() {
 	}
 }
 
-// setListenAddresses points the commands at the server's first HTTP and DNS listen addresses
+// setListenAddresses points the commands at the first management and DNS listen addresses.
 func setListenAddresses(ports config.Ports) error {
-	if len(ports.HTTP) != 0 {
-		host, port, err := splitListenAddress(ports.HTTP[0])
+	if len(ports.Admin) != 0 {
+		host, port, err := splitListenAddress(ports.Admin[0])
 		if err != nil {
-			return fmt.Errorf("can't parse HTTP listen address '%s': %w", ports.HTTP[0], err)
+			return fmt.Errorf("can't parse management listen address '%s': %w", ports.Admin[0], err)
 		}
 
 		// An entry without a host (e.g. ":4004" or "4004") means "all

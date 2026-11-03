@@ -246,10 +246,14 @@ export function QueryLogs() {
           />
           <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
             <Select
+              name="query-log-response-type"
               value={responseTypeFilter}
               onValueChange={handleResponseTypeChange}
             >
-              <SelectTrigger className="w-full sm:w-36">
+              <SelectTrigger
+                aria-label="Response reason"
+                className="w-full sm:w-36"
+              >
                 <SelectValue placeholder="Response" />
               </SelectTrigger>
               <SelectContent>
@@ -262,10 +266,14 @@ export function QueryLogs() {
               </SelectContent>
             </Select>
             <Select
+              name="query-log-question-type"
               value={questionTypeFilter}
               onValueChange={handleQuestionTypeChange}
             >
-              <SelectTrigger className="w-full sm:w-28">
+              <SelectTrigger
+                aria-label="DNS record type"
+                className="w-full sm:w-28"
+              >
                 <SelectValue placeholder="Type" />
               </SelectTrigger>
               <SelectContent>

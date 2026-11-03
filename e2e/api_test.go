@@ -42,7 +42,7 @@ var _ = Describe("API endpoints", func() {
 					    default:
 					      - moka
 					ports:
-					  http: 4000
+					  admin: 4000
 					caching:
 					  minTime: 5m
 					`))
@@ -52,7 +52,9 @@ var _ = Describe("API endpoints", func() {
 			It("should clear cache via API", func(ctx context.Context) {
 				host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 				Expect(err).Should(Succeed())
-				baseURL := "http://" + net.JoinHostPort(host, port)
+				baseURL := "https://" + net.JoinHostPort(host, port)
+				client, err := newManagementClient(ctx, baseURL)
+				Expect(err).Should(Succeed())
 
 				By("populating cache with a query", func() {
 					msg := util.NewMsgWithQuestion("cached.example.com.", A)
@@ -71,7 +73,7 @@ var _ = Describe("API endpoints", func() {
 				})
 
 				By("flushing cache via API", func() {
-					resp, err := http.Post(baseURL+"/api/cache/flush", "application/json", nil)
+					resp, err := client.Post(baseURL+"/api/cache/flush", "application/json", nil)
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))
@@ -89,7 +91,7 @@ var _ = Describe("API endpoints", func() {
 	})
 
 	Describe("Query endpoint", func() {
-		When("HTTP API is enabled", func() {
+		When("HTTPS management API is enabled", func() {
 			BeforeEach(func(ctx context.Context) {
 				_, err = createDNSMokkaContainer(ctx, "moka", e2eNet,
 					`A example.com/NOERROR("A 93.184.216.34 300")`,
@@ -102,7 +104,7 @@ var _ = Describe("API endpoints", func() {
 					    default:
 					      - moka
 					ports:
-					  http: 4000
+					  admin: 4000
 					`))
 				Expect(err).Should(Succeed())
 			})
@@ -110,7 +112,9 @@ var _ = Describe("API endpoints", func() {
 			It("should resolve queries via API", func(ctx context.Context) {
 				host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 				Expect(err).Should(Succeed())
-				baseURL := "http://" + net.JoinHostPort(host, port)
+				baseURL := "https://" + net.JoinHostPort(host, port)
+				client, err := newManagementClient(ctx, baseURL)
+				Expect(err).Should(Succeed())
 
 				By("querying an existing domain", func() {
 					reqBody, err := json.Marshal(map[string]string{
@@ -119,7 +123,7 @@ var _ = Describe("API endpoints", func() {
 					})
 					Expect(err).Should(Succeed())
 
-					resp, err := http.Post(baseURL+"/api/query", "application/json", bytes.NewReader(reqBody))
+					resp, err := client.Post(baseURL+"/api/query", "application/json", bytes.NewReader(reqBody))
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))
@@ -136,7 +140,7 @@ var _ = Describe("API endpoints", func() {
 					})
 					Expect(err).Should(Succeed())
 
-					resp, err := http.Post(baseURL+"/api/query", "application/json", bytes.NewReader(reqBody))
+					resp, err := client.Post(baseURL+"/api/query", "application/json", bytes.NewReader(reqBody))
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))
@@ -166,7 +170,7 @@ var _ = Describe("API endpoints", func() {
 					    default:
 					      - moka
 					ports:
-					  http: 4000
+					  admin: 4000
 					blocking:
 					  denylists:
 					    ads:
@@ -181,7 +185,9 @@ var _ = Describe("API endpoints", func() {
 			It("should temporarily disable blocking for the specified duration", func(ctx context.Context) {
 				host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 				Expect(err).Should(Succeed())
-				baseURL := "http://" + net.JoinHostPort(host, port)
+				baseURL := "https://" + net.JoinHostPort(host, port)
+				client, err := newManagementClient(ctx, baseURL)
+				Expect(err).Should(Succeed())
 
 				By("verifying domain is blocked", func() {
 					msg := util.NewMsgWithQuestion("blocked.com.", A)
@@ -190,7 +196,7 @@ var _ = Describe("API endpoints", func() {
 				})
 
 				By("disabling blocking for 3 seconds", func() {
-					resp, err := http.Post(baseURL+"/api/blocking/disable?duration=3s", "application/json", nil)
+					resp, err := client.Post(baseURL+"/api/blocking/disable?duration=3s", "application/json", nil)
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))
@@ -235,7 +241,7 @@ var _ = Describe("API endpoints", func() {
 					    default:
 					      - moka
 					ports:
-					  http: 4000
+					  admin: 4000
 					blocking:
 					  denylists:
 					    ads:
@@ -253,7 +259,9 @@ var _ = Describe("API endpoints", func() {
 			It("should disable only the specified group", func(ctx context.Context) {
 				host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 				Expect(err).Should(Succeed())
-				baseURL := "http://" + net.JoinHostPort(host, port)
+				baseURL := "https://" + net.JoinHostPort(host, port)
+				client, err := newManagementClient(ctx, baseURL)
+				Expect(err).Should(Succeed())
 
 				By("verifying both groups are blocking", func() {
 					msg := util.NewMsgWithQuestion("ads-domain.com.", A)
@@ -266,7 +274,7 @@ var _ = Describe("API endpoints", func() {
 				})
 
 				By("disabling only the ads group", func() {
-					resp, err := http.Post(baseURL+"/api/blocking/disable?groups=ads", "application/json", nil)
+					resp, err := client.Post(baseURL+"/api/blocking/disable?groups=ads", "application/json", nil)
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))
@@ -285,7 +293,7 @@ var _ = Describe("API endpoints", func() {
 				})
 
 				By("re-enabling blocking", func() {
-					resp, err := http.Post(baseURL+"/api/blocking/enable", "application/json", nil)
+					resp, err := client.Post(baseURL+"/api/blocking/enable", "application/json", nil)
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))

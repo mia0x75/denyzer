@@ -53,6 +53,26 @@ To configure the DNS server in the FritzBox, please open in the FritzBox web int
 
 ![FritzBox DNS configuration](fb_dns_config.png "Logo Title Text 1")
 
+## HTTPS management and public DoH
+
+The management service is a separate HTTPS listener, configured with
+`ports.admin`. It serves the dashboard at `/`, login at `/login/`, and management
+API/debug routes. `ports.http` serves only HTTP DoH; `ports.https` and optional
+HTTP/3 serve only encrypted DoH. Public DoH never exposes management routes,
+and the management listener never answers DoH.
+
+Set credentials with `denyzer auth --username admin` before exposing management
+outside explicit loopback IPs. Configure `certFile` and `keyFile` with a trusted
+certificate matching the management hostname/IP; these files are shared with
+DoH and DoT. The generated self-signed certificate is not trusted by default and
+may not match the access address. Client rejection of that certificate does not
+mean the server has crashed.
+
+Keep the dashboard, login and API on the same HTTPS origin. If reverse-proxying
+management, use an HTTPS upstream and preserve the public `Host` header.
+Cross-origin management requests are not supported. See
+[Management authentication](configuration.md#management-authentication).
+
 ## Running denyzer behind a reverse proxy
 
 When Denyzer's HTTP / DoH listener is fronted by a reverse proxy
@@ -88,7 +108,7 @@ proxy sets both `Forwarded` and `X-Forwarded-For`, Denyzer uses
 
     ```nginx
     location /dns-query {
-        proxy_pass http://denyzer-backend:4000/dns-query;
+        proxy_pass http://denyzer-backend:8080/dns-query;
         proxy_set_header X-Forwarded-For $remote_addr;
     }
     ```
@@ -101,7 +121,7 @@ proxy sets both `Forwarded` and `X-Forwarded-For`, Denyzer uses
         denyzer:
           loadBalancer:
             servers:
-              - url: "http://denyzer-backend:4000"
+              - url: "http://denyzer-backend:8080"
       middlewares: {}
       # Traefik sets X-Forwarded-For automatically; no extra config needed.
     ```
@@ -122,13 +142,10 @@ protocol on the Denyzer listener and configure the proxy to send it.
     a PROXY protocol header, so enabling `https` here automatically disables
     HTTP/3. Plain DNS-over-UDP is likewise unaffected by `dns`.
 
-    The `http` and `https` listeners also serve the REST API, the embedded
-    dashboard under `/dashboard/` and the `/debug` pprof endpoints. Enabling
-    `http`/`https` here makes *all* of them require a PROXY protocol header, so
-    anything that connects to that port directly (e.g. a browser or a tool not
-    routed through the proxy) is rejected. Bind those tools behind the same
-    trusted proxy, or expose the API on a separate listener without PROXY
-    protocol.
+    The `http` and `https` listeners serve DoH only. Enabling PROXY protocol
+    makes direct connections to those DoH ports fail; clients must connect
+    through the trusted proxy. The separate HTTPS management listener
+    (`ports.admin`) does not use PROXY protocol and is unaffected.
 
 !!! example "Denyzer"
 

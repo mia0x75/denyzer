@@ -93,8 +93,8 @@ var _ = Describe("Basic functionality", func() {
 			})
 		})
 
-		Describe("HTTP port configuration", func() {
-			Context("when HTTP port is not defined", func() {
+		Describe("Management port configuration", func() {
+			Context("when management port is not defined", func() {
 				BeforeEach(func(ctx context.Context) {
 					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
 						upstreams:
@@ -105,16 +105,16 @@ var _ = Describe("Basic functionality", func() {
 					Expect(err).Should(Succeed())
 				})
 
-				It("does not expose HTTP service", func(ctx context.Context) {
+				It("does not expose management service", func(ctx context.Context) {
 					host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 					Expect(err).Should(Succeed())
 
-					_, err = http.Get("http://" + net.JoinHostPort(host, port))
+					_, err = http.Get("https://" + net.JoinHostPort(host, port))
 					Expect(err).Should(HaveOccurred())
 				})
 			})
 
-			Context("when HTTP port is defined", func() {
+			Context("when HTTPS management and public HTTP DoH ports are defined", func() {
 				BeforeEach(func(ctx context.Context) {
 					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
 						upstreams:
@@ -122,37 +122,53 @@ var _ = Describe("Basic functionality", func() {
 						    default:
 						      - moka1
 						ports:
-						  http: 4000
+						  admin: 4000
+						  http: 4001
+						debug:
+						  pprof: true
 						`))
 					Expect(err).Should(Succeed())
 				})
 
-				It("serves HTTP content on configured port", func(ctx context.Context) {
+				It("serves authenticated HTTPS management independently of public DoH", func(ctx context.Context) {
 					host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 					Expect(err).Should(Succeed())
-					url := "http://" + net.JoinHostPort(host, port)
+					url := "https://" + net.JoinHostPort(host, port)
+					client, err := newManagementClient(ctx, url)
+					Expect(err).Should(Succeed())
 
 					By("serving static HTML content", func() {
-						Eventually(http.Get).WithArguments(url).Should(HaveHTTPStatus(http.StatusOK))
+						Eventually(client.Get).WithArguments(url).Should(HaveHTTPStatus(http.StatusOK))
 					})
 
 					By("serving robots.txt", func() {
-						Eventually(http.Get).WithArguments(url + "/robots.txt").Should(And(
+						Eventually(client.Get).WithArguments(url + "/robots.txt").Should(And(
 							HaveHTTPStatus(http.StatusOK),
 							HaveHTTPBody(ContainSubstring("User-agent: *\nDisallow: /")),
 						))
 					})
 
 					By("serving pprof debugging endpoint", func() {
-						Eventually(http.Get).WithArguments(url + "/debug/").Should(HaveHTTPStatus(http.StatusOK))
+						Eventually(client.Get).WithArguments(url + "/debug/pprof/").Should(HaveHTTPStatus(http.StatusOK))
 					})
 
-					By("serving the built-in dashboard", func() {
-						Eventually(http.Get).WithArguments(url + "/dashboard/").Should(HaveHTTPStatus(http.StatusOK))
+					By("serving the login page and removing the old dashboard prefix", func() {
+						Eventually(client.Get).WithArguments(url + "/login/").Should(HaveHTTPStatus(http.StatusOK))
+						Eventually(client.Get).WithArguments(url + "/dashboard/").Should(HaveHTTPStatus(http.StatusNotFound))
 					})
 
-					By("serving DNS-over-HTTPS endpoint", func() {
-						Eventually(http.Get).WithArguments(url +
+					By("keeping DNS queries off the management listener", func() {
+						Eventually(client.Get).WithArguments(url + "/dns-query").Should(HaveHTTPStatus(http.StatusNotFound))
+					})
+
+					By("serving public DoH without exposing management", func() {
+						host, port, err := getContainerHostPort(ctx, denyzer, "4001/tcp")
+						Expect(err).Should(Succeed())
+						publicURL := "http://" + net.JoinHostPort(host, port)
+						for _, path := range []string{"/", "/login/", "/api/login", "/api/blocking/status", "/debug/pprof/"} {
+							Eventually(http.Get).WithArguments(publicURL + path).Should(HaveHTTPStatus(http.StatusNotFound))
+						}
+						Eventually(http.Get).WithArguments(publicURL +
 							"/dns-query?dns=q80BAAABAAAAAAAAA3d3dwdleGFtcGxlA2NvbQAAAQAB").Should(HaveHTTPStatus(http.StatusOK))
 					})
 				})

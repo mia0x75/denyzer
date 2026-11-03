@@ -280,13 +280,17 @@ type Config struct {
 	Statistics Statistics `yaml:"statistics"`
 	// Logging configuration.
 	Log log.Config `yaml:"log"`
-	// Listen addresses for DNS, HTTP, HTTPS, and TLS.
+	// Listen addresses for DNS, HTTPS management, HTTP/HTTPS DoH, and DoT.
 	Ports Ports `yaml:"ports"`
-	// Minimum TLS version the DoT and DoH servers use to serve encrypted DNS requests.
+	// Single-user management authentication. Set or reset using denyzer auth.
+	Auth Auth `yaml:"auth"`
+	// Optional management debugging endpoints.
+	Debug Debug `yaml:"debug"`
+	// Minimum TLS version for DoT, DoH and the HTTPS management server.
 	MinTLSServeVer TLSVersion `default:"1.2" yaml:"minTlsServeVersion"`
-	// Path to the TLS certificate file for DoH and DoT; if empty, a self-signed certificate is generated.
+	// Shared TLS certificate for management, DoH and DoT; if empty, a self-signed certificate is generated.
 	CertFile string `yaml:"certFile"`
-	// Path to the TLS key file for DoH and DoT; if empty, a self-signed certificate is generated.
+	// Shared TLS private key for management, DoH and DoT; used with certFile.
 	KeyFile string `yaml:"keyFile"`
 	// Bootstrap DNS servers used to resolve DoH/DoT upstream hostnames.
 	BootstrapDNS BootstrapDNS `yaml:"bootstrapDns"`
@@ -313,6 +317,8 @@ type Config struct {
 	// DNS rebinding protection configuration.
 	RebindingProtection RebindingProtection `yaml:"rebindingProtection"`
 
+	sourcePath string
+
 	// Deprecated options
 	Deprecated struct {
 		Upstream            *UpstreamGroups `yaml:"upstream"`
@@ -334,9 +340,12 @@ type Config struct {
 type Ports struct {
 	// Listen address(es) for DNS over TCP and UDP (default: 53).
 	DNS ListenConfig `default:"53" yaml:"dns"`
-	// Listen address(es) for HTTP (dashboard, pprof, REST API, DoH).
+	// Listen address(es) for HTTPS management (dashboard at /, REST API, optional pprof); shares certFile/keyFile.
+	// Without authentication only explicit loopback IP addresses are allowed.
+	Admin ListenConfig `yaml:"admin"`
+	// Listen address(es) for HTTP DoH only (e.g. behind a TLS reverse proxy).
 	HTTP ListenConfig `yaml:"http"`
-	// Listen address(es) for HTTPS (dashboard, pprof, REST API, DoH).
+	// Listen address(es) for HTTPS DoH only, including optional HTTP/3.
 	HTTPS ListenConfig `yaml:"https"`
 	// Listen address(es) for DNS-over-TLS (DoT).
 	TLS ListenConfig `yaml:"tls"`
@@ -363,8 +372,12 @@ func (p ProxyProtocolListeners) Has(t ProxyProtocolType) bool {
 func (c *Ports) LogConfig(logger *slog.Logger) {
 	logger.Info(fmt.Sprintf("DNS      = %s", c.DNS))
 	logger.Info(fmt.Sprintf("TLS      = %s", c.TLS))
+	logger.Info(fmt.Sprintf("ADMIN    = %s", c.Admin))
 	logger.Info(fmt.Sprintf("HTTP     = %s", c.HTTP))
 	logger.Info(fmt.Sprintf("HTTPS    = %s", c.HTTPS))
+	if len(c.Admin) == 0 && (len(c.HTTP) != 0 || len(c.HTTPS) != 0) {
+		logger.Warn("ports.http/ports.https serve DoH only; set ports.admin for the dashboard and API")
+	}
 	logger.Info("DOHPath  = " + c.DOHPath)
 	logger.Info(fmt.Sprintf("FreeBind = %t", c.FreeBind))
 	logger.Info(fmt.Sprintf("PROXY protocol = %s", c.ProxyProtocol))
@@ -433,7 +446,7 @@ const privilegedPortCeiling = 1024
 func (p *Ports) PrivilegedPorts() []string {
 	var privileged []string
 
-	for _, lc := range []ListenConfig{p.DNS, p.HTTP, p.HTTPS, p.TLS} {
+	for _, lc := range []ListenConfig{p.DNS, p.Admin, p.HTTP, p.HTTPS, p.TLS} {
 		for _, addr := range lc {
 			// Port 0 (OS-assigned ephemeral port) is never privileged.
 			if port, ok := extractPort(addr); ok && port > 0 && port < privilegedPortCeiling {
@@ -704,6 +717,10 @@ func loadConfig(logger *slog.Logger, path string, mandatory bool) (rCfg *Config,
 	cfg, err := WithDefaults[Config]()
 	if err != nil {
 		return nil, fmt.Errorf("failed to apply default configuration: %w", err)
+	}
+	cfg.sourcePath, err = filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("can't resolve configuration path: %w", err)
 	}
 
 	defer func() {
@@ -1003,6 +1020,9 @@ func (cfg *Config) migrate(logger *slog.Logger) bool {
 }
 
 func (cfg *Config) validate(logger *slog.Logger) error {
+	if err := cfg.Auth.validate(); err != nil {
+		return fmt.Errorf("invalid auth configuration: %w", err)
+	}
 	cfg.MinTLSServeVer.validate(logger)
 	cfg.Upstreams.validate(logger)
 

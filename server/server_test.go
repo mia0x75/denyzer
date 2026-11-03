@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/creasty/defaults"
+	"github.com/mia0x75/denyzer/auth"
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/docs"
 	. "github.com/mia0x75/denyzer/helpertest"
@@ -25,11 +27,13 @@ import (
 	"github.com/miekg/dns"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/mock"
 )
 
 const (
 	httpBasePort  = 4000
+	adminBasePort = 4500
 	dnsBasePort   = 5000
 	dnsBasePort2  = 55000
 	httpsBasePort = 6000
@@ -42,13 +46,17 @@ var (
 	err                                                          error
 	baseURL                                                      string
 	queryURL                                                     string
+	adminClient                                                  *http.Client
 	googleMockUpstream, fritzboxMockUpstream, clientMockUpstream *resolver.MockUDPUpstreamServer
 )
 
 var _ = BeforeSuite(func() {
 	mockClientName.Store("")
-	baseURL = fmt.Sprintf("http://%s/", GetHostPort("localhost", httpBasePort))
-	queryURL = baseURL + "dns-query"
+	baseURL = fmt.Sprintf("https://%s/", GetHostPort("127.0.0.1", adminBasePort))
+	adminTransport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // test fixture certificate
+	DeferCleanup(adminTransport.CloseIdleConnections)
+	adminClient = &http.Client{Transport: adminTransport, Timeout: 5 * time.Second}
+	queryURL = fmt.Sprintf("http://%s/dns-query", GetHostPort("localhost", httpBasePort))
 	var upstreamGoogle, upstreamFritzbox, upstreamClient config.Upstream
 	ctx, cancelFn := context.WithCancel(context.Background())
 	DeferCleanup(cancelFn)
@@ -152,6 +160,7 @@ var _ = BeforeSuite(func() {
 		},
 
 		Ports: config.Ports{
+			Admin:   config.ListenConfig{GetHostPort("127.0.0.1", adminBasePort)},
 			DNS:     config.ListenConfig{GetHostPort("", dnsBasePort)},
 			TLS:     config.ListenConfig{GetHostPort("", tlsBasePort)},
 			HTTP:    config.ListenConfig{GetHostPort("", httpBasePort)},
@@ -360,18 +369,20 @@ var _ = Describe("Running DNS server", func() {
 
 	Describe("Root endpoint", func() {
 		When("Root URL is called", func() {
-			It("should redirect to the dashboard", func() {
+			It("should serve the dashboard without a path redirect", func() {
 				client := &http.Client{
+					Transport: adminClient.Transport,
 					CheckRedirect: func(req *http.Request, via []*http.Request) error {
 						return http.ErrUseLastResponse
 					},
 				}
 				resp, err := client.Get(baseURL)
 				Expect(err).Should(Succeed())
+				DeferCleanup(resp.Body.Close)
 				Expect(resp).Should(
 					SatisfyAll(
-						HaveHTTPStatus(http.StatusMovedPermanently),
-						HaveHTTPHeaderWithValue("Location", "/dashboard/"),
+						HaveHTTPStatus(http.StatusOK),
+						HaveHTTPHeaderWithValue("Location", ""),
 					))
 			})
 		})
@@ -379,7 +390,7 @@ var _ = Describe("Running DNS server", func() {
 	Describe("Docs endpoints", func() {
 		When("OpenApi URL is called", func() {
 			It("should return openAPI definition file", func() {
-				resp, err := http.Get(baseURL + "docs/openapi.yaml")
+				resp, err := adminClient.Get(baseURL + "docs/openapi.yaml")
 				Expect(err).Should(Succeed())
 				Expect(resp).Should(
 					SatisfyAll(
@@ -391,7 +402,7 @@ var _ = Describe("Running DNS server", func() {
 		})
 		When("config schema URL is called", func() {
 			It("should return the config JSON schema file", func() {
-				resp, err := http.Get(baseURL + "docs/config.schema.json")
+				resp, err := adminClient.Get(baseURL + "docs/config.schema.json")
 				Expect(err).Should(Succeed())
 				DeferCleanup(resp.Body.Close)
 				Expect(resp).Should(
@@ -755,7 +766,7 @@ var _ = Describe("Running DNS server", func() {
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			}}
 
-			resp, err := client.Get(fmt.Sprintf("https://%s/docs/config.schema.json", GetHostPort("localhost", httpsBasePort)))
+			resp, err := client.Get(fmt.Sprintf("https://%s/dns-query?dns=AAABAAABAAAAAAAAA3d3dwdleGFtcGxlA2NvbQAAAQAB", GetHostPort("localhost", httpsBasePort)))
 			Expect(err).Should(Succeed())
 			DeferCleanup(resp.Body.Close)
 			Expect(resp).Should(HaveHTTPStatus(http.StatusOK))
@@ -784,6 +795,204 @@ var _ = Describe("Running DNS server", func() {
 				Expect(err).Should(Succeed())
 			})
 		})
+
+		It("refuses a non-loopback management listener without authentication", func() {
+			cfg.Ports.Admin = config.ListenConfig{"0.0.0.0:0"}
+			_, err := NewServer(ctx, &cfg)
+			Expect(err).Should(MatchError(ContainSubstring("without authentication")))
+		})
+
+		It("closes the DoH listener if management listener creation fails", func() {
+			reserved, err := net.Listen("tcp", "127.0.0.1:0")
+			Expect(err).Should(Succeed())
+			address := reserved.Addr().String()
+			Expect(reserved.Close()).Should(Succeed())
+			cfg.Ports.DNS = config.ListenConfig{}
+			cfg.Ports.HTTP = config.ListenConfig{address}
+			cfg.Ports.Admin = config.ListenConfig{"127.0.0.1:not-a-port"}
+			_, err = NewServer(ctx, &cfg)
+			Expect(err).Should(HaveOccurred())
+			reused, err := net.Listen("tcp", address)
+			Expect(err).Should(Succeed())
+			DeferCleanup(reused.Close)
+		})
+
+		It("serves HTTPS with only a management listener configured", func() {
+			cfg.Ports = config.Ports{
+				DNS: config.ListenConfig{}, Admin: config.ListenConfig{"127.0.0.1:0"}, DOHPath: "/dns-query",
+			}
+			srv, err := NewServer(ctx, &cfg)
+			Expect(err).Should(Succeed())
+			errCh := make(chan error, 1)
+			go srv.Start(ctx, errCh)
+			DeferCleanup(func() { Expect(srv.Stop(ctx)).Should(Succeed()) })
+			Expect(srv.servers).Should(HaveLen(1))
+			response, err := adminClient.Get("https://" + firstHTTPListenerAddr(srv) + "/api/login")
+			Expect(err).Should(Succeed())
+			DeferCleanup(response.Body.Close)
+			Expect(response.StatusCode).Should(Equal(http.StatusOK))
+			Expect(response.TLS).ShouldNot(BeNil())
+			Expect(srv.http3Server).Should(BeNil())
+		})
+
+		It("logs every listener with the same wording and its actual bound address", func() {
+			capture := installLogRecorder()
+			DeferCleanup(capture.uninstall)
+			cfg.Ports = config.Ports{
+				DNS: config.ListenConfig{":0"}, TLS: config.ListenConfig{":0"},
+				Admin: config.ListenConfig{"127.0.0.1:0"}, HTTP: config.ListenConfig{":0"},
+				HTTPS: config.ListenConfig{":0"}, DOHPath: "/dns-query",
+			}
+			cfg.HTTP3.Enable = true
+			srv, err := NewServer(ctx, &cfg)
+			Expect(err).Should(Succeed())
+			errCh := make(chan error, 10)
+			go srv.Start(ctx, errCh)
+			DeferCleanup(func() { Expect(srv.Stop(ctx)).Should(Succeed()) })
+			for _, name := range []string{"UDP", "TCP", "TCP-TLS", "ADMIN", "HTTP", "HTTPS", "HTTP3"} {
+				Eventually(capture.messages).Should(ContainElement(
+					HavePrefix(name + " server is up and running on address ")))
+			}
+			for _, message := range capture.messages() {
+				_, address, started := strings.Cut(message, " server is up and running on address ")
+				if !started {
+					continue
+				}
+				host, port, err := net.SplitHostPort(address)
+				Expect(err).Should(Succeed(), message)
+				Expect(host).ShouldNot(BeEmpty(), message)
+				Expect(port).ShouldNot(Equal("0"), message)
+			}
+			Expect(capture.messages()).ShouldNot(ContainElement(ContainSubstring("addr/port")))
+		})
+
+		DescribeTable("isolates HTTPS management from HTTP, HTTPS and HTTP/3 DoH", func(configuredCertificate bool) {
+			cfg.Ports = config.Ports{
+				DNS:     config.ListenConfig{},
+				Admin:   config.ListenConfig{"127.0.0.1:0"},
+				HTTP:    config.ListenConfig{"127.0.0.1:0"},
+				HTTPS:   config.ListenConfig{"127.0.0.1:0"},
+				DOHPath: "/dns-query",
+			}
+			cfg.HTTP3.Enable = true
+			cfg.Debug.Pprof = true
+			if configuredCertificate {
+				tmpDir := NewTmpFolder("management-tls")
+				cfg.CertFile = writeCertPem(tmpDir).Path
+				cfg.KeyFile = writeKeyPem(tmpDir).Path
+			}
+			hash, err := auth.HashPassword([]byte(authTestPassword))
+			Expect(err).Should(Succeed())
+			cfg.Auth = config.Auth{Username: "admin", PasswordHash: hash}
+			cfg.CustomDNS.Mapping = config.CustomDNSMapping{
+				"isolated.test": {&dns.A{A: net.ParseIP("192.0.2.10")}},
+			}
+			srv, err := NewServer(ctx, &cfg)
+			Expect(err).Should(Succeed())
+			errCh := make(chan error, 10)
+			go srv.Start(ctx, errCh)
+			DeferCleanup(func() { Expect(srv.Stop(ctx)).Should(Succeed()) })
+			transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+			DeferCleanup(transport.CloseIdleConnections)
+			client := &http.Client{
+				Transport: transport, Timeout: 5 * time.Second,
+				CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+			}
+			addresses := make(map[string]string)
+			for listener, httpSrv := range srv.servers {
+				scheme := "http://"
+				if httpSrv.name != "http" {
+					scheme = "https://"
+				}
+				addresses[httpSrv.name] = scheme + listener.Addr().String()
+			}
+			Expect(addresses).Should(HaveLen(3))
+			loginResponse, err := client.Post(addresses["admin"]+"/api/login", jsonContentType,
+				strings.NewReader(`{"username":"admin","password":"`+authTestPassword+`"}`))
+			Expect(err).Should(Succeed())
+			DeferCleanup(loginResponse.Body.Close)
+			Expect(loginResponse.StatusCode).Should(Equal(http.StatusOK))
+			Expect(loginResponse.TLS).ShouldNot(BeNil())
+			certificate := loginResponse.TLS.PeerCertificates[0].Raw
+			if configuredCertificate {
+				expected, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+				Expect(err).Should(Succeed())
+				Expect(certificate).Should(Equal(expected.Certificate[0]))
+			}
+			cookies := loginResponse.Cookies()
+			Expect(cookies).Should(HaveLen(1))
+			Expect(cookies[0].Secure).Should(BeTrue())
+			Expect(cookies[0].HttpOnly).Should(BeTrue())
+			var login authTestLogin
+			Expect(json.NewDecoder(loginResponse.Body).Decode(&login)).Should(Succeed())
+			for path, status := range map[string]int{
+				"/": http.StatusOK, "/api/blocking/status": http.StatusUnauthorized, "/debug/pprof/": http.StatusUnauthorized,
+			} {
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, addresses["admin"]+path, nil)
+				Expect(err).Should(Succeed())
+				req.AddCookie(cookies[0])
+				response, err := client.Do(req)
+				Expect(err).Should(Succeed())
+				DeferCleanup(response.Body.Close)
+				Expect(response.StatusCode).Should(Equal(status), path)
+			}
+			plaintext, err := client.Get("http://" + strings.TrimPrefix(addresses["admin"], "https://") + "/api/login")
+			Expect(err).Should(Succeed())
+			DeferCleanup(plaintext.Body.Close)
+			Expect(plaintext.StatusCode).Should(Equal(http.StatusBadRequest))
+			Expect(plaintext.Header.Get("Set-Cookie")).Should(BeEmpty())
+			for path, status := range map[string]int{
+				"/": http.StatusOK, "/api/blocking/status": http.StatusOK,
+				"/docs/openapi.yaml": http.StatusOK, "/debug/pprof/": http.StatusOK,
+				"/dns-query": http.StatusNotFound,
+			} {
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, addresses["admin"]+path, nil)
+				Expect(err).Should(Succeed())
+				req.Header.Set("Authorization", "Bearer "+login.Token)
+				response, err := client.Do(req)
+				Expect(err).Should(Succeed())
+				DeferCleanup(response.Body.Close)
+				Expect(response.StatusCode).Should(Equal(status), path)
+				Expect(response.Header.Get("Alt-Svc")).Should(BeEmpty())
+			}
+			h3Transport := &http3.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+			DeferCleanup(h3Transport.Close)
+			h3Client := &http.Client{Transport: h3Transport, Timeout: 5 * time.Second}
+			query, err := util.NewMsgWithQuestion("isolated.test.", A).Pack()
+			Expect(err).Should(Succeed())
+			for _, endpoint := range []struct {
+				name   string
+				url    string
+				client *http.Client
+			}{
+				{name: "HTTP", url: addresses["http"], client: client},
+				{name: "HTTPS", url: addresses["https"], client: client},
+				{name: "HTTP/3", url: "https://" + srv.http3PacketConns[0].LocalAddr().String(), client: h3Client},
+			} {
+				for _, path := range []string{"/", "/login/", "/api/login", "/api/blocking/status", "/docs/openapi.yaml", "/debug/pprof/", "/dashboard/"} {
+					response, err := endpoint.client.Get(endpoint.url + path)
+					Expect(err).Should(Succeed())
+					DeferCleanup(response.Body.Close)
+					Expect(response.StatusCode).Should(Equal(http.StatusNotFound), endpoint.name+path)
+					Expect(response.Header.Get("Set-Cookie")).Should(BeEmpty())
+				}
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+					endpoint.url+"/dns-query?dns="+base64.RawURLEncoding.EncodeToString(query), nil)
+				Expect(err).Should(Succeed())
+				req.Header.Set("Authorization", "Bearer invalid")
+				req.Header.Set("Origin", "https://public-doh-client.test")
+				response, err := endpoint.client.Do(req)
+				Expect(err).Should(Succeed())
+				DeferCleanup(response.Body.Close)
+				Expect(response.StatusCode).Should(Equal(http.StatusOK), endpoint.name)
+				Expect(response.Header.Get("Content-Type")).Should(Equal(dnsContentType))
+				Expect(response.Header.Get("Access-Control-Allow-Origin")).Should(Equal("*"))
+				if endpoint.name != "HTTP" {
+					Expect(response.TLS).ShouldNot(BeNil())
+					Expect(response.TLS.PeerCertificates[0].Raw).Should(Equal(certificate), endpoint.name)
+				}
+			}
+		}, Entry("with a shared generated certificate", false), Entry("with shared certificate files", true))
 
 		When("HTTP/3 is enabled with HTTPS addresses", func() {
 			It("creates an http3Server and one packet conn per HTTPS address", func() {

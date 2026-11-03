@@ -9,7 +9,7 @@
 # This script proves that the binary really talks to SQLite:
 #
 #   1. it starts the server with a query log target,
-#   2. it waits for the HTTP API to come up,
+#   2. it logs in to the separate HTTPS management API,
 #   3. it resolves a name that is answered from the custom DNS mapping, so no
 #      external network is needed,
 #   4. it reads the query log back through the API and fails when the entry
@@ -43,6 +43,7 @@ else
 fi
 
 HTTP_PORT=${SMOKE_HTTP_PORT:-14004}
+ADMIN_PORT=${SMOKE_ADMIN_PORT:-14400}
 DNS_PORT=${SMOKE_DNS_PORT:-15053}
 
 WORKDIR=$(mktemp -d)
@@ -85,10 +86,9 @@ queryLog:
   flushInterval: 1s
   batchSize: 1
 ports:
-  dns: $DNS_PORT
-  http: $HTTP_PORT
-  https: 15443
-  tls: 15853
+  dns: 127.0.0.1:$DNS_PORT
+  admin: 127.0.0.1:$ADMIN_PORT
+  http: 127.0.0.1:$HTTP_PORT
 upstreams:
   groups:
     default:
@@ -98,6 +98,10 @@ customDNS:
   mapping:
     smoke.test: 192.0.2.1
 EOF
+
+# Test-only credentials; the CLI must hash them and atomically write a 0600 config.
+SMOKE_PASSWORD=test-only-smoke-password
+printf '%s\n' "$SMOKE_PASSWORD" | "$BIN" auth --config "$CONFIG" --username admin --password-stdin
 
 echo "smoke-test: starting $BIN"
 "$BIN" serve --config "$CONFIG" >"$SERVER_LOG" 2>&1 &
@@ -120,10 +124,12 @@ server_running() {
   fi
 }
 
-# Wait for the HTTP API. A binary built without CGO starts as well, but its
+# Wait for the HTTPS management API. A binary built without CGO starts as well, but its
 # query log falls back to the console, so the server log is checked for that
 # explicitly instead of relying on the API alone.
-API="http://127.0.0.1:$HTTP_PORT/api/logs/query?limit=10"
+# -k is limited to this disposable smoke fixture's generated self-signed certificate.
+ADMIN="https://127.0.0.1:$ADMIN_PORT"
+API="$ADMIN/api/logs/query?limit=10"
 READY=0
 for _ in $(seq 1 60); do
   if grep -q "requires cgo to work" "$SERVER_LOG"; then
@@ -134,7 +140,7 @@ for _ in $(seq 1 60); do
     fail "the query log writer fell back to the console, SQLite is not usable"
   fi
 
-  if curl -fsS "$API" >/dev/null 2>&1; then
+  if curl -kfsS --max-time 5 "$ADMIN/api/login" >/dev/null 2>&1; then
     READY=1
     break
   fi
@@ -146,7 +152,23 @@ for _ in $(seq 1 60); do
 done
 
 if [ "$READY" != 1 ]; then
-  fail "the HTTP API did not become available on port $HTTP_PORT"
+  fail "the HTTPS management API did not become available on port $ADMIN_PORT"
+fi
+
+LOGIN=$(curl -kfsS --max-time 5 "$ADMIN/api/login" -H 'content-type: application/json' \
+  --data "{\"username\":\"admin\",\"password\":\"$SMOKE_PASSWORD\"}") || fail "management login failed"
+TOKEN=$(printf '%s' "$LOGIN" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+if [[ ! "$TOKEN" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
+  fail "management login did not return a valid token"
+fi
+if [ "$(curl -ksS --max-time 5 -o /dev/null -w '%{http_code}' "$API")" != 401 ]; then
+  fail "management API allowed an unauthenticated request"
+fi
+if [ "$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$HTTP_PORT/api/login")" != 404 ]; then
+  fail "public DoH exposed the management login endpoint"
+fi
+if [ "$(curl -ksS --max-time 5 -o /dev/null -w '%{http_code}' "$ADMIN/dns-query" -H "Authorization: Bearer $TOKEN")" != 404 ]; then
+  fail "management listener exposed the public DoH endpoint"
 fi
 
 # A DNS query for smoke.test, encoded as a DoH GET request. The wire format
@@ -157,14 +179,14 @@ DNS_QUERY=$(
 )
 
 DOH="http://127.0.0.1:$HTTP_PORT/dns-query?dns=$DNS_QUERY"
-if ! curl -fsS "$DOH" -H 'accept: application/dns-message' -o "$WORKDIR/answer.bin"; then
+if ! curl -fsS --max-time 5 "$DOH" -H 'accept: application/dns-message' -o "$WORKDIR/answer.bin"; then
   fail "the DoH endpoint did not answer the smoke query"
 fi
 
 # The entry is flushed to SQLite on the next flush interval.
 FOUND=0
 for _ in $(seq 1 30); do
-  BODY=$(curl -fsS "$API" 2>/dev/null || true)
+  BODY=$(curl -kfsS --max-time 5 "$API" -H "Authorization: Bearer $TOKEN" 2>/dev/null || true)
   case "$BODY" in
     *smoke.test*)
       FOUND=1
@@ -178,4 +200,4 @@ if [ "$FOUND" != 1 ]; then
   fail "the query was not written to the SQLite query log"
 fi
 
-echo "smoke-test: OK - the binary answered a query and logged it to SQLite"
+echo "smoke-test: OK - HTTPS login, listener isolation, public DoH and SQLite query logging"

@@ -41,7 +41,7 @@ var _ = Describe("Lists command", func() {
 				c.SetArgs([]string{"refresh"})
 			})
 			It("should print result", func() {
-				err = c.Execute()
+				err = refreshList(withContext(c), nil)
 				Expect(err).Should(Succeed())
 
 				Expect(loggerHook.LastRecord().Message).Should(ContainSubstring("OK"))
@@ -56,7 +56,7 @@ var _ = Describe("Lists command", func() {
 				}
 			})
 			It("should end with error", func() {
-				err = c.Execute()
+				err = refreshList(withContext(c), nil)
 				Expect(err).Should(HaveOccurred())
 				Expect(err.Error()).Should(ContainSubstring("500 Internal Server Error"))
 			})
@@ -68,7 +68,7 @@ var _ = Describe("Lists command", func() {
 			})
 			It("should end with error", func() {
 				apiPort = 0
-				err = c.Execute()
+				err = refreshList(withContext(c), nil)
 				Expect(err).Should(HaveOccurred())
 				Expect(err.Error()).Should(ContainSubstring("connection refused"))
 			})

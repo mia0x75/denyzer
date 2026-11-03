@@ -87,6 +87,9 @@ export function QueryLogFilterCombobox({
         <div className="relative flex-1">
           <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2" />
           <Input
+            id="query-log-filter"
+            name="queryLogFilter"
+            aria-label="Filter by domain or client"
             ref={inputRef}
             placeholder="Filter by domain or client..."
             value={value ? displayValue : search}

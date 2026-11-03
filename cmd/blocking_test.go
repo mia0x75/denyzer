@@ -164,7 +164,10 @@ var _ = Describe("Blocking command", func() {
 })
 
 func testHTTPAPIServer(fn func(w http.ResponseWriter, _ *http.Request)) *httptest.Server {
-	ts := httptest.NewServer(http.HandlerFunc(fn))
+	ts := httptest.NewTLSServer(http.HandlerFunc(fn))
+	transport := http.DefaultTransport
+	http.DefaultTransport = ts.Client().Transport
+	DeferCleanup(func() { http.DefaultTransport = transport })
 	u, _ := url.Parse(ts.URL)
 	apiHost = u.Hostname()
 	port, _ := strconv.Atoi(u.Port())

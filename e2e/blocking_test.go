@@ -721,7 +721,7 @@ var _ = Describe("Domain blocking functionality", func() {
 					    default:
 					      - moka2
 					ports:
-					  http: 4000
+					  admin: 4000
 					blocking:
 					  denylists:
 					    ads:
@@ -736,7 +736,9 @@ var _ = Describe("Domain blocking functionality", func() {
 			It("can enable and disable blocking via API", func(ctx context.Context) {
 				host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 				Expect(err).Should(Succeed())
-				baseURL := "http://" + net.JoinHostPort(host, port)
+				baseURL := "https://" + net.JoinHostPort(host, port)
+				client, err := newManagementClient(ctx, baseURL)
+				Expect(err).Should(Succeed())
 
 				By("verifying blocking is enabled by default", func() {
 					msg := util.NewMsgWithQuestion("blocked.com.", A)
@@ -745,7 +747,7 @@ var _ = Describe("Domain blocking functionality", func() {
 				})
 
 				By("disabling blocking via API", func() {
-					resp, err := http.Post(baseURL+"/api/blocking/disable", "application/json", nil)
+					resp, err := client.Post(baseURL+"/api/blocking/disable", "application/json", nil)
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))
@@ -757,7 +759,7 @@ var _ = Describe("Domain blocking functionality", func() {
 				})
 
 				By("re-enabling blocking via API", func() {
-					resp, err := http.Post(baseURL+"/api/blocking/enable", "application/json", nil)
+					resp, err := client.Post(baseURL+"/api/blocking/enable", "application/json", nil)
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))
@@ -769,7 +771,7 @@ var _ = Describe("Domain blocking functionality", func() {
 				})
 
 				By("checking blocking status via API", func() {
-					resp, err := http.Get(baseURL + "/api/blocking/status")
+					resp, err := client.Get(baseURL + "/api/blocking/status")
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))
@@ -779,7 +781,7 @@ var _ = Describe("Domain blocking functionality", func() {
 	})
 
 	Describe("List refresh via API", func() {
-		Context("with HTTP API enabled", func() {
+		Context("with HTTPS management API enabled", func() {
 			BeforeEach(func(ctx context.Context) {
 				_, err = createHTTPServerContainer(ctx, "httpserver", e2eNet, "list.txt", "blocked.com")
 				Expect(err).Should(Succeed())
@@ -792,7 +794,7 @@ var _ = Describe("Domain blocking functionality", func() {
 					    default:
 					      - moka
 					ports:
-					  http: 4000
+					  admin: 4000
 					blocking:
 					  denylists:
 					    ads:
@@ -807,10 +809,12 @@ var _ = Describe("Domain blocking functionality", func() {
 			It("can refresh blocklists via API", func(ctx context.Context) {
 				host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 				Expect(err).Should(Succeed())
-				baseURL := "http://" + net.JoinHostPort(host, port)
+				baseURL := "https://" + net.JoinHostPort(host, port)
+				client, err := newManagementClient(ctx, baseURL)
+				Expect(err).Should(Succeed())
 
 				By("triggering list refresh via API", func() {
-					resp, err := http.Post(baseURL+"/api/lists/refresh", "application/json", nil)
+					resp, err := client.Post(baseURL+"/api/lists/refresh", "application/json", nil)
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))

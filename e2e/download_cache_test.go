@@ -53,7 +53,7 @@ var _ = Describe("Download cache", func() {
 					    default:
 					      - moka
 					ports:
-					  http: 4000
+					  admin: 4000
 					blocking:
 					  loading:
 					    downloads:
@@ -84,7 +84,10 @@ var _ = Describe("Download cache", func() {
 				host, port, gerr := getContainerHostPort(ctx, denyzer, "4000/tcp")
 				Expect(gerr).Should(Succeed())
 
-				resp, perr := http.Post("http://"+net.JoinHostPort(host, port)+"/api/lists/refresh", "application/json", nil)
+				baseURL := "https://" + net.JoinHostPort(host, port)
+				client, err := newManagementClient(ctx, baseURL)
+				Expect(err).Should(Succeed())
+				resp, perr := client.Post(baseURL+"/api/lists/refresh", "application/json", nil)
 				Expect(perr).Should(Succeed())
 				defer resp.Body.Close()
 				Expect(resp.StatusCode).Should(Equal(http.StatusOK))
@@ -169,7 +172,7 @@ var _ = Describe("Download cache", func() {
 					    default:
 					      - moka
 					ports:
-					  http: 4000
+					  admin: 4000
 					blocking:
 					  denylists:
 					    ads:
@@ -188,7 +191,10 @@ var _ = Describe("Download cache", func() {
 
 				host, port, gerr := getContainerHostPort(ctx, denyzer, "4000/tcp")
 				Expect(gerr).Should(Succeed())
-				resp, perr := http.Post("http://"+net.JoinHostPort(host, port)+"/api/lists/refresh", "application/json", nil)
+				baseURL := "https://" + net.JoinHostPort(host, port)
+				client, err := newManagementClient(ctx, baseURL)
+				Expect(err).Should(Succeed())
+				resp, perr := client.Post(baseURL+"/api/lists/refresh", "application/json", nil)
 				Expect(perr).Should(Succeed())
 				defer resp.Body.Close()
 				Expect(resp.StatusCode).Should(Equal(http.StatusOK))

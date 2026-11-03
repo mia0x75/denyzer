@@ -11,9 +11,8 @@ const refreshCmdName = "refresh"
 // NewListsCommand creates new command instance
 func NewListsCommand() *cobra.Command {
 	c := &cobra.Command{
-		Use:               "lists",
-		Short:             "lists operations",
-		PersistentPreRunE: initConfigPreRun,
+		Use:   "lists",
+		Short: "lists operations",
 	}
 
 	c.AddCommand(newRefreshCommand())
@@ -23,9 +22,10 @@ func NewListsCommand() *cobra.Command {
 
 func newRefreshCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   refreshCmdName,
-		Short: "refreshes all lists",
-		RunE:  refreshList,
+		Use:               refreshCmdName,
+		Short:             "refreshes all lists",
+		RunE:              refreshList,
+		PersistentPreRunE: initConfigPreRun,
 	}
 }
 

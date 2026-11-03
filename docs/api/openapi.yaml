@@ -5,6 +5,21 @@ info:
     REST API for Denyzer, a DNS proxy and ad-blocker for the local network.
 
 
+    Served only over HTTPS on ports.admin. The public HTTP, HTTPS and HTTP/3
+    DoH listeners do not expose this API. When authentication is enabled,
+    every operation except GET/POST /login requires an Authorization: Bearer
+    token obtained from POST /login. Cookies authenticate pages only, not API
+    or debug requests. Tokens expire seven days after login without renewal;
+    logout revokes the current session, while a password reset or restart
+    invalidates all sessions. Authentication may be disabled only on explicit
+    loopback management addresses.
+
+
+    Protected operations return 401 for missing, expired or invalid tokens.
+    Cross-origin management requests return 403, and unavailable or invalid
+    authentication configuration returns 503.
+
+
     For features, configuration, and installation see the
     [project documentation](https://mia0x75.github.io/denyzer/) and the
     [README](https://github.com/mia0x75/denyzer/blob/main/README.md).
@@ -17,7 +32,117 @@ info:
   version: '1.0'
 servers:
   - url: /api
+security:
+  - bearerAuth: []
 paths:
+  /login:
+    get:
+      operationId: loginStatus
+      tags:
+        - auth
+      security: []
+      summary: Check whether administrator authentication is enabled
+      responses:
+        '200':
+          description: Authentication status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                required:
+                  - enabled
+        '403':
+          $ref: '#/components/responses/ForbiddenOrigin'
+        '503':
+          $ref: '#/components/responses/AuthUnavailable'
+    post:
+      operationId: login
+      tags:
+        - auth
+      security: []
+      summary: Log in as the single administrator
+      description: >-
+        Accepts a JSON body up to 8 KiB. Invalid usernames and passwords both
+        return 401 invalid credentials. Login attempts are rate-limited and
+        at most 128 sessions can be active. The token is opaque, not a JWT.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                username:
+                  type: string
+                  description: Configured administrator username (1–64 bytes)
+                password:
+                  type: string
+                  format: password
+                  description: Administrator password (1–1024 bytes)
+              required:
+                - username
+                - password
+      responses:
+        '200':
+          description: Session created; the token expires in exactly seven days
+          headers:
+            Set-Cookie:
+              description: >-
+                denyzer_page_session contains the same token, with Path=/,
+                Secure, HttpOnly and SameSite=Strict. It is a browser-session
+                cookie and is not accepted for API or debug authentication.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    pattern: '^[A-Za-z0-9_-]{43}$'
+                  expiresAt:
+                    type: string
+                    format: date-time
+                required:
+                  - token
+                  - expiresAt
+        '400':
+          description: Invalid JSON, unknown fields, multiple values or an oversized body
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '403':
+          $ref: '#/components/responses/ForbiddenOrigin'
+        '415':
+          description: Content-Type must be application/json
+        '429':
+          description: Too many login attempts or active sessions
+        '503':
+          $ref: '#/components/responses/AuthUnavailable'
+  /logout:
+    post:
+      operationId: logout
+      tags:
+        - auth
+      summary: Revoke the current Bearer session
+      responses:
+        '204':
+          description: Session revoked and page cookie cleared
+          headers:
+            Set-Cookie:
+              description: Clears denyzer_page_session with the same secure cookie attributes
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '403':
+          $ref: '#/components/responses/ForbiddenOrigin'
+        '503':
+          $ref: '#/components/responses/AuthUnavailable'
   /blocking/disable:
     post:
       operationId: disableBlocking
@@ -554,6 +679,32 @@ paths:
               schema:
                 type: string
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: In-memory opaque token returned by POST /login; expires after seven days
+  responses:
+    InvalidCredentials:
+      description: Missing, expired or invalid credentials
+      content:
+        text/plain:
+          schema:
+            type: string
+            example: invalid credentials
+    ForbiddenOrigin:
+      description: Cross-origin management requests are not allowed
+      content:
+        text/plain:
+          schema:
+            type: string
+    AuthUnavailable:
+      description: Authentication configuration or session creation is unavailable
+      content:
+        text/plain:
+          schema:
+            type: string
+            example: authentication unavailable
   schemas:
     api.BlockingStatus:
       type: object

@@ -79,9 +79,9 @@ file in that folder (subfolders included) and merges them into one configuration
 
 | Parameter          | Type                | Mandatory | Default value | Description                                                                                                |
 | ------------------ | ------------------- | --------- | ------------- | ---------------------------------------------------------------------------------------------------------- |
-| certFile           | path                | no        |               | Path to cert and key file for SSL encryption (DoH and DoT); if empty, self-signed certificate is generated |
-| keyFile            | path                | no        |               | Path to cert and key file for SSL encryption (DoH and DoT); if empty, self-signed certificate is generated |
-| minTlsServeVersion | string              | no        | 1.2           | Minimum TLS version that the DoT and DoH server use to serve those encrypted DNS requests                  |
+| certFile           | path                | no        |               | Shared TLS certificate for HTTPS management, DoH and DoT; if empty, a self-signed certificate is generated |
+| keyFile            | path                | no        |               | Shared TLS private key, used with `certFile` for HTTPS management, DoH and DoT |
+| minTlsServeVersion | string              | no        | 1.2           | Minimum TLS version for HTTPS management, DoH and DoT |
 | connectIPVersion   | enum (dual, v4, v6) | no        | dual          | IP version to use for outgoing connections (dual, v4, v6)                                                  |
 
 !!! example
@@ -99,8 +99,9 @@ All values in this section are optional.
 |---------------|-----------------------|---------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
 | ports.dns     | One or more [IP]:Port | 53            | Listen address for DNS (TCP and UDP). Example: `53`, `:53`, `192.168.0.1:53`, `[53, "[::1]:53"]`                                                  |
 | ports.tls     | One or more [IP]:Port |               | Listen address for DoT (DNS-over-TLS). Example: `83`, `:853`, `192.168.0.1:853`, `[853, "[::1]:853"]`                                             |
-| ports.http    | One or more [IP]:Port |               | Listen address for HTTP used for pprof, REST API, dashboard, DoH... Example: `4000`, `:4000`, `192.168.0.1:4000`, `[4000, "[::1]:4000"]` |
-| ports.https   | One or more [IP]:Port |               | Listen address for HTTPS used for pprof, REST API, dashboard, DoH... Example: `443`, `:443`, `192.168.0.1:443`, `[443, "[::1]:443"]`     |
+| ports.admin   | One or more [IP]:Port |               | HTTPS management only: dashboard at `/`, login at `/login/`, REST API and optional pprof. Without authentication, only explicit loopback IPs are allowed. Example: `127.0.0.1:4000` |
+| ports.http    | One or more [IP]:Port |               | Public HTTP DoH only, usually behind a TLS reverse proxy. Example: `8080`, `:8080`, `192.168.0.1:8080` |
+| ports.https   | One or more [IP]:Port |               | Public HTTPS DoH only, including optional HTTP/3. Example: `443`, `:443`, `192.168.0.1:443`, `[443, "[::1]:443"]` |
 | ports.dohPath | string                | /dns-query    | URL path for DoH queries.                                                                                                                         |
 | ports.freeBind | bool                 | false         | Allow binding the DNS/DoT listeners to addresses not yet assigned to an interface (Linux only, via `IP_FREEBIND`; e.g. Tailscale/WireGuard/VRRP). No effect on wildcard binds; ignored with a warning on non-Linux. |
 | ports.proxyProtocol | list | _empty_ | TCP listener families (any of `dns`, `http`, `https`, `tls`) that must require a HAProxy PROXY protocol header. Enable only when the listener is reachable only through a trusted proxy. |
@@ -111,15 +112,77 @@ All values in this section are optional.
     ports:
       dns: 53
       tls: [853, "[::1]:853"]
+      admin: 127.0.0.1:4000
       http:
         - 80
-        - 4000
+        - 8080
       https: 443
       dohPath: /my-custom-dns-query
       proxyProtocol:
         - https
         - tls
     ```
+
+The management and DoH listeners are separate. `ports.http`, `ports.https` and
+HTTP/3 never expose the dashboard, login, API, documentation or debug routes.
+`ports.admin` never serves DoH. Existing installations must add `ports.admin`
+and update management URLs to HTTPS; `/dashboard/` is no longer served.
+
+### Management authentication
+
+Set or reset the single administrator's credentials with the same command:
+
+```sh
+denyzer auth --config config.yml --username admin
+```
+
+It prompts for the password twice without echoing it. Passwords must contain
+1–1024 bytes; empty or mismatched passwords are rejected. Automation can pipe
+one password line into `denyzer auth --username admin --password-stdin`.
+There is no plaintext `--password` flag or separate reset command.
+
+The command stores an Argon2id hash, atomically replaces the configuration
+with permissions `0600`, and preserves other YAML values, comments and quoting.
+The directory must be writable by the CLI user, and the server must be able to
+read the resulting file. In directory mode the last YAML file receives the
+credentials; an empty directory gets `auth.yml`.
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| auth.username | string | empty | Single administrator username, 1–64 bytes, without surrounding whitespace or control characters |
+| auth.passwordHash | string | empty | Argon2id PHC hash written by `denyzer auth`; never a plaintext password |
+| debug.pprof | boolean | false | Enable profiling on the HTTPS management listener; requires Bearer authentication when auth is enabled |
+
+Both auth fields must be set together. With both empty or omitted, management
+is allowed only on explicit loopback IPs (`127.0.0.1`, `::1`) and logs a warning.
+Wildcard, hostname and LAN management binds require authentication. Credentials
+are reread for every authenticated request: a reset revokes all existing tokens
+on their next request. A missing or invalid credential file fails closed.
+Removing authentication from a running server also fails closed; disabling it
+requires a restart with a loopback management bind.
+
+Tokens exist only in memory and expire exactly seven days after login, without
+renewal. Restarting the server invalidates every token. The dashboard keeps its
+Bearer token in `sessionStorage`; a Secure, HttpOnly, SameSite=Strict page cookie
+containing the same token authenticates page requests only and is kept for the
+same seven days, so a restarted browser can continue the session. `GET /api/login`
+hands that token to a new tab once the cookie has authenticated it. API and debug
+requests accept Bearer tokens, not cookies. See [Interfaces](interfaces.md) for
+login, logout and CLI usage.
+
+!!! warning "TLS and container mounts"
+
+    The generated self-signed certificate is not trusted by default and may not
+    match the hostname or IP you use. Configure `certFile` and `keyFile` with a
+    trusted certificate matching the management URL. The CLI verifies
+    certificates and does not provide an insecure bypass.
+
+    In Docker, mount the configuration directory rather than a single file so
+    atomic password replacements are visible to the running container. Preserve
+    ownership readable by UID 100; the credentials file remains `0600`.
+
+    A crashed auth command can leave a `.auth.lock` file. Remove it only after
+    confirming that no auth command is running.
 
 ## Logging configuration
 
@@ -1110,9 +1173,9 @@ list and cache gauges. Disabled by default; when disabled,
 ## HTTP/3 (DoH3) {#http3}
 
 Serve DNS-over-HTTPS over HTTP/3 (RFC 9114). When enabled, Denyzer
-listens on UDP at the same addresses as `ports.https` and answers the
-same endpoints as the HTTPS listener (DoH `/dns-query`, REST API,
-web UI).
+listens on UDP at the same addresses as `ports.https` and answers only
+the configured DoH endpoint (default `/dns-query`). Management pages,
+API and debug routes are never available over HTTP/3.
 
 | Parameter    | Type    | Mandatory | Default value | Description                                                   |
 | ------------ | ------- | --------- | ------------- | ------------------------------------------------------------- |

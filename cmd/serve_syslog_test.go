@@ -125,7 +125,7 @@ var _ = Describe("Serve command logging to syslog", func() {
 		},
 		Entry("invalid", []string{"ports:", "  dohPath: nope"}, "dohPath must start with '/'"),
 		Entry("DNS listen address", []string{"ports:", "  dns: 1.2.3.4:99999"}, "can't parse DNS listen address"),
-		Entry("HTTP listen address", []string{"ports:", "  http: abc"}, "can't convert port 'abc'"),
+		Entry("management listen address", []string{"ports:", "  admin: abc"}, "can't convert port 'abc'"),
 	)
 
 	DescribeTable("should load the config once when serve runs", func(args []string) {

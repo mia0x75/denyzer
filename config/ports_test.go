@@ -55,15 +55,16 @@ var _ = Describe("Ports.ProxyProtocol", func() {
 })
 
 var _ = Describe("Ports.PrivilegedPorts", func() {
-	It("returns privileged listen entries across DNS, HTTP, HTTPS and TLS", func() {
+	It("returns privileged listen entries across DNS, admin, HTTP, HTTPS and TLS", func() {
 		ports := Ports{
 			DNS:   ListenConfig{":53"},
+			Admin: ListenConfig{"127.0.0.1:80"},
 			HTTP:  ListenConfig{":4000"},
 			HTTPS: ListenConfig{"127.0.0.1:443"},
 			TLS:   ListenConfig{"[::1]:853"},
 		}
 
-		Expect(ports.PrivilegedPorts()).Should(ConsistOf(":53", "127.0.0.1:443", "[::1]:853"))
+		Expect(ports.PrivilegedPorts()).Should(ConsistOf(":53", "127.0.0.1:80", "127.0.0.1:443", "[::1]:853"))
 	})
 
 	It("returns empty when every configured port is unprivileged", func() {

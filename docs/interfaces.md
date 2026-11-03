@@ -9,14 +9,47 @@
     --8<-- "api/openapi.yaml"
     ```
 
-If http listener is enabled, denyzer provides REST API. You can download the [OpenAPI YAML](api/openapi.yaml) interface specification. 
+The HTTPS management listener (`ports.admin`) provides the REST API. The public
+HTTP, HTTPS and HTTP/3 DoH listeners do not expose it. You can download the
+[OpenAPI YAML](api/openapi.yaml) interface specification.
 
 You can also browse the interactive API documentation (RapiDoc) documentation [online](rapidoc.html).
+
+### Authentication
+
+Configure the single administrator with `denyzer auth --username admin`
+([configuration details](configuration.md#management-authentication)). Open
+`https://<denyzer-host>:<admin-port>/login/` to log in; the dashboard is at `/`
+on the same HTTPS origin. Use a trusted certificate matching this hostname/IP.
+
+`GET /api/login` returns `{"enabled":true}` or `{"enabled":false}` without
+authentication. When the request carries a valid page cookie it also returns that
+session's `token`, so a second tab or a restarted browser continues the same
+session. `POST /api/login` accepts `application/json` with `username` and
+`password`, and returns `token` and `expiresAt`. Wrong usernames and passwords
+both return `401 invalid credentials`.
+
+Include `Authorization: Bearer <token>` on all other API and debug requests.
+`POST /api/logout` revokes the current token, clears the page cookie and returns
+`204`. Tokens expire seven days after login without renewal, and all tokens are
+invalidated by a password reset or server restart. Cookies authenticate pages
+only; the dashboard keeps its API token in `sessionStorage` and clears it before
+returning to `/login/` on a `401`. Transport failures, HTTP server errors and
+cancelled requests keep the session: a network blip does not sign the
+administrator out, and a regenerated self-signed certificate surfaces as a
+connection error telling the user to reload. Cross-origin management requests are rejected with `403`.
+An unreadable or invalid auth configuration fails closed with `503`.
+
+Authentication can be disabled only for explicit loopback management binds,
+with a startup warning. Public DoH remains unauthenticated and separate.
 
 ### Common endpoints
 
 | Method | Path                  | Purpose                                              |
 | ------ | --------------------- | ---------------------------------------------------- |
+| GET    | `/api/login`            | Check whether authentication is enabled.           |
+| POST   | `/api/login`            | Create a seven-day administrator session.          |
+| POST   | `/api/logout`           | Revoke the current Bearer session.                 |
 | POST   | `/api/blocking/enable`  | Enable blocking globally.                          |
 | POST   | `/api/blocking/disable` | Disable blocking globally (optional `duration`, `groups` query params). |
 | GET    | `/api/blocking/status`  | Return current blocking status as JSON.            |
@@ -28,7 +61,8 @@ You can also browse the interactive API documentation (RapiDoc) documentation [o
 !!! example "Flush the DNS cache"
 
     ```sh
-    curl -X POST http://<denyzer-host>:<http-port>/api/cache/flush
+    curl -X POST https://<denyzer-host>:<admin-port>/api/cache/flush \
+      -H "Authorization: Bearer $DENYZER_API_TOKEN"
     ```
 
     Returns HTTP `200` on success. Useful after editing `customDNS`
@@ -70,7 +104,11 @@ You can also browse the interactive API documentation (RapiDoc) documentation [o
 
 ## CLI
 
-Denyzer provides a CLI interface to control. This interface uses internally the REST API.
+Denyzer's management CLI uses the HTTPS REST API and takes its Bearer token from
+`DENYZER_API_TOKEN`. Set it to the `token` returned by `POST /api/login`.
+The CLI verifies the management certificate; there is no insecure TLS flag.
+Use `--apiHost` and `--apiPort` to select the management host and `ports.admin`
+port, not a DoH listener.
 
 To run the CLI, please ensure, that denyzer DNS server is running, then execute `denyzer help` for help or
 
@@ -85,7 +123,11 @@ To run the CLI, please ensure, that denyzer DNS server is running, then execute 
 - `./denyzer lists refresh` reloads all allow/denylists
 - `./denyzer stats` shows DNS statistics (requires `statistics.enable: true`)
 - `./denyzer validate [--config /path/to/config.yaml]` validates configuration file
+- `./denyzer auth --username admin` sets or resets credentials locally, without a running server
+- `./denyzer version` prints only Version, Build time and Architecture
 
 !!! tip 
 
-    To run this inside docker run `docker exec denyzer ./denyzer blocking status`
+    Pass the token into a running container with
+    `docker exec -e DENYZER_API_TOKEN denyzer ./denyzer blocking status`.
+    Its configured management host must also match a trusted certificate.

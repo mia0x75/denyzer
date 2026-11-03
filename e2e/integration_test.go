@@ -69,7 +69,7 @@ var _ = Describe("Integration tests", func() {
 					    default:
 					      - default-upstream
 					ports:
-					  http: 4000
+					  admin: 4000
 					# Blocking configuration with client groups
 					blocking:
 					  denylists:
@@ -251,14 +251,16 @@ var _ = Describe("Integration tests", func() {
 				By("serving API endpoints for blocking control", func() {
 					host, port, err := getContainerHostPort(ctx, denyzer, "4000/tcp")
 					Expect(err).Should(Succeed())
-					baseURL := "http://" + net.JoinHostPort(host, port)
+					baseURL := "https://" + net.JoinHostPort(host, port)
+					client, err := newManagementClient(ctx, baseURL)
+					Expect(err).Should(Succeed())
 
 					// Check blocking status
-					Eventually(http.Get).WithArguments(baseURL + "/api/blocking/status").
+					Eventually(client.Get).WithArguments(baseURL + "/api/blocking/status").
 						Should(HaveHTTPStatus(http.StatusOK))
 
 					// Disable blocking
-					resp, err := http.Post(baseURL+"/api/blocking/disable", "application/json", nil)
+					resp, err := client.Post(baseURL+"/api/blocking/disable", "application/json", nil)
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))
@@ -273,7 +275,7 @@ var _ = Describe("Integration tests", func() {
 							))
 
 					// Re-enable blocking
-					resp, err = http.Post(baseURL+"/api/blocking/enable", "application/json", nil)
+					resp, err = client.Post(baseURL+"/api/blocking/enable", "application/json", nil)
 					Expect(err).Should(Succeed())
 					defer resp.Body.Close()
 					Expect(resp.StatusCode).Should(Equal(http.StatusOK))

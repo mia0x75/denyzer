@@ -10,8 +10,8 @@ Denyzer is a DNS proxy and ad-blocker for the local network written in Go.
 
 ## Screenshots
 
-The dashboard is served by the Denyzer binary itself at `/dashboard/` - no
-separate web server and no external database.
+The dashboard is served by the Denyzer binary itself at `/` on the HTTPS
+management listener (`ports.admin`) - no separate web server or external database.
 
 ### Overview
 
@@ -73,6 +73,7 @@ one. Auto-refresh (every 30s) can be switched on for a live view.
 
 - **Security and Privacy** - Secure communication
 
+  - Single-administrator login with Argon2id passwords on an HTTPS management listener separate from public DoH
   - Supports modern DNS extensions: DNSSEC, eDNS, ...
   - DNSSEC validation of upstream resolvers
   - Free configurable blocking lists - no hidden filtering etc.
@@ -83,7 +84,7 @@ one. Auto-refresh (every 30s) can be switched on for a live view.
 
 - **Integration** - various integration
 
-  - Embedded web dashboard (DenyzerUI) served at `/dashboard/`
+  - Embedded web dashboard (DenyzerUI) served at `/` on the HTTPS management port
   - Query logging to an embedded [SQLite](https://sqlite.org) store (per-day / per-client), with
     configurable retention - no external database required
   - Various REST API endpoints
@@ -209,8 +210,28 @@ that expires.
 
 ### Dashboard and API
 
-The dashboard is a Next.js static export embedded in the binary and served at
-`/dashboard/`. It reads the store through a small JSON API:
+The dashboard is a Next.js static export embedded in the binary. The HTTPS
+management listener (`ports.admin`) serves it at `/`, with login at `/login/`
+and the JSON API on the same origin. `ports.http`, `ports.https` and HTTP/3
+serve DoH only and never expose management routes. Existing installations must
+add `ports.admin` and update management URLs; `/dashboard/` is no longer served.
+
+Set or reset the administrator with `denyzer auth --config config.yml --username admin`.
+It prompts twice without echoing the password, then atomically writes an Argon2id
+hash to a `0600` configuration file. Without credentials, management may bind only
+to explicit loopback IPs and warns at startup. Configure a trusted `certFile` and
+`keyFile` matching the management hostname/IP; the default generated certificate
+is self-signed and the CLI will not bypass verification.
+
+Login returns an in-memory Bearer token with a fixed seven-day expiry. A password
+reset or restart invalidates all tokens. API/debug requests require Bearer tokens;
+the dashboard's Secure, HttpOnly page cookie authenticates pages only and lets a
+new tab or a restarted browser continue the same session. CLI management commands
+take the token from `DENYZER_API_TOKEN`. See
+[configuration](docs/configuration.md#management-authentication) and
+[interfaces](docs/interfaces.md#authentication) for setup and login/logout usage.
+
+The dashboard reads the store through these JSON endpoints:
 
 | Endpoint | Purpose |
 | --- | --- |

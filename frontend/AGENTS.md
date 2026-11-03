@@ -10,7 +10,8 @@ src/
 ├── app/                    # Next.js App Router
 │   ├── layout.tsx         # Root layout
 │   ├── icon.tsx           # App icon
-│   └── page.tsx           # Home page (dashboard shell + header doc links)
+│   ├── page.tsx           # Guarded dashboard shell + header doc links
+│   └── login/page.tsx     # Administrator login
 ├── components/
 │   ├── ui/                # shadcn/ui components (generated, do not edit)
 │   └── dashboard/         # App-specific components
@@ -31,7 +32,8 @@ bun run lint:fix             # Run ESLint with auto-fix
 bun run format:check         # Check Prettier formatting
 bun run format:write         # Auto-format with Prettier
 bun run typecheck            # TypeScript type checking
-bun run verify               # Run all checks (lint + format + typecheck)
+bun run test                 # Auth, guard and statistics tests (node:test via Bun)
+bun run verify               # Tests + lint + format + typecheck + knip + checkdupe
 bun run knip                 # Detect unused exports and dependencies
 bun run checkdupe            # Detect code duplication (jscpd)
 ```
@@ -119,7 +121,9 @@ When doing so, be careful with the --overwrite flag, since some components may h
 
 ## Data Flow
 
-The dashboard is a static export served by Denyzer under `/dashboard/` and talks to the Denyzer API on the same origin. Query-log/stat views use Denyzer's `/api/query/...` and `/api/stats/...` endpoints. No environment variables or runtime config are required.
+The dashboard is a static export served at `/` on Denyzer's separate HTTPS management listener (`ports.admin`), with login at `/login/`. It talks to `/api/logs/query` and `/api/stats/...` on the same origin. The public HTTP/HTTPS/HTTP3 DoH listeners do not serve management routes. No environment variables or runtime config are required.
+
+Authentication uses an in-memory, fixed seven-day Bearer session. Keep the token in `sessionStorage` and use `~/lib/auth.ts` for authenticated fetches and centralized 401 handling. `GET /api/login` returns the token held by the page cookie, so a new tab or a restarted browser adopts the existing session. Only a 401 clears the session; transport failures, HTTP server errors and cancelled requests keep it. Do not retry mutations. The Secure, HttpOnly page cookie authenticates page requests only, never API/debug requests, and lives as long as the session. The dashboard guard signs out only when the status requires a token or never answered; the login page must not redirect to itself.
 
 Never commit secrets.
 

@@ -2,12 +2,15 @@ package e2e
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,7 +40,8 @@ const (
 const (
 	// modeWorldReadable is used for files mounted into the denyzer container: denyzer
 	// runs as a non-root user (see Dockerfile `USER 100`) that doesn't own the
-	// copied files, so it can only read them via the world-readable bit.
+	// copied files, so it can only read them via the world-readable bit. Auth
+	// credentials in these fixtures are test-only; real configs remain 0600.
 	modeWorldReadable = 0o444
 	// modeWorldReadableDir is used for host directories bind-mounted into containers,
 	// so a container user with a different UID can traverse and read them.
@@ -215,7 +219,7 @@ func buildDenyzerContainerRequest(confFile string) testcontainers.ContainerReque
 
 	req := testcontainers.ContainerRequest{
 		Image:        image,
-		ExposedPorts: []string{dnsPort + "/tcp", dnsPort + "/udp", "4000/tcp", "4000/udp"},
+		ExposedPorts: []string{dnsPort + "/tcp", dnsPort + "/udp", "4000/tcp", "4000/udp", "4001/tcp"},
 		Files: []testcontainers.ContainerFile{
 			{
 				HostFilePath:      confFile,
@@ -269,6 +273,9 @@ func createDenyzerContainerInternal(ctx context.Context, e2eNet *testcontainers.
 	defer cancel()
 
 	confFile := createTempFile(withDNSPort(lines)...)
+	if err := setManagementAuth(confFile); err != nil {
+		return nil, fmt.Errorf("can't configure test management credentials: %w", err)
+	}
 
 	// Configuration validation is process-scoped and owns its buffered logger,
 	// including FatalOnError; it does not run under the container-start timeout.
@@ -359,18 +366,13 @@ func createDenyzerContainerFromString(ctx context.Context, e2eNet *testcontainer
 }
 
 func checkDenyzerReadiness(ctx context.Context, cfg *config.Config, container testcontainers.Container) error {
-	var err error
-
 	const retryAttempts = 3
 
-	err = retry.Do(
+	err := retry.Do(
 		func() error {
-			_, err = doDNSRequest(ctx, container, util.NewMsgWithQuestion("healthcheck.denyzer.", dns.Type(dns.TypeA)))
-			if err != nil {
-				return fmt.Errorf("DNS request failed: %w", err)
-			}
+			_, err := doDNSRequest(ctx, container, util.NewMsgWithQuestion("healthcheck.denyzer.", dns.Type(dns.TypeA)))
 
-			return nil
+			return err
 		},
 		retry.OnRetry(func(n uint, err error) {
 			log.Log().InfoContext(ctx, fmt.Sprintf("Performing retry DNS request #%d: %s\n", n, err))
@@ -382,40 +384,60 @@ func checkDenyzerReadiness(ctx context.Context, cfg *config.Config, container te
 		return fmt.Errorf("can't perform the DNS healthcheck request: %w", err)
 	}
 
-	for _, httpPort := range cfg.Ports.HTTP {
-		parts := strings.Split(httpPort, ":")
-		port := parts[len(parts)-1]
-
-		err = retry.Do(
-			func() error {
-				return doHTTPRequest(ctx, container, port)
-			},
-			retry.OnRetry(func(n uint, err error) {
-				log.Log().InfoContext(ctx, fmt.Sprintf("Performing retry HTTP request #%d: %s\n", n, err))
-			}),
-			retry.Attempts(retryAttempts),
-			retry.DelayType(retry.BackOffDelay),
-			retry.Delay(time.Second))
-		if err != nil {
-			return fmt.Errorf("can't perform the HTTP request: %w", err)
+	query, err := util.NewMsgWithQuestion("healthcheck.denyzer.", dns.Type(dns.TypeA)).Pack()
+	if err != nil {
+		return err
+	}
+	dohPath := cfg.Ports.DOHPath + "?dns=" + base64.RawURLEncoding.EncodeToString(query)
+	for _, endpoint := range []struct {
+		scheme    string
+		path      string
+		listeners config.ListenConfig
+		proxy     config.ProxyProtocolType
+	}{
+		{scheme: "http", path: dohPath, listeners: cfg.Ports.HTTP, proxy: config.ProxyProtocolTypeHttp},
+		{scheme: "https", path: dohPath, listeners: cfg.Ports.HTTPS, proxy: config.ProxyProtocolTypeHttps},
+		{scheme: "https", path: "/api/login", listeners: cfg.Ports.Admin},
+	} {
+		if slices.Contains(cfg.Ports.ProxyProtocol, endpoint.proxy) {
+			continue // PROXY listeners are verified through their proxy, not a direct connection.
+		}
+		for _, address := range endpoint.listeners {
+			_, containerPort, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			host, port, err := getContainerHostPort(ctx, container, containerPort+"/tcp")
+			if err != nil {
+				return err
+			}
+			target := endpoint.scheme + "://" + net.JoinHostPort(host, port) + endpoint.path
+			err = retry.Do(
+				func() error { return doHTTPRequest(ctx, target) },
+				retry.OnRetry(func(n uint, err error) {
+					log.Log().InfoContext(ctx, fmt.Sprintf("Performing retry HTTP request #%d: %s\n", n, err))
+				}),
+				retry.Attempts(retryAttempts),
+				retry.DelayType(retry.BackOffDelay),
+				retry.Delay(time.Second))
+			if err != nil {
+				return fmt.Errorf("can't perform the HTTP request: %w", err)
+			}
 		}
 	}
 
 	return nil
 }
 
-func doHTTPRequest(ctx context.Context, container testcontainers.Container, containerPort string) error {
-	host, port, err := getContainerHostPort(ctx, container, containerPort+"/tcp")
-	if err != nil {
-		return err
-	}
-
+func doHTTPRequest(ctx context.Context, target string) error {
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // Disposable e2e fixtures use generated self-signed certificates.
+	defer transport.CloseIdleConnections()
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Transport: transport,
+		Timeout:   5 * time.Second,
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"http://"+net.JoinHostPort(host, port), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return err
 	}

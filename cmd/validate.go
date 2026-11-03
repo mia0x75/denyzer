@@ -32,7 +32,7 @@ func validateConfiguration(_ *cobra.Command, _ []string) error {
 		return errors.New("configuration path does not exist")
 	}
 
-	_, err = loadConfig(false, func(cfg *config.Config) {
+	cfg, err := loadConfig(false, func(cfg *config.Config) {
 		logCfg := commandLogConfig(cfg)
 
 		// validate reports what loading the config logs, so log.level must not hide it
@@ -42,6 +42,9 @@ func validateConfiguration(_ *cobra.Command, _ []string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("unable to load configuration file '%s': %w", configPath, err)
+	}
+	if err := cfg.ValidateAdminListeners(log.Log()); err != nil {
+		return fmt.Errorf("invalid configuration file '%s': %w", configPath, err)
 	}
 
 	log.Log().Info("Configuration is valid")
