@@ -2,6 +2,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 
+// shortcut: minimatch 10 is pinned to patched 11; remove when ESLint's ranges include 11.
 export default defineConfig([
   ...nextVitals,
   ...nextTs,
