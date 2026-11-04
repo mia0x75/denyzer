@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 )
@@ -537,6 +536,45 @@ ORDER BY SUM(total) DESC, entity ASC`,
 		return nil, fmt.Errorf("can't aggregate %s metrics: %w", TableMetrics, err)
 	}
 
+	return scanEntityMetrics(rows)
+}
+
+// GetEntitySuggestions filters aggregated domain/client metrics and limits rows in SQL.
+func GetEntitySuggestions(
+	ctx context.Context, dimension, granularity string, start, end int64, query string, limit int,
+) ([]EntityMetric, error) {
+	if limit <= 0 {
+		return []EntityMetric{}, nil
+	}
+	conn, err := getDB()
+	if err != nil {
+		return nil, err
+	}
+
+	query = strings.ToLower(query)
+	rows, err := conn.QueryContext(ctx, `
+SELECT entity, name, total, blocked
+FROM (
+  SELECT entity,
+    CASE WHEN ? = ? THEN COALESCE(NULLIF(MAX(entity_label), ''), entity) ELSE entity END AS name,
+    SUM(total) AS total, SUM(blocked) AS blocked
+  FROM metrics
+  WHERE granularity = ? AND dimension = ?
+    AND bucket_start >= ? AND bucket_start <= ? AND entity <> ''
+  GROUP BY entity
+  HAVING SUM(total) > 0 OR SUM(blocked) > 0
+)
+WHERE instr(unicode_lower(entity), ?) > 0 OR instr(unicode_lower(name), ?) > 0
+ORDER BY total DESC, name ASC, entity ASC
+LIMIT ?`, dimension, DimensionClient, granularity, dimension, start, end, query, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("can't search %s metrics: %w", TableMetrics, err)
+	}
+
+	return scanEntityMetrics(rows)
+}
+
+func scanEntityMetrics(rows *sql.Rows) ([]EntityMetric, error) {
 	defer rows.Close()
 
 	result := make([]EntityMetric, 0)
@@ -583,13 +621,4 @@ func GetQueryTypeCounts(granularity string, start, end int64) (map[string]uint64
 	}
 
 	return counts, nil
-}
-
-// satInt64 clamps a counter to the int64 range.
-func satInt64(v uint64) int64 {
-	if v > math.MaxInt64 {
-		return math.MaxInt64
-	}
-
-	return int64(v)
 }

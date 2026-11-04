@@ -113,7 +113,6 @@ export function QueryLogs() {
         items: [],
         nextCursor: previousData.nextCursor,
         hasMore: previousData.hasMore,
-        totalCount: previousData.totalCount,
       };
     },
     refetchOnWindowFocus: autoRefresh,

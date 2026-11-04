@@ -13,7 +13,7 @@ export interface LogEntry {
   questionType: string | null;
   hostname: string | null;
   effectiveTldp: string | null;
-  id?: number | null;
+  id?: string | null;
 }
 
 export interface QueriesOverTimeEntry {
@@ -64,9 +64,6 @@ export interface QueryLogsResult {
   items: LogEntry[];
   nextCursor: string | null;
   hasMore: boolean;
-  // totalCount is only known when no filters are applied (O(1) lookup);
-  // null means "unknown".
-  totalCount: number | null;
 }
 
 export interface StatsSnapshotSummary {

@@ -630,8 +630,10 @@ paths:
         Returns a page of query log entries ordered newest first, using keyset
         pagination over the auto-increment primary key. The `cursor` returned by
         a previous page (when `hasMore` is true) starts the next page strictly
-        below that entry. `totalCount` is populated only when no filters are
-        applied. Cursor-less requests limited to `limit` entries (max 100).
+        below that entry. IDs are decimal strings to preserve 64-bit precision.
+        The deprecated optional `totalCount` is no longer returned; use
+        `hasMore` and `nextCursor` for pagination. Cursor-less requests are
+        limited to `limit` entries (max 100).
       parameters:
         - name: limit
           in: query
@@ -1096,9 +1098,12 @@ components:
           type: boolean
         totalCount:
           type: integer
+          deprecated: true
           description: >-
-            O(1) all-time total from query_stats; present only when no filters
-            are applied.
+            Legacy all-time processed-query counter, including dropped and
+            failed queries, not a retained or filtered row count. Current
+            servers omit this optional field. Lifetime totals are available
+            from /api/stats/summary as totalQueries.
       required:
         - items
         - hasMore
@@ -1106,8 +1111,9 @@ components:
       type: object
       properties:
         id:
-          type: integer
-          description: Monotonic primary key used as the pagination cursor.
+          type: string
+          pattern: '^[1-9][0-9]*$'
+          description: Decimal 64-bit primary key, also used as the pagination cursor.
         requestTs:
           type: string
           format: date-time

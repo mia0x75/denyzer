@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3" // registers the "sqlite3" driver
+	"github.com/mattn/go-sqlite3"
 )
 
 // Table names. The dashboard deliberately keeps only two business tables:
@@ -49,8 +49,9 @@ const (
 
 //nolint:gochecknoglobals // process-wide database handle, initialised once
 var (
-	initMu sync.Mutex
-	dbPtr  atomic.Pointer[sql.DB]
+	initMu           sync.Mutex
+	dbPtr            atomic.Pointer[sql.DB]
+	sqliteDriverOnce sync.Once
 )
 
 // Schema. The metrics primary key is ordered granularity → dimension →
@@ -124,7 +125,15 @@ func InitDB(dbPath string) error {
 		return err
 	}
 
-	conn, err := sql.Open("sqlite3", dsn(path))
+	sqliteDriverOnce.Do(func() {
+		sql.Register("denyzer-sqlite3", &sqlite3.SQLiteDriver{
+			ConnectHook: func(conn *sqlite3.SQLiteConn) error {
+				// SQLite's built-in lower() only handles ASCII.
+				return conn.RegisterFunc("unicode_lower", strings.ToLower, true)
+			},
+		})
+	})
+	conn, err := sql.Open("denyzer-sqlite3", dsn(path))
 	if err != nil {
 		return fmt.Errorf("can't open SQLite database: %w", err)
 	}

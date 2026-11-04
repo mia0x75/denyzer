@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/mia0x75/denyzer/storage"
@@ -77,12 +76,11 @@ type QueryLogResponse struct {
 	Items      []*QueryLogItem `json:"items"`
 	NextCursor string          `json:"nextCursor,omitempty"`
 	HasMore    bool            `json:"hasMore"`
-	TotalCount int64           `json:"totalCount,omitempty"`
 }
 
 // QueryLogItem is a single query log entry in the API response.
 type QueryLogItem struct {
-	ID           int    `json:"id"`
+	ID           string `json:"id"`
 	RequestTs    string `json:"requestTs"`
 	ClientIP     string `json:"clientIp"`
 	ClientName   string `json:"clientName"`
@@ -465,7 +463,7 @@ func handleQueryLogs(w http.ResponseWriter, r *http.Request) {
 		ts := time.UnixMilli(e.Timestamp).UTC().Format(time.RFC3339)
 
 		items = append(items, &QueryLogItem{
-			ID:           e.ID,
+			ID:           strconv.FormatInt(e.ID, 10),
 			RequestTs:    ts,
 			ClientIP:     e.ClientIP,
 			ClientName:   e.ClientName,
@@ -481,18 +479,6 @@ func handleQueryLogs(w http.ResponseWriter, r *http.Request) {
 		Items:      items,
 		NextCursor: page.NextCursor,
 		HasMore:    page.HasMore,
-	}
-
-	// The exact total is only cheap (and meaningful) for the unfiltered list.
-	if search == "" && responseType == "" && client == "" && questionType == "" {
-		total, totalErr := storage.GetQueryLogsTotal()
-		if totalErr != nil {
-			writeErr(w, http.StatusInternalServerError, fmt.Sprintf("can't read query_logs total: %v", totalErr))
-
-			return
-		}
-
-		response.TotalCount = total
 	}
 
 	writeJSON(w, response)
@@ -512,41 +498,28 @@ func handleSearchDomains(w http.ResponseWriter, r *http.Request) {
 
 	granularity, start, end := topEntityBounds(window)
 
-	entities, err := storage.GetTopEntities(storage.DimensionDomain, granularity, start, end)
+	entities, err := storage.GetEntitySuggestions(
+		r.Context(),
+		storage.DimensionDomain,
+		granularity,
+		start,
+		end,
+		query,
+		limit,
+	)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("can't read domain metrics: %v", err))
 
 		return
 	}
 
-	queryLower := strings.ToLower(query)
-	result := make([]SearchDomainEntry, 0)
+	result := make([]SearchDomainEntry, 0, len(entities))
 
 	for _, entity := range entities {
-		if !strings.Contains(strings.ToLower(entity.Entity), queryLower) {
-			continue
-		}
-
 		result = append(result, SearchDomainEntry{
 			Domain: entity.Entity,
 			Count:  entity.Total,
 		})
-	}
-
-	slices.SortFunc(result, func(a, b SearchDomainEntry) int {
-		if a.Count > b.Count {
-			return -1
-		}
-
-		if a.Count < b.Count {
-			return 1
-		}
-
-		return cmpStrings(a.Domain, b.Domain)
-	})
-
-	if limit < len(result) {
-		result = result[:limit]
 	}
 
 	writeJSON(w, result)
@@ -566,47 +539,28 @@ func handleSearchClients(w http.ResponseWriter, r *http.Request) {
 
 	granularity, start, end := topEntityBounds(window)
 
-	entities, err := storage.GetTopEntities(storage.DimensionClient, granularity, start, end)
+	entities, err := storage.GetEntitySuggestions(
+		r.Context(),
+		storage.DimensionClient,
+		granularity,
+		start,
+		end,
+		query,
+		limit,
+	)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("can't read client metrics: %v", err))
 
 		return
 	}
 
-	queryLower := strings.ToLower(query)
-	result := make([]SearchClientEntry, 0)
+	result := make([]SearchClientEntry, 0, len(entities))
 
 	for _, entity := range entities {
-		label := entity.Label
-		if label == "" {
-			label = entity.Entity
-		}
-
-		if !strings.Contains(strings.ToLower(entity.Entity), queryLower) &&
-			!strings.Contains(strings.ToLower(label), queryLower) {
-			continue
-		}
-
 		result = append(result, SearchClientEntry{
-			Client: label,
+			Client: entity.Label,
 			Count:  entity.Total,
 		})
-	}
-
-	slices.SortFunc(result, func(a, b SearchClientEntry) int {
-		if a.Count > b.Count {
-			return -1
-		}
-
-		if a.Count < b.Count {
-			return 1
-		}
-
-		return cmpStrings(a.Client, b.Client)
-	})
-
-	if limit < len(result) {
-		result = result[:limit]
 	}
 
 	writeJSON(w, result)

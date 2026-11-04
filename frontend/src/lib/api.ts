@@ -201,7 +201,7 @@ export async function fetchQueryLogs(
 
   const data = await fetchJSON<{
     items: Array<{
-      id: number;
+      id: string;
       requestTs: string;
       clientIp: string;
       clientName: string;
@@ -213,7 +213,6 @@ export async function fetchQueryLogs(
     }>;
     nextCursor?: string;
     hasMore: boolean;
-    totalCount?: number;
   }>(`/api/logs/query?${params}`);
 
   return {
@@ -234,7 +233,6 @@ export async function fetchQueryLogs(
     })),
     nextCursor: data.nextCursor ?? null,
     hasMore: data.hasMore,
-    totalCount: data.totalCount ?? null,
   };
 }
 

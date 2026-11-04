@@ -241,7 +241,7 @@ func testQueryLogsReadBack(t *testing.T, fixture storageFixture) {
 func testQueryLogsCursorPagination(t *testing.T, fixture storageFixture) {
 	t.Helper()
 
-	seen := make(map[int]bool)
+	seen := make(map[int64]bool)
 	cursor := ""
 
 	for range 10 {
@@ -407,13 +407,13 @@ func testQueryTypeCounts(t *testing.T, fixture storageFixture) {
 func testAllTimeCounter(t *testing.T, _ storageFixture) {
 	t.Helper()
 
-	total, err := GetQueryLogsTotal()
+	stats, err := GetGlobalStats(GranularityAllTime, 0)
 	if err != nil {
-		t.Fatalf("GetQueryLogsTotal: %v", err)
+		t.Fatalf("GetGlobalStats: %v", err)
 	}
 
-	if total != 5 {
-		t.Fatalf("all-time total = %d, want 5", total)
+	if stats.Total != 5 {
+		t.Fatalf("all-time total = %d, want 5", stats.Total)
 	}
 }
 
@@ -522,13 +522,13 @@ func testCleanupKeepsAllTime(t *testing.T, _ storageFixture) {
 	assertMetricSeriesEmpty(t, DimensionDomain, GranularityHour, "old.com", oldHour, oldHour,
 		"old domain metric survived cleanup")
 
-	total, err := GetQueryLogsTotal()
+	stats, err := GetGlobalStats(GranularityAllTime, 0)
 	if err != nil {
-		t.Fatalf("GetQueryLogsTotal: %v", err)
+		t.Fatalf("GetGlobalStats: %v", err)
 	}
 
-	if total != 5 {
-		t.Fatalf("all-time total after cleanup = %d, want 5", total)
+	if stats.Total != 5 {
+		t.Fatalf("all-time total after cleanup = %d, want 5", stats.Total)
 	}
 }
 

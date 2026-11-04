@@ -573,13 +573,13 @@ func testDashboardCleanup(t *testing.T, fixture dashboardFixture) {
 	}
 
 	// The all-time counter is preserved even though the history is gone.
-	total, err := storage.GetQueryLogsTotal()
+	stats, err := storage.GetGlobalStats(storage.GranularityAllTime, 0)
 	if err != nil {
-		t.Fatalf("storage.GetQueryLogsTotal: %v", err)
+		t.Fatalf("storage.GetGlobalStats: %v", err)
 	}
 
-	if total != 80 {
-		t.Fatalf("all-time total after cleanup = %d, want 80", total)
+	if stats.Total != 80 {
+		t.Fatalf("all-time total after cleanup = %d, want 80", stats.Total)
 	}
 
 	page, err := storage.GetQueryLogsPage("", 100, "", "", "", "")
@@ -593,6 +593,19 @@ func testDashboardCleanup(t *testing.T, fixture dashboardFixture) {
 
 	if page.Entries[0].Domain != "recent.test" {
 		t.Fatalf("surviving query log = %q, want recent.test", page.Entries[0].Domain)
+	}
+
+	var response map[string]json.RawMessage
+	apiRequest(t, http.MethodGet, "/api/logs/query", &response)
+	if _, present := response["totalCount"]; present {
+		t.Fatal("query log pagination must not report the lifetime total as a row count")
+	}
+	var items []QueryLogItem
+	if err := json.Unmarshal(response["items"], &items); err != nil {
+		t.Fatalf("query log IDs must be strings: %v", err)
+	}
+	if len(items) != 1 || items[0].ID == "" {
+		t.Fatalf("query log API items = %+v, want one entry with a string ID", items)
 	}
 }
 

@@ -29,7 +29,7 @@ type QueryLogEntry struct {
 
 // QueryLogReadEntry is a row from the query_logs table for read operations.
 type QueryLogReadEntry struct {
-	ID           int
+	ID           int64
 	Timestamp    int64
 	ClientIP     string
 	ClientName   string
@@ -238,19 +238,8 @@ func scanQueryLogRows(rows *sql.Rows) ([]*QueryLogReadEntry, error) {
 	return collected, nil
 }
 
-// GetQueryLogsTotal returns the all-time number of queries recorded in the
-// all_time global metric. It is an O(1) lookup.
-func GetQueryLogsTotal() (int64, error) {
-	stats, err := GetGlobalStats(GranularityAllTime, 0)
-	if err != nil {
-		return 0, err
-	}
-
-	return satInt64(stats.Total), nil
-}
-
-func parseQueryLogsCursor(cursor string) (int, error) {
-	id, err := strconv.Atoi(cursor)
+func parseQueryLogsCursor(cursor string) (int64, error) {
+	id, err := strconv.ParseInt(cursor, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid query logs cursor %q: %w", cursor, err)
 	}
@@ -259,7 +248,7 @@ func parseQueryLogsCursor(cursor string) (int, error) {
 }
 
 func formatQueryLogsCursor(entry *QueryLogReadEntry) string {
-	return strconv.Itoa(entry.ID)
+	return strconv.FormatInt(entry.ID, 10)
 }
 
 // likePattern builds a substring LIKE pattern and escapes the wildcards that
