@@ -1,6 +1,9 @@
 package e2e
 
 import (
+	"net"
+	"slices"
+
 	"github.com/mia0x75/denyzer/config"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -70,6 +73,26 @@ var _ = Describe("Denyzer container configuration", func() {
 			Expect(err).Should(Succeed())
 			Expect(cfg.Ports.DNS).Should(Equal(config.ListenConfig{":1053"}))
 			Expect(cfg.Ports.PrivilegedPorts()).Should(BeEmpty())
+		})
+	})
+
+	Describe("buildDenyzerContainerRequest", func() {
+		It("publishes every listener the readiness probe maps", func() {
+			// checkDenyzerReadiness resolves each configured HTTP/HTTPS/admin
+			// listener through MappedPort, which only knows published ports.
+			confFile := createTempFile(proxyProtocolDenyzerConfig(""))
+			cfg, err := config.LoadConfig(confFile, true)
+			Expect(err).Should(Succeed())
+
+			req := buildDenyzerContainerRequest(confFile)
+
+			listeners := slices.Concat(cfg.Ports.HTTP, cfg.Ports.HTTPS, cfg.Ports.Admin)
+			Expect(listeners).ShouldNot(BeEmpty())
+			for _, address := range listeners {
+				_, port, err := net.SplitHostPort(address)
+				Expect(err).Should(Succeed())
+				Expect(req.ExposedPorts).Should(ContainElement(port+"/tcp"), "listener %s", address)
+			}
 		})
 	})
 })

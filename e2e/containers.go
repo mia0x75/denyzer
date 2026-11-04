@@ -218,8 +218,13 @@ func buildDenyzerContainerRequest(confFile string) testcontainers.ContainerReque
 	dnsPort := strconv.Itoa(e2eDNSPort)
 
 	req := testcontainers.ContainerRequest{
-		Image:        image,
-		ExposedPorts: []string{dnsPort + "/tcp", dnsPort + "/udp", "4000/tcp", "4000/udp", "4001/tcp"},
+		Image: image,
+		ExposedPorts: []string{
+			dnsPort + "/tcp", dnsPort + "/udp",
+			"4000/tcp", "4000/udp", "4001/tcp",
+			// proxyProtocolDenyzerConfig listens here; the readiness probe maps it.
+			strconv.Itoa(e2eDoHPort) + "/tcp",
+		},
 		Files: []testcontainers.ContainerFile{
 			{
 				HostFilePath:      confFile,
