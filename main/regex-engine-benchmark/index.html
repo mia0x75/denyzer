@@ -1,0 +1,1736 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="denyzer Documentation">
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Regex engine benchmark - denyzer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#regex-engine-benchmark" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="denyzer" class="md-header__button md-logo" aria-label="denyzer" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            denyzer
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Regex engine benchmark
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/mia0x75/denyzer" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="denyzer" class="md-nav__button md-logo" aria-label="denyzer" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    denyzer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/mia0x75/denyzer" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Welcome
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../interfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Interfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../network_configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Network configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../additional_information/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Additional information
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Performance
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../startup-performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Startup performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Decisions
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sqlite-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQLite driver and release pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#conclusion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conclusion
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment-and-method" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment and method
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#query-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Query benchmark
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Query benchmark">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#oisd-shaped-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OISD-shaped rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#literal-prefix-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Literal-prefix rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#existing-repository-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Existing repository benchmark
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compile-cost-and-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compile cost and memory
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Compile cost and memory">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#oisd-shaped-rules_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OISD-shaped rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#literal-prefix-rules_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Literal-prefix rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#binary-initialization-and-build-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Binary, initialization, and build checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#correctness-and-api-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Correctness and API checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reproduction-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reproduction notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#appendix-benchmark-source-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Appendix: benchmark source code
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Appendix: benchmark source code">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#build-time-engine-selector" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build-time engine selector
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#real-cache-path-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real cache-path benchmark
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#differential-correctness-and-retained-memory-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Differential correctness and retained-memory checks
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#independent-compilerss-probe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Independent compile/RSS probe
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/mia0x75/denyzer/edit/main/docs/regex-engine-benchmark.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="regex-engine-benchmark">Regex engine benchmark</h1>
+<h2 id="conclusion">Conclusion</h2>
+<p>The benchmark measured Denyzer's real <abbr title="Regular expression">regex</abbr> path, not an isolated
+<code>MatchString</code> loop:</p>
+<div class="highlight"><pre><span></span><code>ChainedGroupedCache.Contains
+  -&gt; InMemoryGroupedCache.Contains
+  -&gt; regexCache.findMatch
+  -&gt; compiled regexp.MatchString
+</code></pre></div>
+<p>The benchmark-backed decision is:</p>
+<ol>
+<li><strong>Do not replace the standard library with go-re2.</strong> Its default WASM
+   implementation was usually slower on Denyzer's short domain strings and
+   substantially slower for large OISD-shaped linear scans. Its <code>re2_cgo</code>
+   mode requires a system-installed RE2 library through <code>pkg-config</code>, which
+   does not fit the current Zig/musl cross-build setup.</li>
+<li><strong>Do not make coregex a blanket replacement yet.</strong> It was dramatically
+   faster for the OISD shape <code>^(.*\.)?domain$</code>, but slower than the standard
+   library for the literal-prefix shape after the first match. It also has
+   materially higher compile cost and retained memory, and is pre-1.0.</li>
+<li><strong>Keep <abbr title="Regular expression">regex</abbr> work in Phase 4 (blocking <abbr title="Regular expression">regex</abbr> pre-filter).</strong> First avoid
+   entering the <abbr title="Regular expression">regex</abbr> cache when exact or wildcard caches can decide the query.
+   Then remeasure the remaining <abbr title="Regular expression">regex</abbr>-only path. If an engine replacement is
+   still justified, evaluate coregex only for the measured pattern class.</li>
+</ol>
+<p>This report does not change the production <abbr title="Regular expression">regex</abbr> implementation.</p>
+<h2 id="environment-and-method">Environment and method</h2>
+<ul>
+<li>Go <code>go1.27.3-X:nodwarf5</code></li>
+<li>Linux amd64, 16 logical threads</li>
+<li>CPU governor: <code>schedutil</code></li>
+<li>Host otherwise idle during the formal runs</li>
+<li>Fresh repository copy, including the existing <code>go fix ./...</code> changes</li>
+<li>Engines:</li>
+<li>standard library <code>regexp</code></li>
+<li><code>github.com/wasilibs/go-re2</code> <code>v1.13.0</code></li>
+<li><code>github.com/coregx/coregex</code> <code>v0.12.30</code></li>
+<li>Three rounds with the engine order rotated between rounds; values below are
+  medians of the three observations.</li>
+<li>The scratch selector used build tags only. No interface dispatch was added
+  to the measured query path.</li>
+</ul>
+<p>The core command was:</p>
+<div class="highlight"><pre><span></span><code>env<span class="w"> </span>-u<span class="w"> </span>HTTP_PROXY<span class="w"> </span>-u<span class="w"> </span>HTTPS_PROXY<span class="w"> </span>-u<span class="w"> </span>http_proxy<span class="w"> </span>-u<span class="w"> </span>https_proxy<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-u<span class="w"> </span>SOCKS5_PROXY<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-tags<span class="w"> </span><span class="s2">"</span><span class="nv">$ENGINE_TAGS</span><span class="s2">"</span><span class="w"> </span>./cache/stringcache<span class="w"> </span>-run<span class="w"> </span><span class="s1">'^$'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-bench<span class="w"> </span><span class="s1">'^BenchmarkEngine(Chain|Compile)$'</span><span class="w"> </span>-benchmem<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-benchtime<span class="o">=</span>200ms<span class="w"> </span>-count<span class="o">=</span><span class="m">1</span>
+</code></pre></div>
+<p>The tested <abbr title="Regular expression">regex</abbr> counts were 1, 10, 50, 100, 500, and 1000. Query cases were
+first, middle, last, miss, near-miss, subdomain, exact-cache, and
+wildcard-cache. The two <abbr title="Regular expression">regex</abbr> shapes were:</p>
+<div class="highlight"><pre><span></span><code>OISD:   ^(.*\.)?domain$
+Prefix: ^regexN\..*$
+</code></pre></div>
+<h2 id="query-benchmark">Query benchmark</h2>
+<p>Values are <code>ns/op</code>; all corresponding <abbr title="Regular expression">regex</abbr>-hit cases used 3 allocs/op, and
+<abbr title="Regular expression">regex</abbr> misses used 0 B/op and 0 allocs/op.</p>
+<h3 id="oisd-shaped-rules">OISD-shaped rules</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">Regexes</th>
+<th>Case</th>
+<th style="text-align: right;">stdlib</th>
+<th style="text-align: right;">coregex</th>
+<th style="text-align: right;">go-re2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">10</td>
+<td>miss</td>
+<td style="text-align: right;">9,983</td>
+<td style="text-align: right;"><strong>398</strong></td>
+<td style="text-align: right;">9,116</td>
+</tr>
+<tr>
+<td style="text-align: right;">100</td>
+<td>miss</td>
+<td style="text-align: right;">72,491</td>
+<td style="text-align: right;"><strong>1,917</strong></td>
+<td style="text-align: right;">79,403</td>
+</tr>
+<tr>
+<td style="text-align: right;">500</td>
+<td>miss</td>
+<td style="text-align: right;">460,866</td>
+<td style="text-align: right;"><strong>7,820</strong></td>
+<td style="text-align: right;">450,834</td>
+</tr>
+<tr>
+<td style="text-align: right;">1000</td>
+<td>miss</td>
+<td style="text-align: right;">713,841</td>
+<td style="text-align: right;"><strong>22,780</strong></td>
+<td style="text-align: right;">913,159</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td>middle hit</td>
+<td style="text-align: right;">4,070</td>
+<td style="text-align: right;"><strong>1,854</strong></td>
+<td style="text-align: right;">6,375</td>
+</tr>
+<tr>
+<td style="text-align: right;">100</td>
+<td>middle hit</td>
+<td style="text-align: right;">39,017</td>
+<td style="text-align: right;"><strong>2,705</strong></td>
+<td style="text-align: right;">42,594</td>
+</tr>
+<tr>
+<td style="text-align: right;">500</td>
+<td>middle hit</td>
+<td style="text-align: right;">257,355</td>
+<td style="text-align: right;"><strong>6,004</strong></td>
+<td style="text-align: right;">261,451</td>
+</tr>
+<tr>
+<td style="text-align: right;">1000</td>
+<td>middle hit</td>
+<td style="text-align: right;">208,218</td>
+<td style="text-align: right;"><strong>9,832</strong></td>
+<td style="text-align: right;">626,203</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td>last hit</td>
+<td style="text-align: right;">4,081</td>
+<td style="text-align: right;"><strong>1,901</strong></td>
+<td style="text-align: right;">5,686</td>
+</tr>
+<tr>
+<td style="text-align: right;">100</td>
+<td>last hit</td>
+<td style="text-align: right;">22,924</td>
+<td style="text-align: right;"><strong>2,478</strong></td>
+<td style="text-align: right;">71,546</td>
+</tr>
+<tr>
+<td style="text-align: right;">500</td>
+<td>last hit</td>
+<td style="text-align: right;">317,065</td>
+<td style="text-align: right;"><strong>10,783</strong></td>
+<td style="text-align: right;">331,304</td>
+</tr>
+<tr>
+<td style="text-align: right;">1000</td>
+<td>last hit</td>
+<td style="text-align: right;">44,051</td>
+<td style="text-align: right;"><strong>17,459</strong></td>
+<td style="text-align: right;">466,521</td>
+</tr>
+</tbody>
+</table>
+<p>First-hit cost was close because the scan stops immediately:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">Regexes</th>
+<th style="text-align: right;">stdlib</th>
+<th style="text-align: right;">coregex</th>
+<th style="text-align: right;">go-re2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">1,833 ns/op</td>
+<td style="text-align: right;">1,851 ns/op</td>
+<td style="text-align: right;">1,953 ns/op</td>
+</tr>
+<tr>
+<td style="text-align: right;">100</td>
+<td style="text-align: right;">2,202 ns/op</td>
+<td style="text-align: right;"><strong>1,859 ns/op</strong></td>
+<td style="text-align: right;">2,046 ns/op</td>
+</tr>
+<tr>
+<td style="text-align: right;">500</td>
+<td style="text-align: right;">2,542 ns/op</td>
+<td style="text-align: right;">1,898 ns/op</td>
+<td style="text-align: right;">1,903 ns/op</td>
+</tr>
+<tr>
+<td style="text-align: right;">1000</td>
+<td style="text-align: right;">1,856 ns/op</td>
+<td style="text-align: right;">1,930 ns/op</td>
+<td style="text-align: right;"><strong>1,776 ns/op</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="literal-prefix-rules">Literal-prefix rules</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">Regexes</th>
+<th>Case</th>
+<th style="text-align: right;">stdlib</th>
+<th style="text-align: right;">coregex</th>
+<th style="text-align: right;">go-re2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">10</td>
+<td>miss</td>
+<td style="text-align: right;">1,209</td>
+<td style="text-align: right;"><strong>393</strong></td>
+<td style="text-align: right;">4,179</td>
+</tr>
+<tr>
+<td style="text-align: right;">100</td>
+<td>miss</td>
+<td style="text-align: right;">8,282</td>
+<td style="text-align: right;"><strong>1,219</strong></td>
+<td style="text-align: right;">18,855</td>
+</tr>
+<tr>
+<td style="text-align: right;">500</td>
+<td>miss</td>
+<td style="text-align: right;">38,441</td>
+<td style="text-align: right;"><strong>6,948</strong></td>
+<td style="text-align: right;">91,532</td>
+</tr>
+<tr>
+<td style="text-align: right;">1000</td>
+<td>miss</td>
+<td style="text-align: right;">66,024</td>
+<td style="text-align: right;"><strong>22,312</strong></td>
+<td style="text-align: right;">189,877</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td>middle hit</td>
+<td style="text-align: right;"><strong>1,671</strong></td>
+<td style="text-align: right;">3,781</td>
+<td style="text-align: right;">2,464</td>
+</tr>
+<tr>
+<td style="text-align: right;">100</td>
+<td>middle hit</td>
+<td style="text-align: right;"><strong>4,711</strong></td>
+<td style="text-align: right;">26,781</td>
+<td style="text-align: right;">10,691</td>
+</tr>
+<tr>
+<td style="text-align: right;">500</td>
+<td>middle hit</td>
+<td style="text-align: right;"><strong>26,261</strong></td>
+<td style="text-align: right;">168,450</td>
+<td style="text-align: right;">47,967</td>
+</tr>
+<tr>
+<td style="text-align: right;">1000</td>
+<td>middle hit</td>
+<td style="text-align: right;"><strong>38,572</strong></td>
+<td style="text-align: right;">353,263</td>
+<td style="text-align: right;">111,768</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td>last hit</td>
+<td style="text-align: right;"><strong>2,042</strong></td>
+<td style="text-align: right;">4,147</td>
+<td style="text-align: right;">6,297</td>
+</tr>
+<tr>
+<td style="text-align: right;">100</td>
+<td>last hit</td>
+<td style="text-align: right;"><strong>9,714</strong></td>
+<td style="text-align: right;">33,507</td>
+<td style="text-align: right;">22,582</td>
+</tr>
+<tr>
+<td style="text-align: right;">500</td>
+<td>last hit</td>
+<td style="text-align: right;"><strong>42,807</strong></td>
+<td style="text-align: right;">168,309</td>
+<td style="text-align: right;">103,212</td>
+</tr>
+<tr>
+<td style="text-align: right;">1000</td>
+<td>last hit</td>
+<td style="text-align: right;"><strong>74,992</strong></td>
+<td style="text-align: right;">472,348</td>
+<td style="text-align: right;">177,642</td>
+</tr>
+</tbody>
+</table>
+<p>Exact and wildcard hits use the existing reverse chain order, so they do not
+meaningfully distinguish the <abbr title="Regular expression">regex</abbr> engines. This is why the Phase 4 pre-filter
+has higher priority than a global engine replacement.</p>
+<h2 id="existing-repository-benchmark">Existing repository benchmark</h2>
+<p>The repository's own <code>BenchmarkGroupedCache</code> was rerun with the same cache
+composition and 200 regexes. Median of three runs:</p>
+<table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th style="text-align: right;">stdlib</th>
+<th style="text-align: right;">coregex</th>
+<th style="text-align: right;">go-re2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BenchmarkGroupedCacheStringHit</code></td>
+<td style="text-align: right;">730.5 ns/op</td>
+<td style="text-align: right;"><strong>578.1 ns/op</strong></td>
+<td style="text-align: right;">548.9 ns/op</td>
+</tr>
+<tr>
+<td><code>BenchmarkGroupedCacheMiss</code></td>
+<td style="text-align: right;">29,725 ns/op</td>
+<td style="text-align: right;"><strong>4,950 ns/op</strong></td>
+<td style="text-align: right;">64,969 ns/op</td>
+</tr>
+</tbody>
+</table>
+<p>Exact hits reported <code>336 B/op, 2 allocs/op</code> for all engines. The standard
+library miss path reported <code>1 B/op, 0 allocs/op</code>; the two alternatives
+reported <code>0 B/op, 0 allocs/op</code>.</p>
+<h2 id="compile-cost-and-memory">Compile cost and memory</h2>
+<p>Values are medians of three rounds. Format is <code>ns/op / B/op / allocs/op</code> for
+building a fresh <abbr title="Regular expression">regex</abbr> cache.</p>
+<h3 id="oisd-shaped-rules_1">OISD-shaped rules</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">Regexes</th>
+<th>stdlib</th>
+<th>coregex</th>
+<th>go-re2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">100</td>
+<td>1.22 ms / 0.83 MB / 4,586</td>
+<td>11.45 ms / 8.29 MB / 20,054</td>
+<td>2.97 ms / 0.014 MB / 114</td>
+</tr>
+<tr>
+<td style="text-align: right;">500</td>
+<td>6.80 ms / 4.36 MB / 23,026</td>
+<td>59.03 ms / 42.75 MB / 101,173</td>
+<td>16.34 ms / 0.067 MB / 538</td>
+</tr>
+<tr>
+<td style="text-align: right;">1000</td>
+<td>13.79 ms / 8.63 MB / 46,011</td>
+<td>132.23 ms / 84.83 MB / 201,704</td>
+<td>30.34 ms / 0.132 MB / 1,062</td>
+</tr>
+</tbody>
+</table>
+<h3 id="literal-prefix-rules_1">Literal-prefix rules</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">Regexes</th>
+<th>stdlib</th>
+<th>coregex</th>
+<th>go-re2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">100</td>
+<td>0.85 ms / 0.44 MB / 5,490</td>
+<td>8.61 ms / 3.09 MB / 13,990</td>
+<td>1.96 ms / 0.014 MB / 113</td>
+</tr>
+<tr>
+<td style="text-align: right;">500</td>
+<td>3.78 ms / 2.26 MB / 29,092</td>
+<td>27.19 ms / 15.49 MB / 70,392</td>
+<td>10.40 ms / 0.066 MB / 528</td>
+</tr>
+<tr>
+<td style="text-align: right;">1000</td>
+<td>7.96 ms / 4.54 MB / 58,593</td>
+<td>59.80 ms / 30.98 MB / 140,893</td>
+<td>21.33 ms / 0.130 MB / 1,013</td>
+</tr>
+</tbody>
+</table>
+<p>An independent-process probe confirmed the retained-memory direction at 1000
+OISD rules: approximately 8.5 MB RSS for stdlib, 33.5 MB for coregex, and
+6.0–6.4 MB for go-re2. The go-re2 number does not mean it is free: its default
+implementation is a Go-translated WebAssembly RE2 runtime and its binary has
+additional fixed cost.</p>
+<h2 id="binary-initialization-and-build-checks">Binary, initialization, and build checks</h2>
+<p>Unstripped <code>go build .</code> sizes in the scratch copy were:</p>
+<table>
+<thead>
+<tr>
+<th>Engine</th>
+<th style="text-align: right;">Binary size</th>
+<th style="text-align: right;">Change vs stdlib</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>stdlib</td>
+<td style="text-align: right;">37,321,584 bytes</td>
+<td style="text-align: right;">—</td>
+</tr>
+<tr>
+<td>coregex</td>
+<td style="text-align: right;">38,536,808 bytes</td>
+<td style="text-align: right;">+3.3%</td>
+</tr>
+<tr>
+<td>go-re2</td>
+<td style="text-align: right;">42,883,408 bytes</td>
+<td style="text-align: right;">+14.9%</td>
+</tr>
+</tbody>
+</table>
+<p>Direct <code>GODEBUG=inittrace=1</code> runs showed no material explicit initializer
+cost. coregex adds <code>simd</code>, <code>prefilter</code>, and <code>meta</code> package init entries; the
+measured entries together were about 0.01 ms in the probe. The important
+go-re2 cost is its WASM runtime and binary/RSS footprint rather than a large
+named Go initializer.</p>
+<p>Representative <code>CGO_ENABLED=0 go test -c</code> checks passed for all three engines
+on <code>linux/amd64</code>, <code>linux/arm64</code>, and <code>linux/mipsle</code>. This confirms that the
+coregex non-amd64 fallback is buildable for representative targets; it is not
+a performance claim for those targets.</p>
+<p>The go-re2 <code>re2_cgo</code> build was tested and failed because this host has no
+<code>re2.pc</code>/system RE2 installation. The package documentation requires that
+system dependency, which would complicate the existing Zig cross-build and
+musl release path.</p>
+<h2 id="correctness-and-api-checks">Correctness and <abbr title="Application Programming Interface">API</abbr> checks</h2>
+<ul>
+<li>Differential testing compared standard-library and selected-engine results
+  over 2,007 patterns and 6,010 query strings: 12,062,070 match checks.</li>
+<li>It covered OISD and prefix rules, configured examples, empty and Unicode
+  inputs, malformed patterns, <code>String</code>, <code>MatchString</code>, and
+  <code>ReplaceAllString</code>.</li>
+<li>All three variants passed the existing <code>cache/stringcache</code> test suite.</li>
+<li>The full repository compiled with <code>go test ./... -run '^$'</code> for both
+  alternatives in the scratch copy.</li>
+<li>coregex documents the required drop-in methods and requires Go 1.27+, which
+  is satisfied by the repository's current Go version. It remains pre-1.0, so
+  <abbr title="Application Programming Interface">API</abbr> stability is an additional maintenance cost.</li>
+</ul>
+<p>Other production <abbr title="Regular expression">regex</abbr> call sites (<code>resolver/caching_resolver.go</code>,
+<code>resolver/query_logging_resolver.go</code>, <code>util/common.go</code>, <code>config/upstream.go</code>,
+and <code>lists/parsers/hosts.go</code>) were not changed by this benchmark. A future
+engine change must validate those call sites separately, especially the shared
+<code>*regexp.Regexp</code> types in the caching resolver.</p>
+<h2 id="reproduction-notes">Reproduction notes</h2>
+<p>Raw benchmark outputs and the temporary harness were kept under
+<code>/tmp/opencode</code> during the experiment. Reproduce on an otherwise idle host,
+keep the governor at <code>schedutil</code>, rotate engine order between rounds, and do
+not run another compile or benchmark concurrently.</p>
+<h2 id="appendix-benchmark-source-code">Appendix: benchmark source code</h2>
+<p>The following is the complete core of the temporary scratch harness. It was
+kept outside the repository's production packages under
+<code>/tmp/opencode/denyzer-bench</code>.</p>
+<h3 id="build-time-engine-selector">Build-time engine selector</h3>
+<p>The selector used mutually exclusive build tags. The default build selected
+the standard library; <code>-tags bench_coregex</code> selected coregex and
+<code>-tags bench_re2</code> selected go-re2.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// internal/benchregexp/stdlib.go</span>
+<span class="c1">//go:build !bench_re2 &amp;&amp; !bench_coregex</span>
+
+<span class="kn">package</span><span class="w"> </span><span class="nx">benchregexp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="s">"regexp"</span>
+
+<span class="kd">type</span><span class="w"> </span><span class="nx">Regexp</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">regexp</span><span class="p">.</span><span class="nx">Regexp</span>
+
+<span class="kd">var</span><span class="w"> </span><span class="nx">Compile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">regexp</span><span class="p">.</span><span class="nx">Compile</span>
+<span class="kd">var</span><span class="w"> </span><span class="nx">MustCompile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">regexp</span><span class="p">.</span><span class="nx">MustCompile</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">Engine</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"stdlib"</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="c1">// internal/benchregexp/coregex.go</span>
+<span class="c1">//go:build bench_coregex &amp;&amp; !bench_re2</span>
+
+<span class="kn">package</span><span class="w"> </span><span class="nx">benchregexp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="s">"github.com/coregx/coregex"</span>
+
+<span class="kd">type</span><span class="w"> </span><span class="nx">Regexp</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">coregex</span><span class="p">.</span><span class="nx">Regexp</span>
+
+<span class="kd">var</span><span class="w"> </span><span class="nx">Compile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">coregex</span><span class="p">.</span><span class="nx">Compile</span>
+<span class="kd">var</span><span class="w"> </span><span class="nx">MustCompile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">coregex</span><span class="p">.</span><span class="nx">MustCompile</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">Engine</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"coregex"</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="c1">// internal/benchregexp/re2.go</span>
+<span class="c1">//go:build bench_re2 &amp;&amp; !bench_coregex</span>
+
+<span class="kn">package</span><span class="w"> </span><span class="nx">benchregexp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nx">re2</span><span class="w"> </span><span class="s">"github.com/wasilibs/go-re2"</span>
+
+<span class="kd">type</span><span class="w"> </span><span class="nx">Regexp</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">re2</span><span class="p">.</span><span class="nx">Regexp</span>
+
+<span class="kd">var</span><span class="w"> </span><span class="nx">Compile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">re2</span><span class="p">.</span><span class="nx">Compile</span>
+<span class="kd">var</span><span class="w"> </span><span class="nx">MustCompile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">re2</span><span class="p">.</span><span class="nx">MustCompile</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">Engine</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"go-re2"</span>
+</code></pre></div>
+<h3 id="real-cache-path-benchmark">Real cache-path benchmark</h3>
+<p>This test lives in <code>cache/stringcache</code>, so it can use the package's actual
+<code>ChainedGroupedCache</code>, <code>InMemoryGroupedCache</code>, <abbr title="Regular expression">regex</abbr> factory, and OISD test data.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">package</span><span class="w"> </span><span class="nx">stringcache</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="s">"fmt"</span>
+<span class="w">    </span><span class="s">"regexp"</span>
+<span class="w">    </span><span class="s">"runtime"</span>
+<span class="w">    </span><span class="s">"strings"</span>
+<span class="w">    </span><span class="s">"testing"</span>
+
+<span class="w">    </span><span class="nx">engine</span><span class="w"> </span><span class="s">"github.com/mia0x75/denyzer/internal/benchregexp"</span>
+<span class="p">)</span>
+
+<span class="c1">// Patterns use the repository's actual OISD-derived data, in file order.</span>
+<span class="c1">// Prefix patterns match the shape in grouped_cache_lookup_bench_test.go.</span>
+<span class="kd">func</span><span class="w"> </span><span class="nx">enginePatterns</span><span class="p">(</span><span class="nx">shape</span><span class="w"> </span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="w"> </span><span class="kt">int</span><span class="p">)</span><span class="w"> </span><span class="p">([]</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">patterns</span><span class="p">,</span><span class="w"> </span><span class="nx">domains</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">make</span><span class="p">([]</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="p">),</span><span class="w"> </span><span class="nb">make</span><span class="p">([]</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="p">)</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">i</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">n</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">shape</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">"oisd"</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">patterns</span><span class="p">[</span><span class="nx">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">regexTestData</span><span class="p">[</span><span class="nx">i</span><span class="p">]</span>
+<span class="w">            </span><span class="nx">domains</span><span class="p">[</span><span class="nx">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">strings</span><span class="p">.</span><span class="nx">TrimPrefix</span><span class="p">(</span><span class="nx">wildcardTestData</span><span class="p">[</span><span class="nx">i</span><span class="p">],</span><span class="w"> </span><span class="s">"*."</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">patterns</span><span class="p">[</span><span class="nx">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">`/^regex%d\..*$/`</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">)</span>
+<span class="w">            </span><span class="nx">domains</span><span class="p">[</span><span class="nx">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">"regex%d.example.com"</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">patterns</span><span class="p">,</span><span class="w"> </span><span class="nx">domains</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="nx">engineChain</span><span class="p">(</span><span class="nx">tb</span><span class="w"> </span><span class="nx">testing</span><span class="p">.</span><span class="nx">TB</span><span class="p">,</span><span class="w"> </span><span class="nx">patterns</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="nx">ChainedGroupedCache</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">tb</span><span class="p">.</span><span class="nx">Helper</span><span class="p">()</span>
+<span class="w">    </span><span class="nx">c</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">NewChainedGroupedCache</span><span class="p">(</span>
+<span class="w">        </span><span class="nx">NewInMemoryGroupedRegexCache</span><span class="p">(),</span>
+<span class="w">        </span><span class="nx">NewInMemoryGroupedWildcardCache</span><span class="p">(),</span>
+<span class="w">        </span><span class="nx">NewInMemoryGroupedStringCache</span><span class="p">(),</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="nx">f</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">Refresh</span><span class="p">(</span><span class="s">"default"</span><span class="p">)</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">patterns</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">f</span><span class="p">.</span><span class="nx">AddEntry</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">tb</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"entry rejected: %s"</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">i</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="mi">200</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">f</span><span class="p">.</span><span class="nx">AddEntry</span><span class="p">(</span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">"*.wild%d.example"</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">))</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">i</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="mi">5000</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">f</span><span class="p">.</span><span class="nx">AddEntry</span><span class="p">(</span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">"string%d.example.com"</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">))</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nx">f</span><span class="p">.</span><span class="nx">Finish</span><span class="p">()</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">got</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">ElementCount</span><span class="p">(</span><span class="s">"default"</span><span class="p">);</span><span class="w"> </span><span class="nx">got</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">patterns</span><span class="p">)</span><span class="o">+</span><span class="mi">5200</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">tb</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"count %d"</span><span class="p">,</span><span class="w"> </span><span class="nx">got</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">c</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="nx">BenchmarkEngineChain</span><span class="p">(</span><span class="nx">b</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">B</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">shape</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">"oisd"</span><span class="p">,</span><span class="w"> </span><span class="s">"prefix"</span><span class="p">}</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="p">[]</span><span class="kt">int</span><span class="p">{</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span><span class="w"> </span><span class="mi">100</span><span class="p">,</span><span class="w"> </span><span class="mi">500</span><span class="p">,</span><span class="w"> </span><span class="mi">1000</span><span class="p">}</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">patterns</span><span class="p">,</span><span class="w"> </span><span class="nx">domains</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">enginePatterns</span><span class="p">(</span><span class="nx">shape</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="p">)</span>
+<span class="w">            </span><span class="nx">c</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">engineChain</span><span class="p">(</span><span class="nx">b</span><span class="p">,</span><span class="w"> </span><span class="nx">patterns</span><span class="p">)</span>
+<span class="w">            </span><span class="nx">cases</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="p">[]</span><span class="kd">struct</span><span class="p">{</span><span class="w"> </span><span class="nx">name</span><span class="p">,</span><span class="w"> </span><span class="nx">domain</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="p">}{</span>
+<span class="w">                </span><span class="p">{</span><span class="s">"first"</span><span class="p">,</span><span class="w"> </span><span class="nx">domains</span><span class="p">[</span><span class="mi">0</span><span class="p">]},</span>
+<span class="w">                </span><span class="p">{</span><span class="s">"middle"</span><span class="p">,</span><span class="w"> </span><span class="nx">domains</span><span class="p">[</span><span class="nx">n</span><span class="o">/</span><span class="mi">2</span><span class="p">]},</span>
+<span class="w">                </span><span class="p">{</span><span class="s">"last"</span><span class="p">,</span><span class="w"> </span><span class="nx">domains</span><span class="p">[</span><span class="nx">n</span><span class="o">-</span><span class="mi">1</span><span class="p">]},</span>
+<span class="w">                </span><span class="p">{</span><span class="s">"subdomain"</span><span class="p">,</span><span class="w"> </span><span class="s">"a.b.c."</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nx">domains</span><span class="p">[</span><span class="nx">n</span><span class="o">-</span><span class="mi">1</span><span class="p">]},</span>
+<span class="w">                </span><span class="p">{</span><span class="s">"miss"</span><span class="p">,</span><span class="w"> </span><span class="s">"not-present.example.org"</span><span class="p">},</span>
+<span class="w">                </span><span class="p">{</span><span class="s">"near-miss"</span><span class="p">,</span><span class="w"> </span><span class="nx">domains</span><span class="p">[</span><span class="nx">n</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">".invalid"</span><span class="p">},</span>
+<span class="w">                </span><span class="p">{</span><span class="s">"short-miss"</span><span class="p">,</span><span class="w"> </span><span class="s">"x.io"</span><span class="p">},</span>
+<span class="w">                </span><span class="p">{</span><span class="s">"exact"</span><span class="p">,</span><span class="w"> </span><span class="s">"string1234.example.com"</span><span class="p">},</span>
+<span class="w">                </span><span class="p">{</span><span class="s">"wildcard"</span><span class="p">,</span><span class="w"> </span><span class="s">"a.wild123.example"</span><span class="p">},</span>
+<span class="w">            </span><span class="p">}</span>
+
+<span class="w">            </span><span class="c1">// Calculate the expected rule independently with the standard library.</span>
+<span class="w">            </span><span class="nx">refs</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">make</span><span class="p">([]</span><span class="o">*</span><span class="nx">regexp</span><span class="p">.</span><span class="nx">Regexp</span><span class="p">,</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">patterns</span><span class="p">))</span>
+<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="nx">i</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">patterns</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="nx">refs</span><span class="p">[</span><span class="nx">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">regexp</span><span class="p">.</span><span class="nx">MustCompile</span><span class="p">(</span><span class="nx">p</span><span class="p">[</span><span class="mi">1</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">tc</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">cases</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="nx">want</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="s">""</span>
+<span class="w">                </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">refs</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="k">if</span><span class="w"> </span><span class="nx">r</span><span class="p">.</span><span class="nx">MatchString</span><span class="p">(</span><span class="nx">tc</span><span class="p">.</span><span class="nx">domain</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="nx">want</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"/"</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nx">r</span><span class="p">.</span><span class="nx">String</span><span class="p">()</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">"/"</span>
+<span class="w">                        </span><span class="k">break</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="nx">tc</span><span class="p">.</span><span class="nx">name</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">"exact"</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nx">want</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">tc</span><span class="p">.</span><span class="nx">domain</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="nx">tc</span><span class="p">.</span><span class="nx">name</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">"wildcard"</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nx">want</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"*.wild123.example"</span>
+<span class="w">                </span><span class="p">}</span>
+
+<span class="w">                </span><span class="nx">b</span><span class="p">.</span><span class="nx">Run</span><span class="p">(</span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">"%s/n=%d/%s"</span><span class="p">,</span><span class="w"> </span><span class="nx">shape</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="p">,</span><span class="w"> </span><span class="nx">tc</span><span class="p">.</span><span class="nx">name</span><span class="p">),</span><span class="w"> </span><span class="kd">func</span><span class="p">(</span><span class="nx">b</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">B</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nx">groups</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">"default"</span><span class="p">}</span>
+<span class="w">                    </span><span class="k">if</span><span class="w"> </span><span class="nx">got</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">tc</span><span class="p">.</span><span class="nx">domain</span><span class="p">,</span><span class="w"> </span><span class="nx">groups</span><span class="p">)[</span><span class="s">"default"</span><span class="p">];</span><span class="w"> </span><span class="nx">got</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nx">want</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="nx">b</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"got %q want %q"</span><span class="p">,</span><span class="w"> </span><span class="nx">got</span><span class="p">,</span><span class="w"> </span><span class="nx">want</span><span class="p">)</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                    </span><span class="nx">b</span><span class="p">.</span><span class="nx">ReportAllocs</span><span class="p">()</span>
+<span class="w">                    </span><span class="nx">b</span><span class="p">.</span><span class="nx">ResetTimer</span><span class="p">()</span>
+<span class="w">                    </span><span class="k">for</span><span class="w"> </span><span class="nx">b</span><span class="p">.</span><span class="nx">Loop</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">tc</span><span class="p">.</span><span class="nx">domain</span><span class="p">,</span><span class="w"> </span><span class="nx">groups</span><span class="p">)</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                </span><span class="p">})</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="nx">BenchmarkEngineCompile</span><span class="p">(</span><span class="nx">b</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">B</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">shape</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">"oisd"</span><span class="p">,</span><span class="w"> </span><span class="s">"prefix"</span><span class="p">}</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="p">[]</span><span class="kt">int</span><span class="p">{</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span><span class="w"> </span><span class="mi">100</span><span class="p">,</span><span class="w"> </span><span class="mi">500</span><span class="p">,</span><span class="w"> </span><span class="mi">1000</span><span class="p">}</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">patterns</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">enginePatterns</span><span class="p">(</span><span class="nx">shape</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="p">)</span>
+<span class="w">            </span><span class="nx">b</span><span class="p">.</span><span class="nx">Run</span><span class="p">(</span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">"%s/n=%d"</span><span class="p">,</span><span class="w"> </span><span class="nx">shape</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="p">),</span><span class="w"> </span><span class="kd">func</span><span class="p">(</span><span class="nx">b</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">B</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="nx">b</span><span class="p">.</span><span class="nx">ReportAllocs</span><span class="p">()</span>
+<span class="w">                </span><span class="k">for</span><span class="w"> </span><span class="nx">b</span><span class="p">.</span><span class="nx">Loop</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nx">f</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">newRegexCacheFactory</span><span class="p">()</span>
+<span class="w">                    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">patterns</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">f</span><span class="p">.</span><span class="nx">addEntry</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                            </span><span class="nx">b</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span>
+<span class="w">                        </span><span class="p">}</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                    </span><span class="k">if</span><span class="w"> </span><span class="nx">f</span><span class="p">.</span><span class="nx">count</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nx">n</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="nx">b</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"compiled %d want %d"</span><span class="p">,</span><span class="w"> </span><span class="nx">f</span><span class="p">.</span><span class="nx">count</span><span class="p">(),</span><span class="w"> </span><span class="nx">n</span><span class="p">)</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                    </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">f</span><span class="p">.</span><span class="nx">create</span><span class="p">()</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">            </span><span class="p">})</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="differential-correctness-and-retained-memory-checks">Differential correctness and retained-memory checks</h3>
+<p>The correctness test compared every selected engine against the standard
+library. It also checked replacement behavior because <code>util.Obfuscate</code> uses
+<code>ReplaceAllString</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">func</span><span class="w"> </span><span class="nx">TestEngineDifferential</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">patterns</span><span class="p">,</span><span class="w"> </span><span class="nx">domains</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">enginePatterns</span><span class="p">(</span><span class="s">"oisd"</span><span class="p">,</span><span class="w"> </span><span class="mi">1000</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">pp</span><span class="p">,</span><span class="w"> </span><span class="nx">dd</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">enginePatterns</span><span class="p">(</span><span class="s">"prefix"</span><span class="p">,</span><span class="w"> </span><span class="mi">1000</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">patterns</span><span class="p">,</span><span class="w"> </span><span class="nx">domains</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">patterns</span><span class="p">,</span><span class="w"> </span><span class="nx">pp</span><span class="p">...),</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">domains</span><span class="p">,</span><span class="w"> </span><span class="nx">dd</span><span class="p">...)</span>
+<span class="w">    </span><span class="nx">patterns</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">patterns</span><span class="p">,</span>
+<span class="w">        </span><span class="s">`/.*google.com/`</span><span class="p">,</span><span class="w"> </span><span class="s">`/^apple\.(de|com)$/`</span><span class="p">,</span><span class="w"> </span><span class="s">`/amazon/`</span><span class="p">,</span>
+<span class="w">        </span><span class="s">`/(?i)example\.com$/`</span><span class="p">,</span><span class="w"> </span><span class="s">`/^$/`</span><span class="p">,</span><span class="w"> </span><span class="s">`/\bads\b/`</span><span class="p">,</span><span class="w"> </span><span class="s">`/[a-zA-Z0-9]/`</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="nx">queries</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span>
+<span class="w">        </span><span class="s">""</span><span class="p">,</span><span class="w"> </span><span class="s">"x.io"</span><span class="p">,</span><span class="w"> </span><span class="s">"not-present.example.org"</span><span class="p">,</span><span class="w"> </span><span class="s">"EXAMPLE.COM"</span><span class="p">,</span><span class="w"> </span><span class="s">"apple.de"</span><span class="p">,</span>
+<span class="w">        </span><span class="s">"www.google.com"</span><span class="p">,</span><span class="w"> </span><span class="s">"amazon"</span><span class="p">,</span><span class="w"> </span><span class="s">"ads.example"</span><span class="p">,</span><span class="w"> </span><span class="s">"例子.测试"</span><span class="p">,</span><span class="w"> </span><span class="s">"a\x00b"</span><span class="p">,</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">d</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">domains</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">queries</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">queries</span><span class="p">,</span><span class="w"> </span><span class="nx">d</span><span class="p">,</span><span class="w"> </span><span class="s">"a.b."</span><span class="o">+</span><span class="nx">d</span><span class="p">,</span><span class="w"> </span><span class="nx">d</span><span class="o">+</span><span class="s">".invalid"</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nx">checks</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="mi">0</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">patterns</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">p</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">p</span><span class="p">[</span><span class="mi">1</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+<span class="w">        </span><span class="nx">ref</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">regexp</span><span class="p">.</span><span class="nx">Compile</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="nx">got</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">engine</span><span class="p">.</span><span class="nx">Compile</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"%s compile %q: %v"</span><span class="p">,</span><span class="w"> </span><span class="nx">engine</span><span class="p">.</span><span class="nx">Engine</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">got</span><span class="p">.</span><span class="nx">String</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nx">ref</span><span class="p">.</span><span class="nx">String</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"String mismatch %q"</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">q</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">queries</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="nx">a</span><span class="p">,</span><span class="w"> </span><span class="nx">b</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">got</span><span class="p">.</span><span class="nx">MatchString</span><span class="p">(</span><span class="nx">q</span><span class="p">),</span><span class="w"> </span><span class="nx">ref</span><span class="p">.</span><span class="nx">MatchString</span><span class="p">(</span><span class="nx">q</span><span class="p">);</span><span class="w"> </span><span class="nx">a</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nx">b</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"%s pattern=%q query=%q got=%v want=%v"</span><span class="p">,</span><span class="w"> </span><span class="nx">engine</span><span class="p">.</span><span class="nx">Engine</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="p">,</span><span class="w"> </span><span class="nx">q</span><span class="p">,</span><span class="w"> </span><span class="nx">a</span><span class="p">,</span><span class="w"> </span><span class="nx">b</span><span class="p">)</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="nx">checks</span><span class="o">++</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">"*"</span><span class="p">,</span><span class="w"> </span><span class="s">"?"</span><span class="p">,</span><span class="w"> </span><span class="s">"+"</span><span class="p">,</span><span class="w"> </span><span class="s">"["</span><span class="p">,</span><span class="w"> </span><span class="s">"(wrongRegex"</span><span class="p">,</span><span class="w"> </span><span class="s">`\q`</span><span class="p">}</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">a</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">regexp</span><span class="p">.</span><span class="nx">Compile</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">b</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">engine</span><span class="p">.</span><span class="nx">Compile</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">a</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">nil</span><span class="p">)</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="p">(</span><span class="nx">b</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">nil</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"compile acceptance %q: %v / %v"</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="p">,</span><span class="w"> </span><span class="nx">a</span><span class="p">,</span><span class="w"> </span><span class="nx">b</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">`[a-zA-Z0-9]`</span><span class="p">,</span><span class="w"> </span><span class="s">`(example)`</span><span class="p">,</span><span class="w"> </span><span class="s">`^|$`</span><span class="p">}</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">a</span><span class="p">,</span><span class="w"> </span><span class="nx">b</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">regexp</span><span class="p">.</span><span class="nx">MustCompile</span><span class="p">(</span><span class="nx">p</span><span class="p">),</span><span class="w"> </span><span class="nx">engine</span><span class="p">.</span><span class="nx">MustCompile</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">q</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">queries</span><span class="p">[:</span><span class="mi">10</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">replacement</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">"*"</span><span class="p">,</span><span class="w"> </span><span class="s">"$1"</span><span class="p">,</span><span class="w"> </span><span class="s">"${1}-x"</span><span class="p">}</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="nx">a</span><span class="p">.</span><span class="nx">ReplaceAllString</span><span class="p">(</span><span class="nx">q</span><span class="p">,</span><span class="w"> </span><span class="nx">replacement</span><span class="p">)</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nx">b</span><span class="p">.</span><span class="nx">ReplaceAllString</span><span class="p">(</span><span class="nx">q</span><span class="p">,</span><span class="w"> </span><span class="nx">replacement</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"replacement mismatch %q %q"</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="p">,</span><span class="w"> </span><span class="nx">q</span><span class="p">)</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nx">t</span><span class="p">.</span><span class="nx">Logf</span><span class="p">(</span><span class="s">"engine=%s patterns=%d queries=%d match_checks=%d"</span><span class="p">,</span><span class="w"> </span><span class="nx">engine</span><span class="p">.</span><span class="nx">Engine</span><span class="p">,</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">patterns</span><span class="p">),</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">queries</span><span class="p">),</span><span class="w"> </span><span class="nx">checks</span><span class="p">)</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="nx">TestEngineRetainedMemory</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">shape</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">"oisd"</span><span class="p">,</span><span class="w"> </span><span class="s">"prefix"</span><span class="p">}</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="p">[]</span><span class="kt">int</span><span class="p">{</span><span class="mi">100</span><span class="p">,</span><span class="w"> </span><span class="mi">500</span><span class="p">,</span><span class="w"> </span><span class="mi">1000</span><span class="p">}</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">patterns</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">enginePatterns</span><span class="p">(</span><span class="nx">shape</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="p">)</span>
+<span class="w">            </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">GC</span><span class="p">()</span>
+<span class="w">            </span><span class="kd">var</span><span class="w"> </span><span class="nx">before</span><span class="p">,</span><span class="w"> </span><span class="nx">after</span><span class="w"> </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">MemStats</span>
+<span class="w">            </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">ReadMemStats</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">before</span><span class="p">)</span>
+<span class="w">            </span><span class="nx">f</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">newRegexCacheFactory</span><span class="p">()</span>
+<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">patterns</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">f</span><span class="p">.</span><span class="nx">addEntry</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">p</span><span class="p">)</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="nx">cache</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">f</span><span class="p">.</span><span class="nx">create</span><span class="p">()</span>
+<span class="w">            </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">ReadMemStats</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">after</span><span class="p">)</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="nx">cache</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="s">"empty cache"</span><span class="p">)</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="nx">t</span><span class="p">.</span><span class="nx">Logf</span><span class="p">(</span><span class="s">"engine=%s shape=%s n=%d heap_delta=%d alloc_delta=%d"</span><span class="p">,</span>
+<span class="w">                </span><span class="nx">engine</span><span class="p">.</span><span class="nx">Engine</span><span class="p">,</span><span class="w"> </span><span class="nx">shape</span><span class="p">,</span><span class="w"> </span><span class="nx">n</span><span class="p">,</span>
+<span class="w">                </span><span class="nx">after</span><span class="p">.</span><span class="nx">HeapAlloc</span><span class="o">-</span><span class="nx">before</span><span class="p">.</span><span class="nx">HeapAlloc</span><span class="p">,</span>
+<span class="w">                </span><span class="nx">after</span><span class="p">.</span><span class="nx">TotalAlloc</span><span class="o">-</span><span class="nx">before</span><span class="p">.</span><span class="nx">TotalAlloc</span><span class="p">)</span>
+<span class="w">            </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">cache</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="independent-compilerss-probe">Independent compile/RSS probe</h3>
+<p>The probe was built three times with the same selector tags. Running it as a
+separate process avoided retaining allocations from one engine or one <abbr title="Regular expression">regex</abbr>
+count while measuring another.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">package</span><span class="w"> </span><span class="nx">main</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="s">"flag"</span>
+<span class="w">    </span><span class="s">"fmt"</span>
+<span class="w">    </span><span class="s">"os"</span>
+<span class="w">    </span><span class="s">"runtime"</span>
+<span class="w">    </span><span class="s">"strconv"</span>
+<span class="w">    </span><span class="s">"strings"</span>
+<span class="w">    </span><span class="s">"time"</span>
+
+<span class="w">    </span><span class="s">"github.com/mia0x75/denyzer/internal/benchregexp"</span>
+<span class="p">)</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="nx">main</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">n</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">flag</span><span class="p">.</span><span class="nx">Int</span><span class="p">(</span><span class="s">"n"</span><span class="p">,</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span><span class="w"> </span><span class="s">"number of regexes"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">shape</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">flag</span><span class="p">.</span><span class="nx">String</span><span class="p">(</span><span class="s">"shape"</span><span class="p">,</span><span class="w"> </span><span class="s">"oisd"</span><span class="p">,</span><span class="w"> </span><span class="s">"pattern shape: oisd or prefix"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">flag</span><span class="p">.</span><span class="nx">Parse</span><span class="p">()</span>
+
+<span class="w">    </span><span class="nx">patterns</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">make</span><span class="p">([]</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="o">*</span><span class="nx">n</span><span class="p">)</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">i</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">patterns</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="o">*</span><span class="nx">shape</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">"prefix"</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">patterns</span><span class="p">[</span><span class="nx">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">`^regex%d\..*$`</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">patterns</span><span class="p">[</span><span class="nx">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">`^(.*\.)?domain%d\.example\.com$`</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nx">start</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">time</span><span class="p">.</span><span class="nx">Now</span><span class="p">()</span>
+<span class="w">    </span><span class="nx">compiled</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">make</span><span class="p">([]</span><span class="o">*</span><span class="nx">benchregexp</span><span class="p">.</span><span class="nx">Regexp</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">patterns</span><span class="p">))</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">pattern</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">patterns</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">r</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">benchregexp</span><span class="p">.</span><span class="nx">Compile</span><span class="p">(</span><span class="nx">pattern</span><span class="p">)</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nb">panic</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="nx">compiled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">compiled</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">KeepAlive</span><span class="p">(</span><span class="nx">compiled</span><span class="p">)</span>
+
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">stats</span><span class="w"> </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">MemStats</span>
+<span class="w">    </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">ReadMemStats</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">stats</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">matched</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kc">false</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">compiled</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">matched</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">compiled</span><span class="p">[</span><span class="nb">len</span><span class="p">(</span><span class="nx">compiled</span><span class="p">)</span><span class="o">-</span><span class="mi">1</span><span class="p">].</span><span class="nx">MatchString</span><span class="p">(</span><span class="s">"a.domain999.example.com"</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Printf</span><span class="p">(</span>
+<span class="w">        </span><span class="s">"engine=%s shape=%s n=%d compile_ns=%d heap_alloc=%d heap_sys=%d rss_kb=%d match=%v\n"</span><span class="p">,</span>
+<span class="w">        </span><span class="nx">benchregexp</span><span class="p">.</span><span class="nx">Engine</span><span class="p">,</span><span class="w"> </span><span class="o">*</span><span class="nx">shape</span><span class="p">,</span><span class="w"> </span><span class="o">*</span><span class="nx">n</span><span class="p">,</span><span class="w"> </span><span class="nx">time</span><span class="p">.</span><span class="nx">Since</span><span class="p">(</span><span class="nx">start</span><span class="p">).</span><span class="nx">Nanoseconds</span><span class="p">(),</span>
+<span class="w">        </span><span class="nx">stats</span><span class="p">.</span><span class="nx">HeapAlloc</span><span class="p">,</span><span class="w"> </span><span class="nx">stats</span><span class="p">.</span><span class="nx">HeapSys</span><span class="p">,</span><span class="w"> </span><span class="nx">rssKB</span><span class="p">(),</span><span class="w"> </span><span class="nx">matched</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="nx">rssKB</span><span class="p">()</span><span class="w"> </span><span class="kt">int64</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">data</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">"/proc/self/status"</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="o">-</span><span class="mi">1</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">line</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">strings</span><span class="p">.</span><span class="nx">Split</span><span class="p">(</span><span class="kt">string</span><span class="p">(</span><span class="nx">data</span><span class="p">),</span><span class="w"> </span><span class="s">"\n"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">fields</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">strings</span><span class="p">.</span><span class="nx">Fields</span><span class="p">(</span><span class="nx">line</span><span class="p">)</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">fields</span><span class="p">)</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">3</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nx">fields</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">"VmRSS:"</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nx">value</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">strconv</span><span class="p">.</span><span class="nx">ParseInt</span><span class="p">(</span><span class="nx">fields</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="mi">64</span><span class="p">)</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="nx">value</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="o">-</span><span class="mi">1</span>
+<span class="p">}</span>
+</code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/mia0x75/denyzer" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://ghcr.io/mia0x75/denyzer" target="_blank" rel="noopener" title="ghcr.io" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M349.9 236.3h-66.1v-59.4h66.1zm0-204.3h-66.1v60.7h66.1zm78.2 144.8H362v59.4h66.1zm-156.3-72.1h-66.1v60.1h66.1zm78.1 0h-66.1v60.1h66.1zm276.8 100c-14.4-9.7-47.6-13.2-73.1-8.4-3.3-24-16.7-44.9-41.1-63.7l-14-9.3-9.3 14c-18.4 27.8-23.4 73.6-3.7 103.8-8.7 4.7-25.8 11.1-48.4 10.7H2.4c-8.7 50.8 5.8 116.8 44 162.1 37.1 43.9 92.7 66.2 165.4 66.2 157.4 0 273.9-72.5 328.4-204.2 21.4.4 67.6.1 91.3-45.2 1.5-2.5 6.6-13.2 8.5-17.1zm-511.1-27.9h-66v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1zm78.1 0h-66.1v59.4h66.1zm-78.1-72.1h-66.1v60.1h66.1z"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.instant.prefetch", "navigation.instant.progress", "navigation.tracking", "navigation.top", "toc.follow", "content.code.copy", "content.code.annotate", "content.tooltips", "content.action.edit", "search.suggest", "search.highlight", "search.share"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>

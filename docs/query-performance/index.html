@@ -1,0 +1,2785 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="denyzer Documentation">
+      
+      
+      
+      
+        <link rel="prev" href="../startup-performance/">
+      
+      
+        <link rel="next" href="../regex-engine-benchmark/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Query performance - denyzer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#query-performance-optimization-plan" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="denyzer" class="md-header__button md-logo" aria-label="denyzer" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            denyzer
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Query performance
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/mia0x75/denyzer" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="denyzer" class="md-nav__button md-logo" aria-label="denyzer" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    denyzer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/mia0x75/denyzer" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Welcome
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../interfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Interfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../network_configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Network configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../additional_information/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Additional information
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Performance
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../startup-performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Startup performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query performance
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#original-baseline-and-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Original baseline and rules
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Original baseline and rules">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#noise-floor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Noise floor
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-1-establish-the-complete-query-baseline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1: establish the complete query baseline
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 1: establish the complete query baseline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#objective" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Objective
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Work
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-was-added" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What was added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#baseline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Baseline
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-the-baseline-shows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the baseline shows
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reproducing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reproducing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deliverables-and-acceptance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deliverables and acceptance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-2-request-logging-plumbing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2: request logging plumbing
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 2: request logging plumbing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#required-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#acceptance-target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acceptance target
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Result
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-3-remove-avoidable-per-query-allocations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 3: remove avoidable per-query allocations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 3: remove avoidable per-query allocations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resolver-race-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resolver race path
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#request-and-logging-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request and logging fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cache-result-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache result path
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#acceptance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acceptance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Result
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-4-blocking-regex-pre-filter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 4: blocking regex pre-filter
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 4: blocking regex pre-filter">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#existing-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Existing behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#classification-rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Classification rate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#measurement-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Measurement matrix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#correctness-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Correctness coverage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Result
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#acceptance_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acceptance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-order-and-commits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Execution order and commits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#risk-and-rollback-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk and rollback checklist
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../regex-engine-benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regex engine benchmark
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../logging-performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Logging migration and performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Decisions
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sqlite-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQLite driver and release pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#original-baseline-and-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Original baseline and rules
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Original baseline and rules">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#noise-floor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Noise floor
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-1-establish-the-complete-query-baseline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1: establish the complete query baseline
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 1: establish the complete query baseline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#objective" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Objective
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Work
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-was-added" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What was added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#baseline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Baseline
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-the-baseline-shows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the baseline shows
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reproducing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reproducing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deliverables-and-acceptance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deliverables and acceptance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-2-request-logging-plumbing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2: request logging plumbing
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 2: request logging plumbing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#required-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#acceptance-target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acceptance target
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Result
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-3-remove-avoidable-per-query-allocations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 3: remove avoidable per-query allocations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 3: remove avoidable per-query allocations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resolver-race-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resolver race path
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#request-and-logging-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request and logging fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cache-result-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache result path
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#acceptance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acceptance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Result
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-4-blocking-regex-pre-filter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 4: blocking regex pre-filter
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 4: blocking regex pre-filter">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#existing-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Existing behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#classification-rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Classification rate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#measurement-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Measurement matrix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#correctness-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Correctness coverage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Result
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#acceptance_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acceptance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-order-and-commits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Execution order and commits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#risk-and-rollback-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk and rollback checklist
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/mia0x75/denyzer/edit/main/docs/query-performance.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="query-performance-optimization-plan">Query performance optimization plan</h1>
+<div class="admonition note">
+<p class="admonition-title">Measurement history</p>
+<p>The tables record experiments from the source branch, including intermediate implementations.
+They are not fresh measurements of this branch. Use the reproduction commands to measure the current build.</p>
+</div>
+<p>This report records the original four-phase query optimization. Its Logrus
+logging decision and measurements are historical: the subsequent
+<a href="../logging-performance/"><code>log/slog</code> migration</a> replaces the eager entry cloning
+and separates isolated logging overhead from complete-chain/query measurements.</p>
+<h2 id="decision">Decision</h2>
+<p>Denyzer will continue using Go's standard-library <code>regexp</code> package.</p>
+<p>The <abbr title="Regular expression">regex</abbr>-engine benchmark in <a href="../regex-engine-benchmark/"><code>regex-engine-benchmark.md</code></a>
+tested the real grouped-cache path with OISD-shaped and literal-prefix rules.
+<code>go-re2</code> was not a win for this workload and its <code>re2_cgo</code> mode conflicts with
+the current cross-build environment. <code>coregex</code> is much faster for some OISD
+scans, but slower for other realistic patterns and has substantially higher
+compile and retained-memory costs. Neither result justifies a global engine
+replacement.</p>
+<p>The optimization target is therefore the work around <abbr title="Regular expression">regex</abbr> matching:</p>
+<ol>
+<li>measure the complete query path;</li>
+<li>evaluate the per-resolver logging plumbing (the initial Logrus lazy variant
+   was rejected, see Phase 2; the later slog migration is reported separately);</li>
+<li>remove avoidable per-query allocations;</li>
+<li>reduce the number of <abbr title="Regular expression">regex</abbr> calls with a semantics-preserving blocking
+   pre-filter.</li>
+</ol>
+<p><abbr title="YAML Ain't Markup Language">YAML</abbr> work remains outside this plan.</p>
+<h2 id="original-baseline-and-rules">Original baseline and rules</h2>
+<p>The existing startup work is complete and documented in
+<a href="../startup-performance/"><code>startup-performance.md</code></a>. The query work uses the same
+measurement discipline:</p>
+<ul>
+<li>Go <code>1.27.3</code>;</li>
+<li>Linux amd64, AMD Ryzen 7 5700U (16 threads), <code>schedutil</code> governor;</li>
+<li>the governor stays at <code>schedutil</code> — pinning the cores to <code>performance</code> lets
+  the package hit its power limit and collapses the throughput of the
+  CPU-bound cases, exactly as the startup work showed;</li>
+<li>the two sides of a comparison are run alternately (A, B, A, B, ...) and the
+  <strong>median</strong> of the rounds is reported;</li>
+<li>seven rounds per side, <code>-benchtime=1s</code>;</li>
+<li>no concurrent compile, test, or benchmark process;</li>
+<li>commands run with proxy variables removed:</li>
+</ul>
+<div class="highlight"><pre><span></span><code>env<span class="w"> </span>-u<span class="w"> </span>HTTP_PROXY<span class="w"> </span>-u<span class="w"> </span>HTTPS_PROXY<span class="w"> </span>-u<span class="w"> </span>http_proxy<span class="w"> </span>-u<span class="w"> </span>https_proxy<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-u<span class="w"> </span>SOCKS5_PROXY<span class="w"> </span>&lt;command&gt;
+</code></pre></div>
+<p>At the time of these four phases, <code>benchstat</code> was unavailable in the build
+environment (no network access), so the A/B runner was a small local script: it
+built both sides once, ran the alternating rounds, and reported the median, the
+min-max spread and the delta.
+The raw output of every round is kept in the temporary benchmark directory. The
+later slog comparison uses <code>benchstat</code> and ten alternating pairs, not these
+historical timing tables.</p>
+<p>Every phase must report <code>ns/op</code>, <code>B/op</code>, and <code>allocs/op</code>, and must include
+correctness tests. A speedup that changes blocking decisions, response data,
+logging output, or cancellation behavior is not acceptable.</p>
+<h3 id="noise-floor">Noise floor</h3>
+<p>The host is a shared laptop: the <code>schedutil</code> governor moves the core frequency
+between roughly 1.1 GHz and 3.6 GHz, so the absolute <code>ns/op</code> of a CPU-bound
+case depends on the state of the machine at the moment of the run. The only
+meaningful comparison is therefore a <em>relative</em> one, measured in the same
+session.</p>
+<p>Running the same build against itself calibrates the method. Seven rounds per
+side, both sides identical, <code>server</code> package:</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Median <code>ns/op</code></th>
+<th>Spread over 14 runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BenchmarkQueryPath/blocked_exact</code></td>
+<td>16687</td>
+<td>15817-17052</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/upstream_hit</code></td>
+<td>16220</td>
+<td>15522-18813</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/upstream_miss</code></td>
+<td>279042</td>
+<td>254508-330615</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/regex_only_miss</code></td>
+<td>1879808</td>
+<td>1477740-3646843</td>
+</tr>
+</tbody>
+</table>
+<p>Most cases reproduce within ±5 %. The two that do not are the ones whose cost
+is dominated by something other than the code under test: <code>upstream_miss</code>
+includes a real <abbr title="User Datagram Protocol">UDP</abbr> round trip, and <code>regex_only_miss</code> runs a linear scan over
+1000 compiled regular expressions, which is bound by the memory layout of the
+compiled programs.</p>
+<p>Two consequences follow for the rest of the plan:</p>
+<ul>
+<li><code>allocs/op</code> and <code>B/op</code> are more stable on the same toolchain and architecture, so they are
+  the primary metric for the allocation work of phase 2 and phase 3;</li>
+<li>the comparison that decides phase 4 has to be a same-binary comparison — the
+  reference implementation stays in the test code as a second sub-benchmark, so
+  both variants see the same frequency state. This is the pattern the startup
+  benchmarks already use.</li>
+</ul>
+<h2 id="phase-1-establish-the-complete-query-baseline">Phase 1: establish the complete query baseline</h2>
+<h3 id="objective">Objective</h3>
+<p>Measure the end-to-end query path before changing allocation behavior. The
+benchmark must exercise the production composition rather than a synthetic
+function call:</p>
+<div class="highlight"><pre><span></span><code>server request entry
+  -&gt; resolver chain
+  -&gt; blocking/cache decisions
+  -&gt; mock upstream response
+</code></pre></div>
+<h3 id="work">Work</h3>
+<p>Add a <code>BenchmarkQueryPath</code> beside the existing server/resolver benchmarks and
+add focused breakdown benchmarks for the expensive sections. Use a local mock
+upstream and prebuilt resolver state so network and list-download time do not
+hide per-query work.</p>
+<p>Measure at least these cases:</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>resolver-chain miss to mock upstream</td>
+<td>full common miss path</td>
+</tr>
+<tr>
+<td>cache hit</td>
+<td>avoid attributing upstream work to allocation changes</td>
+</tr>
+<tr>
+<td>blocked exact/wildcard domain</td>
+<td>verifies cheap blocking path</td>
+</tr>
+<tr>
+<td><abbr title="Regular expression">regex</abbr>-only miss</td>
+<td>isolates the remaining <abbr title="Regular expression">regex</abbr> scan</td>
+</tr>
+<tr>
+<td>one-group and multi-group lookup</td>
+<td>exposes result-map and group-scan costs</td>
+</tr>
+<tr>
+<td>debug/trace disabled and enabled</td>
+<td>separates normal traffic from logging traffic</td>
+</tr>
+</tbody>
+</table>
+<p>Record the resolver-chain depth and list sizes in the benchmark name. Keep the
+existing <code>BenchmarkCachingResolverResolve</code> and logging benchmarks as lower-level
+references.</p>
+<h3 id="what-was-added">What was added</h3>
+<ul>
+<li><code>server/query_path_bench_test.go</code> — <code>BenchmarkQueryPath</code> (eight baseline cases,
+  with <code>regex_late_hit</code> added in Phase 4),
+  <code>BenchmarkQueryPathLogLevel</code> (info, debug, trace) and <code>BenchmarkNewRequest</code>;</li>
+<li><code>resolver/query_path_bench_test.go</code> — <code>BenchmarkBlockingResolve</code> (six cases)
+  for the denylist lookup alone;</li>
+<li><code>helpertest/benchdata</code> — the shared list data. The <abbr title="Regular expression">regex</abbr>-only cases use 1000
+  rules sampled with an even stride from the OISD list the repository ships
+  (<code>helpertest/data/oisd-big-wildcard.txt</code>, 209612 wildcard entries), in the
+  shape a real OISD-derived list has: <code>/^(.*\.)?&lt;domain&gt;$/</code>. Such a rule has no
+  literal prefix, so the engine has to scan it.</li>
+</ul>
+<p>The chain under test is the production chain of <code>createQueryResolver</code>: 19
+resolvers, from the statistics resolver down to the upstream tree. The mock
+upstream is an in-process <abbr title="User Datagram Protocol">UDP</abbr> server, so a query that no resolver answers
+locally performs a real socket round trip.</p>
+<p>Two details of the benchmark setup are worth keeping:</p>
+<ul>
+<li><strong>The query names use a plain domain</strong> (<code>query-path-bench.com</code>). The
+  special-use domain names (<code>test.</code>, <code>example.</code>, <code>invalid.</code>, <code>localhost.</code>) are
+  answered by the special-use domain resolver, which sits <em>above</em> the upstream
+  tree in the chain. A query for one of them is answered locally and never
+  reaches the upstream or the cache — the cache-hit case would silently measure
+  the special-use path instead.</li>
+<li><strong>Every case verifies its own result</strong> before the measurement starts: the
+  response type (<code>RESOLVED</code>, <code>CACHED</code>, <code>BLOCKED</code>) and, for the blocked cases,
+  the matched rule. A case that stops measuring the path it claims to measure
+  fails instead of reporting a wrong number.</li>
+</ul>
+<h3 id="baseline">Baseline</h3>
+<p><code>server</code> package, seven rounds per side, <code>-benchtime=1s</code>, median of the 14
+runs:</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th><code>ns/op</code></th>
+<th><code>B/op</code></th>
+<th><code>allocs/op</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BenchmarkQueryPath/upstream_miss</code></td>
+<td>279042</td>
+<td>15679</td>
+<td>180</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/upstream_hit</code></td>
+<td>16220</td>
+<td>4376</td>
+<td>53</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/blocked_exact</code></td>
+<td>16687</td>
+<td>4214</td>
+<td>55</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/blocked_wildcard</code></td>
+<td>18300</td>
+<td>4278</td>
+<td>56</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/blocked_regex</code></td>
+<td>18047</td>
+<td>4300</td>
+<td>56</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/regex_only_miss</code></td>
+<td>1879808</td>
+<td>5429</td>
+<td>61</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/one_group</code></td>
+<td>19903</td>
+<td>5976</td>
+<td>70</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/multi_group</code></td>
+<td>22308</td>
+<td>6072</td>
+<td>72</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPathLogLevel/info</code></td>
+<td>15249</td>
+<td>4211</td>
+<td>55</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPathLogLevel/debug</code></td>
+<td>22061</td>
+<td>6783</td>
+<td>78</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPathLogLevel/trace</code></td>
+<td>23354</td>
+<td>7231</td>
+<td>81</td>
+</tr>
+<tr>
+<td><code>BenchmarkNewRequest</code></td>
+<td>5332</td>
+<td>1531</td>
+<td>20</td>
+</tr>
+</tbody>
+</table>
+<p><code>resolver</code> package, same method, measured in a separate session (the absolute
+numbers of the two tables are therefore not comparable with each other):</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th><code>ns/op</code></th>
+<th><code>B/op</code></th>
+<th><code>allocs/op</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BenchmarkBlockingResolve/exact_hit</code></td>
+<td>26690</td>
+<td>2171</td>
+<td>32</td>
+</tr>
+<tr>
+<td><code>BenchmarkBlockingResolve/wildcard_hit</code></td>
+<td>28437</td>
+<td>2235</td>
+<td>33</td>
+</tr>
+<tr>
+<td><code>BenchmarkBlockingResolve/regex_hit</code></td>
+<td>30958</td>
+<td>2254</td>
+<td>33</td>
+</tr>
+<tr>
+<td><code>BenchmarkBlockingResolve/miss_one_group</code></td>
+<td>13032</td>
+<td>1280</td>
+<td>14</td>
+</tr>
+<tr>
+<td><code>BenchmarkBlockingResolve/miss_multi_group</code></td>
+<td>18070</td>
+<td>1376</td>
+<td>16</td>
+</tr>
+<tr>
+<td><code>BenchmarkBlockingResolve/regex_only_miss</code></td>
+<td>7990986</td>
+<td>1545</td>
+<td>14</td>
+</tr>
+<tr>
+<td><code>BenchmarkCachingResolverResolve</code></td>
+<td>8770</td>
+<td>1688</td>
+<td>24</td>
+</tr>
+<tr>
+<td><code>BenchmarkChainLoggingPlumbing</code></td>
+<td>87666</td>
+<td>10152</td>
+<td>109</td>
+</tr>
+<tr>
+<td><code>BenchmarkParallelBestResolverSelection/pickRandom/upstreams=2</code></td>
+<td>2590</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>BenchmarkParallelBestResolverSelection/pickRandom/upstreams=5</code></td>
+<td>7333</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>BenchmarkParallelBestResolverSelection/weightedRandom/upstreams=2</code></td>
+<td>1568</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>BenchmarkParallelBestResolverSelection/weightedRandom/upstreams=5</code></td>
+<td>3838</td>
+<td>0</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<p><code>cache/stringcache</code> package, same method:</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th><code>ns/op</code></th>
+<th><code>B/op</code></th>
+<th><code>allocs/op</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BenchmarkGroupedCacheStringHit</code></td>
+<td>496</td>
+<td>336</td>
+<td>2</td>
+</tr>
+<tr>
+<td><code>BenchmarkGroupedCacheMiss</code></td>
+<td>15378</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>BenchmarkGroupedCacheLockContention</code></td>
+<td>2184</td>
+<td>1240</td>
+<td>4</td>
+</tr>
+<tr>
+<td><code>BenchmarkGroupedCacheParallel</code></td>
+<td>701</td>
+<td>336</td>
+<td>2</td>
+</tr>
+<tr>
+<td><code>BenchmarkLargeList/exact/base</code></td>
+<td>98</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>BenchmarkLargeList/exact/miss-tld</code></td>
+<td>69</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>BenchmarkLargeList/exact/miss-parent</code></td>
+<td>62</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>BenchmarkLargeList/wildcard/base</code></td>
+<td>286</td>
+<td>25</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>BenchmarkLargeList/wildcard/subdomain</code></td>
+<td>319</td>
+<td>25</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>BenchmarkLargeList/wildcard/miss-tld</code></td>
+<td>133</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>BenchmarkLargeList/wildcard/miss-parent</code></td>
+<td>99</td>
+<td>0</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-the-baseline-shows">What the baseline shows</h3>
+<ul>
+<li><strong>The logging plumbing is a large per-query cost.</strong> The original 15-resolver
+  <code>BenchmarkChainLoggingPlumbing</code> pays 109 allocations and 10.2 KB per request
+  without writing a line, but also constructs the backend <abbr title="Domain Name System">DNS</abbr> response: these
+  totals are not isolated logging costs. The later slog report supplies an
+  isolated logging benchmark and retains this benchmark as a control. The
+  complete query path
+  costs 53 allocations (cache hit) to 180 allocations (upstream miss), so the
+  logger rebuild is a large part of the smaller numbers. This is the target of
+  phase 2.</li>
+<li><strong>The denylist lookup itself is cheap.</strong> One group costs 14 allocations and
+  1.3 KB; four groups cost 16 allocations and 1.4 KB. The per-group cost is
+  small, but the result map that the lookup returns is allocated on every
+  lookup — the target of phase 3.</li>
+<li><strong>The <abbr title="Regular expression">regex</abbr> scan dominates everything else.</strong> With 1000 OISD-shaped rules the
+  <abbr title="Regular expression">regex</abbr>-only miss needs 1.9 ms in the complete path and 8.0 ms in the isolated
+  lookup — more than two orders of magnitude more than the rest of the query
+  path, and it is pure CPU time. This is the target of phase 4.</li>
+<li><strong>The upstream round trip is not the interesting cost.</strong> 180 allocations and
+  15.7 KB for a full miss, of which the socket exchange and the response
+  packing are a constant part that no allocation change can remove.</li>
+</ul>
+<h3 id="reproducing">Reproducing</h3>
+<div class="highlight"><pre><span></span><code>env<span class="w"> </span>-u<span class="w"> </span>HTTP_PROXY<span class="w"> </span>-u<span class="w"> </span>HTTPS_PROXY<span class="w"> </span>-u<span class="w"> </span>http_proxy<span class="w"> </span>-u<span class="w"> </span>https_proxy<span class="w"> </span>-u<span class="w"> </span>SOCKS5_PROXY<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-run<span class="o">=</span><span class="s1">'^$'</span><span class="w"> </span>-bench<span class="o">=</span><span class="s1">'BenchmarkQueryPath|BenchmarkNewRequest'</span><span class="w"> </span>-benchmem<span class="w"> </span>./server/
+
+env<span class="w"> </span>-u<span class="w"> </span>HTTP_PROXY<span class="w"> </span>-u<span class="w"> </span>HTTPS_PROXY<span class="w"> </span>-u<span class="w"> </span>http_proxy<span class="w"> </span>-u<span class="w"> </span>https_proxy<span class="w"> </span>-u<span class="w"> </span>SOCKS5_PROXY<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-run<span class="o">=</span><span class="s1">'^$'</span><span class="w"> </span>-bench<span class="o">=</span><span class="s1">'BenchmarkBlockingResolve|BenchmarkChainLoggingPlumbing'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-benchmem<span class="w"> </span>./resolver/
+
+<span class="nv">BLOCKY_WILDCARD_LIST</span><span class="o">=</span><span class="nv">$PWD</span>/helpertest/data/oisd-big-wildcard.txt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-run<span class="o">=</span><span class="s1">'^$'</span><span class="w"> </span>-bench<span class="o">=</span><span class="s1">'BenchmarkGroupedCache|BenchmarkLargeList'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-benchmem<span class="w"> </span>./cache/stringcache/
+</code></pre></div>
+<p>For a before/after comparison, build both revisions once and run the rounds
+alternately:</p>
+<div class="highlight"><pre><span></span><code>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-c<span class="w"> </span>-o<span class="w"> </span>/tmp/bench/base.test<span class="w"> </span>./server/<span class="w">     </span><span class="c1"># base revision</span>
+go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-c<span class="w"> </span>-o<span class="w"> </span>/tmp/bench/cand.test<span class="w"> </span>./server/<span class="w">     </span><span class="c1"># candidate revision</span>
+<span class="c1"># then, for every round, run base and candidate in alternating order and take</span>
+<span class="c1"># the median of each side</span>
+</code></pre></div>
+<h3 id="deliverables-and-acceptance">Deliverables and acceptance</h3>
+<ul>
+<li><code>docs/query-performance.md</code> updated with the baseline tables and exact
+  commands — done;</li>
+<li>raw output retained under the temporary benchmark directory — done;</li>
+<li>no production behavior change — the phase only adds benchmark code and a
+  helper package;</li>
+<li>baseline can be reproduced three times on an idle host — the allocation
+  figures are exactly reproducible, the <code>ns/op</code> figures are host dependent
+  within the spread documented above;</li>
+<li>benchmark checks response identity, blocking result, and error behavior —
+  every case verifies the response type and the matched rule before it
+  measures.</li>
+</ul>
+<h2 id="phase-2-request-logging-plumbing">Phase 2: request logging plumbing</h2>
+<h3 id="problem">Problem</h3>
+<p>In the original implementation, each resolver called <code>r.log(ctx)</code>. That rebuilt
+a context logger and copied Logrus entry state once per resolver even when the
+configured level would not emit a log line. The original
+<code>BenchmarkChainLoggingPlumbing</code> measures approximately 109 allocations and
+10 KB per 15-resolver request-shaped chain.</p>
+<h3 id="design">Design</h3>
+<ul>
+<li>Create the request-scoped log entry once at the server boundary.</li>
+<li>Preserve request fields (<code>req_id</code>, <code>question</code>, and <code>client_ip</code>) and the
+  current prefix format.</li>
+<li>Attach the resolver type only at a log site that is actually enabled, or use
+  a lightweight resolver-scoped view that does not clone the request context
+  for a disabled message.</li>
+<li>Keep expensive values behind level checks. In particular, do not calculate
+  <code>QuestionToString</code>, <code>AnswerToString</code>, obfuscated answers, or formatted error
+  text before checking Debug/Trace enablement.</li>
+<li>Keep <code>uuid.NewV7()</code> as the request ID generator from the Go 1.27.3 standard
+  library migration. Do not replace the externally visible request ID format
+  with an unrelated monotonic integer as part of this phase.</li>
+</ul>
+<h3 id="required-tests">Required tests</h3>
+<ul>
+<li>golden tests for prefix and field output;</li>
+<li>tests proving request fields survive every resolver boundary;</li>
+<li>Debug and Trace enabled tests proving the same messages still appear;</li>
+<li>disabled-level tests proving expensive arguments are not constructed;</li>
+<li>race test for concurrent requests sharing the base logger.</li>
+</ul>
+<h3 id="acceptance-target">Acceptance target</h3>
+<p>The Phase 1 baseline gives the numbers to beat:</p>
+<table>
+<thead>
+<tr>
+<th>Measurement</th>
+<th>Baseline</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BenchmarkChainLoggingPlumbing</code> (15 resolvers)</td>
+<td>109 allocs, 10152 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/upstream_hit</code> (complete chain)</td>
+<td>53 allocs, 4376 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/blocked_exact</code> (complete chain)</td>
+<td>55 allocs, 4214 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPathLogLevel/info</code></td>
+<td>55 allocs, 4211 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPathLogLevel/trace</code></td>
+<td>81 allocs, 7231 B</td>
+</tr>
+</tbody>
+</table>
+<p>The target is a substantial reduction of both numbers — the logging plumbing
+must no longer dominate the per-query allocation count, and the trace level
+must not cost more than the info level by a multiple. Logging output
+compatibility takes priority over a fixed allocation number: the golden tests
+have to pass unchanged.</p>
+<h3 id="result">Result</h3>
+<p>The lazy design was dropped. It carried only the resolver prefix in the request
+context and materialized the prefix through a logrus hook when a line was
+emitted. The hook was rejected because it relies on logrus behavior that does
+not support it safely:</p>
+<ul>
+<li><code>logrus.Logger.Hooks</code> is a public map. <code>AddHook</code>/<code>ReplaceHooks</code> write it under
+  the logger mutex, but the hook lookup reads it without that lock, so adding a
+  hook to a logger that is used concurrently is a data race.</li>
+<li>the prefix was applied when the line was emitted, so a nested resolver
+  overwrote the prefix of the outer resolver and the dotted prefix chain
+  (<code>blocking.client_id_cache</code>) collapsed to its first element.</li>
+</ul>
+<p>This initial phase kept the eager plumbing that was in place before it:
+every resolver derived its entry from the request entry with
+<code>log.SetPrefix</code>, which replaces the prefix instead of accumulating it. The
+request fields (<code>req_id</code>, <code>question</code>, <code>client_ip</code>) are preserved, the prefix
+semantics are unchanged, and the cost is the logrus data-map clone that
+<code>Entry.WithField</code> performed - one clone per resolver per request. The clone was
+accepted at that checkpoint instead of adding a second logging mechanism next
+to Logrus. The subsequent <a href="../logging-performance/">slog migration</a> removes this
+cost without retaining the rejected hook or a compatibility bridge.</p>
+<p>The golden tests of the <code>log</code> package and the resolver tests cover the prefix
+and field output; <code>go test -race ./log ./resolver</code> covers the concurrent use of
+the shared request entry.</p>
+<p>Phase 2 therefore contributes no allocation improvement: the plumbing is
+identical to the Phase 1 baseline. The numbers below were measured on the same
+host with <code>-benchmem</code>; the tiny differences in the log-level rows are the
+measurement noise of the byte counter.</p>
+<table>
+<thead>
+<tr>
+<th>Measurement</th>
+<th style="text-align: right;">Phase 1</th>
+<th style="text-align: right;">Phase 2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BenchmarkChainLoggingPlumbing</code> (15 resolvers)</td>
+<td style="text-align: right;">109 allocs, 10152 B</td>
+<td style="text-align: right;">109 allocs, 10152 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/upstream_hit</code></td>
+<td style="text-align: right;">53 allocs, 4376 B</td>
+<td style="text-align: right;">53 allocs, 4376 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/blocked_exact</code></td>
+<td style="text-align: right;">55 allocs, 4214 B</td>
+<td style="text-align: right;">55 allocs, 4214 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPathLogLevel/info</code></td>
+<td style="text-align: right;">55 allocs, 4211 B</td>
+<td style="text-align: right;">55 allocs, 4209 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPathLogLevel/trace</code></td>
+<td style="text-align: right;">81 allocs, 7250 B</td>
+<td style="text-align: right;">81 allocs, 7222 B</td>
+</tr>
+</tbody>
+</table>
+<h2 id="phase-3-remove-avoidable-per-query-allocations">Phase 3: remove avoidable per-query allocations</h2>
+<p>Implement and benchmark one change at a time. Do not combine unrelated changes
+in a single measurement.</p>
+<h3 id="resolver-race-path">Resolver race path</h3>
+<p>Targets in <code>resolver/parallel_best_resolver.go</code>:</p>
+<ul>
+<li>make <code>collectedErrors</code> lazy: the successful first response should not create
+  an error slice;</li>
+<li>replace the small <code>pickRandom</code> result slice with a bounded stack-backed
+  representation for the current resolver-count limits;</li>
+<li>consider pooling the response channel only after ownership, draining, and
+  cancellation rules are explicit. A channel must not return to the pool while
+  a losing resolver can still send to it;</li>
+<li>replace <code>upstreamResolverStatus.lastErrorTime</code>'s <code>atomic.Value</code> containing a
+  <code>time.Time</code> with an <code>atomic.Int64</code> containing a monotonic nanosecond offset,
+  if the benchmark confirms the load/store cost matters.</li>
+</ul>
+<h3 id="request-and-logging-fields">Request and logging fields</h3>
+<p>Targets around <code>server.newRequest</code>:</p>
+<ul>
+<li>retain UUID v7 semantics, but build the request logging fields lazily where
+  possible;</li>
+<li>calculate <code>QuestionToString</code> only when a Trace message is enabled;</li>
+<li>avoid allocating secondary field maps for a disabled log line.</li>
+</ul>
+<h3 id="cache-result-path">Cache result path</h3>
+<p>Targets in <code>cache/stringcache/in_memory_grouped_cache.go</code> and the chained cache:</p>
+<ul>
+<li>measure the single-group result path separately;</li>
+<li>avoid a general-purpose map allocation when the caller needs only one known
+  group, while preserving the public <code>map[string]string</code> contract at the <abbr title="Application Programming Interface">API</abbr>
+  boundary;</li>
+<li>keep the no-match path allocation-free;</li>
+<li>verify that copy-on-write refreshes remain safe under concurrent lookup.</li>
+</ul>
+<h3 id="acceptance">Acceptance</h3>
+<ul>
+<li>no semantic changes to resolver ordering, cancellation, retry, or error
+  joining;</li>
+<li><code>go test</code>, non-e2e Ginkgo suites, and <code>go test -race</code> for touched packages;</li>
+<li>allocation reduction demonstrated in Phase 1's complete query benchmark;</li>
+<li>no regression in the existing parallel resolver benchmarks;</li>
+<li>every optimization has a before/after table and a rollback point.</li>
+</ul>
+<h3 id="result_1">Result</h3>
+<p>Phase 3 kept the resolver contracts unchanged while removing avoidable work from
+the parallel resolver path:</p>
+<ul>
+<li>error collection is lazy, so a first successful response does not construct an
+  error slice;</li>
+<li>upstream error timestamps use an <code>atomic.Int64</code> that holds a monotonic
+  nanosecond offset (relative to a per-upstream clock base) instead of an
+  <code>atomic.Value</code> containing a <code>time.Time</code>; the wall clock is no longer read, so
+  a clock adjustment cannot distort the error window;</li>
+<li>resolver status values are no longer copied when constructing success log
+  fields, which avoids copying their atomic state.</li>
+</ul>
+<p>A bounded-array rewrite of <code>pickRandom</code> was measured and then dropped: it did not
+change complete-path allocation counts, and compiler escape analysis confirmed
+that the existing selection slice is already stack-backed at the production
+call site after inlining. The simpler helper remains in place.</p>
+<p>The final candidate was compared with the Phase 1 baseline using seven
+alternating A/B rounds, <code>-benchtime=1s</code>, and the same <code>schedutil</code> host. The
+complete-path allocation counts are unchanged: these changes remove work from
+paths that were not allocation-dominant in the Phase 1 fixtures, rather than
+changing the observable request allocation floor.</p>
+<table>
+<thead>
+<tr>
+<th>Measurement</th>
+<th style="text-align: right;">Phase 1 baseline</th>
+<th style="text-align: right;">Phase 3</th>
+<th style="text-align: right;">Phase 3 delta</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BenchmarkChainLoggingPlumbing</code></td>
+<td style="text-align: right;">109 allocs, 10152 B</td>
+<td style="text-align: right;">109 allocs, 10152 B</td>
+<td style="text-align: right;">0 allocs, 0 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/upstream_hit</code></td>
+<td style="text-align: right;">53 allocs, 4376 B</td>
+<td style="text-align: right;">53 allocs, 4376 B</td>
+<td style="text-align: right;">0 allocs, 0 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/blocked_exact</code></td>
+<td style="text-align: right;">55 allocs, 4214 B</td>
+<td style="text-align: right;">55 allocs, 4214 B</td>
+<td style="text-align: right;">0 allocs, 0 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/upstream_miss</code></td>
+<td style="text-align: right;">180 allocs, 15675 B</td>
+<td style="text-align: right;">180 allocs, 15675 B</td>
+<td style="text-align: right;">0 allocs, 0 B</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/regex_only_miss</code></td>
+<td style="text-align: right;">61 allocs, 5424 B</td>
+<td style="text-align: right;">61 allocs, 5424 B</td>
+<td style="text-align: right;">0 allocs, 0 B</td>
+</tr>
+</tbody>
+</table>
+<p>The resolver-selection guardrail remained allocation-free on both sides. Timing
+differences are within the host's frequency noise; the exact allocation result
+is the important guardrail.</p>
+<p>Raw Phase 3 output is retained under <code>/tmp/opencode/bench/phase3-final2/</code>.</p>
+<h2 id="phase-4-blocking-regex-pre-filter">Phase 4: blocking <abbr title="Regular expression">regex</abbr> pre-filter</h2>
+<h3 id="existing-behavior">Existing behavior</h3>
+<p>The grouped chain is constructed as <abbr title="Regular expression">regex</abbr>, wildcard, string, and queried in
+reverse order. Therefore exact and wildcard matches already bypass the <abbr title="Regular expression">regex</abbr>
+scan. This behavior is covered by the grouped-cache benchmark and must remain
+the first guardrail.</p>
+<h3 id="implementation">Implementation</h3>
+<p>The remaining cost is the <abbr title="Regular expression">regex</abbr>-only linear scan. The cache now performs a
+conservative required-literal analysis once, when a rule is inserted. It uses
+<code>regexp/syntax</code> only to inspect the pattern; matching continues to use the
+standard-library <code>regexp.Regexp</code> unchanged. A rule receives a filter literal
+only when that literal must occur, byte-for-byte and case-sensitively, in every
+possible match. Lookup first uses <code>strings.Contains</code> and calls
+<code>Regexp.MatchString</code> for every candidate that passes the filter.</p>
+<p>The analyzer handles concatenation, captures, positive repetitions and
+positive bounded repetitions. It deliberately falls back to the normal <abbr title="Regular expression">regex</abbr>
+scan for case-folded literals, alternation, optional or zero repetitions,
+character classes, assertions, arbitrary characters, malformed UTF-8 literals,
+parse failures, and unknown syntax operations. Thus an unclassified pattern
+has exactly the previous behavior; the filter can only skip a pattern that it
+has proved cannot match.</p>
+<p>The pre-filter must never reject a pattern because of an incomplete parser or
+an assumption about <abbr title="Regular expression">regex</abbr> syntax. Case sensitivity, anchors, escapes,
+alternation, Unicode, and empty matches need explicit tests.</p>
+<h3 id="classification-rate">Classification rate</h3>
+<p>The fallback only costs something when a rule stays unclassified, so the
+question is how often that happens. Measured over the 209612 wildcard entries of
+<code>helpertest/data/oisd-big-wildcard.txt</code>, every rule in the shape a real
+OISD-derived <abbr title="Regular expression">regex</abbr> list has (<code>/^(.*\.)?&lt;domain&gt;$/</code>) is classified - the domain
+literal is required in every match - so the fallback rate for that list shape is
+0%.</p>
+<p>The analyzer looks for a literal that must occur in every match, and a literal
+in one part of the pattern is enough even when another part is unclassified:</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Required literal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>^(.*\.)?example\.com$</code></td>
+<td><code>example.com</code></td>
+</tr>
+<tr>
+<td><code>^ads[0-9]+\.example\.com$</code></td>
+<td><code>.example.com</code></td>
+</tr>
+<tr>
+<td><code>^(ads\|analytics)\.example\.com$</code></td>
+<td><code>.example.com</code></td>
+</tr>
+<tr>
+<td><code>^example\.(com\|net)$</code></td>
+<td><code>example.</code></td>
+</tr>
+<tr>
+<td><code>^ad[sx]\.example\.com$</code></td>
+<td><code>.example.com</code></td>
+</tr>
+<tr>
+<td><code>^ads?\.example\.com$</code></td>
+<td><code>.example.com</code></td>
+</tr>
+<tr>
+<td><code>.*ads.*</code></td>
+<td><code>ads</code></td>
+</tr>
+<tr>
+<td><code>(?i)^ads\.example\.com$</code></td>
+<td>none (case-folded)</td>
+</tr>
+</tbody>
+</table>
+<p>The rules that stay unclassified are the ones without a usable literal at all:
+case-insensitive patterns, patterns whose only literal parts are optional, and
+patterns built purely from character classes and assertions. A domain-blocking
+rule almost always contains a literal domain fragment, so the fallback rate of
+real configurations is low; it is high only for lists that are written as
+case-insensitive regexes.</p>
+<h3 id="measurement-matrix">Measurement matrix</h3>
+<p>Run the standard-library <abbr title="Regular expression">regex</abbr> benchmark with and without the pre-filter for:</p>
+<ul>
+<li>OISD-shaped suffix rules;</li>
+<li>literal-prefix rules;</li>
+<li>arbitrary configured patterns;</li>
+<li>1, 10, 50, 100, 500, and 1000 rules;</li>
+<li>first, middle, last, miss, near-miss, and short-domain queries;</li>
+<li>exact and wildcard hits to prove they still do not enter the <abbr title="Regular expression">regex</abbr> path.</li>
+</ul>
+<h3 id="correctness-coverage">Correctness coverage</h3>
+<p><code>cache/stringcache/regex_cache_test.go</code> now includes:</p>
+<ul>
+<li>required-literal unit cases for anchors, escapes, Unicode, case folding,
+  alternation, repetitions, and invalid patterns;</li>
+<li>differential edge-case tests comparing ordered cache results with a plain
+  <code>regexp.Regexp</code> scan, including mixed classified and fallback rules in both
+  insertion orders;</li>
+<li>fuzz seeds for fallback, Unicode, malformed UTF-8, empty-match, repetition,
+  and escaped-literal patterns;</li>
+<li>a direct check of every compiled rule in the real OISD-shaped fixture: for
+  hit, near-hit, uppercase, suffix, and malformed-UTF-8 query variants, a
+  non-empty filter is allowed to skip the rule only when <code>MatchString</code> also
+  reports no match; and</li>
+<li>zero-allocation checks for pre-filtered misses after cache construction.</li>
+</ul>
+<p>The grouped-cache guardrails include exact-hit, wildcard-hit, and miss
+benchmarks. Exact and wildcard hits still short-circuit before the <abbr title="Regular expression">regex</abbr> cache,
+while the benchmark's pre-filtered misses still check every cache without
+allocating. Unfiltered standard-library <abbr title="Regular expression">regex</abbr> execution can allocate when its
+matching-state pool is empty, especially under the race detector.</p>
+<h3 id="result_2">Result</h3>
+<p>The matrix was run against the Phase 3 state and the candidate in seven
+alternating A/B rounds. The Phase 4 matrix used <code>-benchtime=100ms</code> per
+sub-benchmark to cover all three pattern shapes, six rule counts, six query
+positions, and both implementations; the complete query-path and build
+measurements used the same alternating-round method. The table below shows the
+1000-rule filtered cases; the standard scan is the <code>standard</code> sibling of every
+case and remains the semantic reference.</p>
+<table>
+<thead>
+<tr>
+<th>Pattern shape / query</th>
+<th style="text-align: right;">Standard <code>ns/op</code></th>
+<th style="text-align: right;">Filtered <code>ns/op</code></th>
+<th style="text-align: right;">Delta</th>
+<th style="text-align: right;"><code>B/op</code> standard / filtered</th>
+<th style="text-align: right;"><code>allocs/op</code> standard / filtered</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>suffix / first</td>
+<td style="text-align: right;">1267</td>
+<td style="text-align: right;">1275</td>
+<td style="text-align: right;">+0.6%</td>
+<td style="text-align: right;">48 / 48</td>
+<td style="text-align: right;">1 / 1</td>
+</tr>
+<tr>
+<td>suffix / middle</td>
+<td style="text-align: right;">489701</td>
+<td style="text-align: right;">5452</td>
+<td style="text-align: right;">-98.9%</td>
+<td style="text-align: right;">48 / 48</td>
+<td style="text-align: right;">1 / 1</td>
+</tr>
+<tr>
+<td>suffix / last</td>
+<td style="text-align: right;">1000657</td>
+<td style="text-align: right;">9838</td>
+<td style="text-align: right;">-99.0%</td>
+<td style="text-align: right;">48 / 48</td>
+<td style="text-align: right;">1 / 1</td>
+</tr>
+<tr>
+<td>suffix / miss</td>
+<td style="text-align: right;">1094059</td>
+<td style="text-align: right;">13500</td>
+<td style="text-align: right;">-98.8%</td>
+<td style="text-align: right;">0 / 0</td>
+<td style="text-align: right;">0 / 0</td>
+</tr>
+<tr>
+<td>suffix / near-miss</td>
+<td style="text-align: right;">1225149</td>
+<td style="text-align: right;">16115</td>
+<td style="text-align: right;">-98.7%</td>
+<td style="text-align: right;">0 / 0</td>
+<td style="text-align: right;">0 / 0</td>
+</tr>
+<tr>
+<td>prefix / first</td>
+<td style="text-align: right;">238</td>
+<td style="text-align: right;">236</td>
+<td style="text-align: right;">-0.9%</td>
+<td style="text-align: right;">32 / 32</td>
+<td style="text-align: right;">1 / 1</td>
+</tr>
+<tr>
+<td>prefix / middle</td>
+<td style="text-align: right;">43235</td>
+<td style="text-align: right;">6015</td>
+<td style="text-align: right;">-86.1%</td>
+<td style="text-align: right;">32 / 32</td>
+<td style="text-align: right;">1 / 1</td>
+</tr>
+<tr>
+<td>prefix / last</td>
+<td style="text-align: right;">83893</td>
+<td style="text-align: right;">9009</td>
+<td style="text-align: right;">-89.3%</td>
+<td style="text-align: right;">32 / 32</td>
+<td style="text-align: right;">1 / 1</td>
+</tr>
+<tr>
+<td>prefix / miss</td>
+<td style="text-align: right;">79973</td>
+<td style="text-align: right;">15939</td>
+<td style="text-align: right;">-80.1%</td>
+<td style="text-align: right;">0 / 0</td>
+<td style="text-align: right;">0 / 0</td>
+</tr>
+<tr>
+<td>prefix / near-miss</td>
+<td style="text-align: right;">92050</td>
+<td style="text-align: right;">17576</td>
+<td style="text-align: right;">-80.9%</td>
+<td style="text-align: right;">0 / 0</td>
+<td style="text-align: right;">0 / 0</td>
+</tr>
+<tr>
+<td>fallback / first</td>
+<td style="text-align: right;">1599</td>
+<td style="text-align: right;">934</td>
+<td style="text-align: right;">-41.6%</td>
+<td style="text-align: right;">32 / 32</td>
+<td style="text-align: right;">1 / 1</td>
+</tr>
+<tr>
+<td>fallback / middle</td>
+<td style="text-align: right;">137965</td>
+<td style="text-align: right;">143397</td>
+<td style="text-align: right;">+3.9%</td>
+<td style="text-align: right;">32 / 32</td>
+<td style="text-align: right;">1 / 1</td>
+</tr>
+<tr>
+<td>fallback / last</td>
+<td style="text-align: right;">283428</td>
+<td style="text-align: right;">515574</td>
+<td style="text-align: right;">+81.9%</td>
+<td style="text-align: right;">32 / 32</td>
+<td style="text-align: right;">1 / 1</td>
+</tr>
+<tr>
+<td>fallback / miss</td>
+<td style="text-align: right;">153589</td>
+<td style="text-align: right;">214007</td>
+<td style="text-align: right;">+39.3%</td>
+<td style="text-align: right;">0 / 0</td>
+<td style="text-align: right;">0 / 0</td>
+</tr>
+</tbody>
+</table>
+<p>The first/near-miss standard values in the compact table can move with CPU
+frequency; the raw seven-round reports retain the exact medians and spreads.
+The complete matrix also covers 1, 10, 50, 100, and 500 rules plus the <code>short</code>
+query. Classified suffix and prefix rules show the intended large reduction
+when the match is late or absent.</p>
+<p>Fallback rules are intentionally not classified, so they pay one extra branch
+per rule (<code>required != ""</code>) and one wider cache entry (24 bytes instead of 8).
+The fallback rows of the table are dominated by the host's timing noise: six
+additional rounds of the 1000-rule fallback miss case produced 72.7-338.8 us
+for the standard scan and 80.8-189.9 us for the filtered scan, so the two
+distributions overlap completely. An isolated alternating A/B of the two cache
+representations, with the same 1000 case-insensitive rules and the same query,
+measured a median difference of +4.3%, +1.6% and -0.6% over three runs, which
+is about 3 ns per rule. The +81.9% of the fallback last-hit row is therefore
+not a systematic regression but the spread of the host's <code>schedutil</code> governor.</p>
+<p>On the complete production query path, the real-list <abbr title="Regular expression">regex</abbr>-only cases improved
+without changing allocation counts:</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th style="text-align: right;">Base <code>ns/op</code></th>
+<th style="text-align: right;">Candidate <code>ns/op</code></th>
+<th style="text-align: right;">Delta</th>
+<th style="text-align: right;"><code>B/op</code> base / candidate</th>
+<th style="text-align: right;"><code>allocs/op</code> base / candidate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BenchmarkQueryPath/regex_only_miss</code></td>
+<td style="text-align: right;">1919695</td>
+<td style="text-align: right;">63298</td>
+<td style="text-align: right;">-96.7%</td>
+<td style="text-align: right;">3568 / 3568</td>
+<td style="text-align: right;">49 / 49</td>
+</tr>
+<tr>
+<td><code>BenchmarkQueryPath/regex_late_hit</code></td>
+<td style="text-align: right;">1219708</td>
+<td style="text-align: right;">45856</td>
+<td style="text-align: right;">-96.2%</td>
+<td style="text-align: right;">3344 / 3421</td>
+<td style="text-align: right;">50 / 50</td>
+</tr>
+</tbody>
+</table>
+<p>Exact and wildcard paths remained separate guardrails. In the same run,
+<code>blocked_exact</code> was <code>3285 B / 49 allocs</code> on both sides and
+<code>blocked_wildcard</code> was <code>3348 B / 50 allocs</code> on both sides. The grouped-cache
+short-circuit benchmarks likewise kept exact hits at <code>336 B / 2 allocs</code> and
+wildcard hits at <code>360 B / 3 allocs</code>; their timing differences were within the
+host spread. The <abbr title="Regular expression">regex</abbr>-only improvement therefore does not come from changing
+resolver ordering or making cheap cache hits enter the <abbr title="Regular expression">regex</abbr> path.</p>
+<p>The trade-off is paid at list load time. On the full real OISD-shaped <abbr title="Regular expression">regex</abbr>
+fixture (<code>BenchmarkRegexFactory</code>, about 209k rules), the seven-round medians
+were:</p>
+<table>
+<thead>
+<tr>
+<th>Measurement</th>
+<th style="text-align: right;">Base</th>
+<th style="text-align: right;">Candidate</th>
+<th style="text-align: right;">Delta</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Build time</td>
+<td style="text-align: right;">3.00 s</td>
+<td style="text-align: right;">3.94 s</td>
+<td style="text-align: right;">+31.2%</td>
+</tr>
+<tr>
+<td><code>B/op</code></td>
+<td style="text-align: right;">1.81 GB</td>
+<td style="text-align: right;">2.16 GB</td>
+<td style="text-align: right;">+19.5%</td>
+</tr>
+<tr>
+<td><code>allocs/op</code></td>
+<td style="text-align: right;">9.65 M</td>
+<td style="text-align: right;">14.18 M</td>
+<td style="text-align: right;">+46.9%</td>
+</tr>
+</tbody>
+</table>
+<p>The instrumented runs observed peak heap of approximately 440.9 MB for the
+base and 449.5 MB for the candidate. The retained/peak-memory increase is much
+smaller than the temporary allocation increase, but the startup cost is real
+and should be considered for frequent list reloads. The optimization is kept
+because query-time <abbr title="Regular expression">regex</abbr> scans dominate steady-state workloads; the benchmark
+and the conservative fallback make the cost visible for future decisions.</p>
+<p>Raw Phase 4 output is retained under <code>/tmp/opencode/bench/phase4/</code>.</p>
+<h3 id="acceptance_1">Acceptance</h3>
+<ul>
+<li>differential results equal the standard-library-only implementation for all
+  real list fixtures and generated edge cases;</li>
+<li>no false negative is possible for an unclassified pattern;</li>
+<li><abbr title="Regular expression">regex</abbr>-only miss and late-hit cases improve in the complete query benchmark;</li>
+<li>compile time and memory are measured and documented as a list-loading trade-off;</li>
+<li>the implementation continues to use the standard <code>regexp</code> package.</li>
+</ul>
+<h2 id="execution-order-and-commits">Execution order and commits</h2>
+<p>The Go 1.27.3 and UUID migration is independent of the four performance
+phases. The direct UUID usage is submitted first as its own conventional
+commit:</p>
+<div class="highlight"><pre><span></span><code>build(go): use standard library UUID v7
+</code></pre></div>
+<p>That commit contains only the UUID import/<abbr title="Application Programming Interface">API</abbr> changes and changes the module
+requirement from direct to indirect. <code>github.com/google/uuid</code> remains in the
+module graph because <code>github.com/oapi-codegen/runtime</code> uses it transitively;
+it cannot be removed without changing that upstream dependency. This
+optimization plan and benchmark report remain documentation changes, not part
+of the UUID code commit.</p>
+<p>After that migration:</p>
+<ol>
+<li>Phase 1: baseline benchmark and documentation;</li>
+<li>Phase 2: request logging plumbing (the lazy variant was evaluated and
+   dropped, see the phase result);</li>
+<li>Phase 3: per-query allocation cuts;</li>
+<li>Phase 4: blocking <abbr title="Regular expression">regex</abbr> pre-filter.</li>
+</ol>
+<p>Each phase gets its own conventional commit, its own before/after benchmark
+table, and its own <code>gofmt</code>, build, vet, lint, test, and CodeQL validation. No
+alternative <abbr title="Regular expression">regex</abbr> dependency is added unless a later benchmark disproves the
+current decision.</p>
+<h2 id="risk-and-rollback-checklist">Risk and rollback checklist</h2>
+<ul>
+<li><strong>Logging compatibility:</strong> compare golden output before and after Phase 2.</li>
+<li><strong>Cancellation:</strong> run race tests and stress losing parallel upstreams before
+  pooling any channels.</li>
+<li><strong>Regex correctness:</strong> compare every pre-filter decision with standard
+  <code>regexp</code> results and keep an explicit fallback path.</li>
+<li><strong>Memory:</strong> measure both Go heap allocations and retained process memory for
+  large list loads.</li>
+<li><strong>Benchmark contamination:</strong> stop or wait for other compiles, rotate A/B
+  order, and discard runs made on a busy host.</li>
+<li><strong>Rollback:</strong> each phase must be revertible without reverting the UUID
+  migration or the established startup-performance commits.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/mia0x75/denyzer" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://ghcr.io/mia0x75/denyzer" target="_blank" rel="noopener" title="ghcr.io" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M349.9 236.3h-66.1v-59.4h66.1zm0-204.3h-66.1v60.7h66.1zm78.2 144.8H362v59.4h66.1zm-156.3-72.1h-66.1v60.1h66.1zm78.1 0h-66.1v60.1h66.1zm276.8 100c-14.4-9.7-47.6-13.2-73.1-8.4-3.3-24-16.7-44.9-41.1-63.7l-14-9.3-9.3 14c-18.4 27.8-23.4 73.6-3.7 103.8-8.7 4.7-25.8 11.1-48.4 10.7H2.4c-8.7 50.8 5.8 116.8 44 162.1 37.1 43.9 92.7 66.2 165.4 66.2 157.4 0 273.9-72.5 328.4-204.2 21.4.4 67.6.1 91.3-45.2 1.5-2.5 6.6-13.2 8.5-17.1zm-511.1-27.9h-66v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1zm78.1 0h-66.1v59.4h66.1zm-78.1-72.1h-66.1v60.1h66.1z"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.instant.prefetch", "navigation.instant.progress", "navigation.tracking", "navigation.top", "toc.follow", "content.code.copy", "content.code.annotate", "content.tooltips", "content.action.edit", "search.suggest", "search.highlight", "search.share"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
