@@ -51,7 +51,6 @@ type Server struct {
 	servers          map[net.Listener]*httpServer
 	http3Server      *http3Server     // nil when disabled
 	http3PacketConns []net.PacketConn // one per address in ports.https
-	closers          []io.Closer
 }
 
 func logger() *slog.Logger {
@@ -747,6 +746,7 @@ func (s *Server) Start(ctx context.Context, errCh chan<- error) {
 // Stop stops the server
 func (s *Server) Stop(ctx context.Context) error {
 	logger().InfoContext(ctx, "Stopping server")
+	var errs []error
 
 	// Shut down HTTP/3 in order: server first (drains in-flight
 	// requests and unblocks the Serve goroutines), then UDP packet
@@ -754,30 +754,44 @@ func (s *Server) Stop(ctx context.Context) error {
 	// return a non-sentinel error that would land in errCh as a
 	// spurious "server start failed".
 	if s.http3Server != nil {
-		if err := s.http3Server.Close(); err != nil {
-			logger().WarnContext(ctx, fmt.Sprint("failed to close http3 server: ", err))
+		if err := s.http3Server.inner.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop http3 server: %w", err))
+			_ = s.http3Server.Close()
 		}
 	}
 
 	for _, pc := range s.http3PacketConns {
-		if err := pc.Close(); err != nil {
-			logger().WarnContext(ctx, fmt.Sprint("failed to close http3 packet conn: ", err))
+		if err := pc.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, fmt.Errorf("close http3 packet conn: %w", err))
 		}
 	}
 
-	for _, c := range s.closers {
-		if err := c.Close(); err != nil {
-			logger().WarnContext(ctx, fmt.Sprint("failed to close resource: ", err))
+	for listener, srv := range s.servers {
+		if err := srv.inner.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop %s server: %w", srv.name, err))
+			_ = srv.inner.Close()
+		}
+		// Shutdown cannot close a listener whose Serve loop has not started yet.
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, fmt.Errorf("close %s listener: %w", srv.name, err))
 		}
 	}
 
 	for _, server := range s.dnsServers {
 		if err := server.ShutdownContext(ctx); err != nil {
-			return fmt.Errorf("stop %s listener failed: %w", server.Net, err)
+			errs = append(errs, fmt.Errorf("stop %s listener failed: %w", server.Net, err))
+			closeDNSServers([]*dns.Server{server})
 		}
 	}
+	resolver.ForEach(s.queryResolver, func(res resolver.Resolver) {
+		if c, ok := res.(io.Closer); ok {
+			if err := c.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close %T: %w", res, err))
+			}
+		}
+	})
 
-	return nil
+	return errors.Join(errs...)
 }
 
 func extractClientIDFromHost(hostName string) string {

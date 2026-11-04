@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -39,6 +40,14 @@ const (
 	httpsBasePort = 6000
 	tlsBasePort   = 8000
 )
+
+type closingResolver struct {
+	resolver.MockChainedResolver
+
+	closeFn func() error
+}
+
+func (r *closingResolver) Close() error { return r.closeFn() }
 
 var (
 	mockClientName                                               atomic.Value
@@ -1136,6 +1145,86 @@ var _ = Describe("Running DNS server", func() {
 		})
 	})
 	Describe("Server stop", func() {
+		It("closes bound listeners even when a DNS server never started", func() {
+			listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+			Expect(listenErr).Should(Succeed())
+			DeferCleanup(func() { _ = listener.Close() })
+			packetConn, listenErr := net.ListenPacket("udp", "127.0.0.1:0")
+			Expect(listenErr).Should(Succeed())
+			DeferCleanup(func() { _ = packetConn.Close() })
+			flushErr := errors.New("final flush failed")
+			res := &closingResolver{closeFn: func() error { return flushErr }}
+			res.On("GetNext").Return(nil)
+			srv := &Server{queryResolver: res, dnsServers: []*dns.Server{
+				{Net: "tcp", Listener: listener},
+				{Net: "udp", PacketConn: packetConn},
+			}}
+			Expect(errors.Is(srv.Stop(ctx), flushErr)).Should(BeTrue())
+			rebound, listenErr := net.Listen("tcp", listener.Addr().String())
+			Expect(listenErr).Should(Succeed())
+			DeferCleanup(func() { _ = rebound.Close() })
+			reboundPacket, listenErr := net.ListenPacket("udp", packetConn.LocalAddr().String())
+			Expect(listenErr).Should(Succeed())
+			DeferCleanup(func() { _ = reboundPacket.Close() })
+		})
+
+		It("drains HTTP requests before closing the resolver", func() {
+			started := make(chan struct{})
+			release := make(chan struct{}, 1)
+			DeferCleanup(func() { close(release) })
+			var handled atomic.Bool
+			closed := make(chan struct{})
+			res := &closingResolver{closeFn: func() error {
+				close(closed)
+				if !handled.Load() {
+					return errors.New("resolver closed before the request finished")
+				}
+
+				return nil
+			}}
+			res.On("GetNext").Return(nil)
+			httpSrv := newHTTPServer("http", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				close(started)
+				<-release
+				handled.Store(true)
+				w.WriteHeader(http.StatusOK)
+			}), &config.Config{})
+			listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+			Expect(listenErr).Should(Succeed())
+			DeferCleanup(func() { _ = httpSrv.inner.Close() })
+			DeferCleanup(func() { _ = listener.Close() })
+			srv := &Server{servers: map[net.Listener]*httpServer{listener: httpSrv}, queryResolver: res}
+			errs := make(chan error, 1)
+			go func() { errs <- httpSrv.Serve(ctx, listener) }()
+			response := make(chan error, 1)
+			go func() {
+				resp, requestErr := http.Get("http://" + listener.Addr().String())
+				if requestErr == nil {
+					requestErr = resp.Body.Close()
+				}
+				response <- requestErr
+			}()
+			Eventually(started).Should(BeClosed())
+			stopCtx, cancel := context.WithTimeout(ctx, time.Second)
+			DeferCleanup(cancel)
+			stopped := make(chan error, 1)
+			go func() { stopped <- srv.Stop(stopCtx) }()
+			Consistently(closed, "50ms").ShouldNot(BeClosed())
+			release <- struct{}{}
+			Eventually(response).Should(Receive(BeNil()))
+			Eventually(stopped).Should(Receive(BeNil()))
+			Expect(closed).Should(BeClosed())
+			Eventually(errs).Should(Receive(BeNil()))
+		})
+
+		It("returns resolver flush errors to the caller", func() {
+			flushErr := errors.New("query log flush failed")
+			res := &closingResolver{closeFn: func() error { return flushErr }}
+			res.On("GetNext").Return(nil)
+			srv := &Server{queryResolver: res}
+			Expect(srv.Stop(ctx)).Should(MatchError(ContainSubstring(flushErr.Error())))
+		})
+
 		When("Stop is called", func() {
 			var (
 				server  *Server
@@ -1987,9 +2076,13 @@ func newProxyProtocolTestServer(ctx context.Context, configurePorts func(*config
 	srv, err := NewServer(ctx, &cfg)
 	Expect(err).Should(Succeed())
 
+	queryResolver := srv.queryResolver
 	errChan := make(chan error, 10)
 	go srv.Start(ctx, errChan)
-	DeferCleanup(func() { Expect(srv.Stop(ctx)).Should(Succeed()) })
+	DeferCleanup(func() {
+		srv.queryResolver = queryResolver
+		Expect(srv.Stop(ctx)).Should(Succeed())
+	})
 	Consistently(errChan, "200ms").ShouldNot(Receive())
 
 	return srv

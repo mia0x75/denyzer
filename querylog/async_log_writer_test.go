@@ -2,6 +2,7 @@ package querylog
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"time"
@@ -125,6 +126,141 @@ var _ = Describe("AsyncLogWriter", func() {
 		})
 	})
 
+	DescribeTable("retains entries and failure counters after a failed flush",
+		func(stage string) {
+			Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
+			before, err := allTimeStats()
+			Expect(err).ShouldNot(HaveOccurred())
+			w := &AsyncLogWriter{}
+			w.dropped.Add(3)
+			w.failed.Add(2)
+			entries := []*storage.QueryLogEntry{{
+				Timestamp: time.Now().UnixMilli(), Domain: "retry-" + stage + ".test",
+				QueryType: "A", ResponseType: "RESOLVED", DurationMs: 10,
+			}}
+			agg := newAggregationMaps()
+
+			var conn *sql.DB
+			if stage == "begin" {
+				Expect(storage.CloseDB()).Should(Succeed())
+				DeferCleanup(func() { Expect(storage.InitDB(sharedDBPath)).Should(Succeed()) })
+			} else {
+				conn, err = sql.Open("sqlite3", sharedDBPath)
+				Expect(err).ShouldNot(HaveOccurred())
+				DeferCleanup(func() { _ = conn.Close() })
+				_, err = conn.Exec("CREATE TRIGGER fail_querylog_flush BEFORE INSERT ON " + stage +
+					" BEGIN SELECT RAISE(ABORT, 'flush unavailable'); END")
+				Expect(err).ShouldNot(HaveOccurred())
+				DeferCleanup(func() { _, _ = conn.Exec("DROP TRIGGER IF EXISTS fail_querylog_flush") })
+			}
+
+			for range 2 {
+				Expect(w.flush(entries, agg)).Should(HaveOccurred())
+				Expect(w.dropped.Load()).Should(Equal(uint64(3)))
+				Expect(w.failed.Load()).Should(Equal(uint64(2)))
+			}
+			if conn == nil {
+				Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
+			} else {
+				_, err = conn.Exec("DROP TRIGGER fail_querylog_flush")
+				Expect(err).ShouldNot(HaveOccurred())
+			}
+
+			page, err := storage.GetQueryLogsPage("", 10, entries[0].Domain, "", "", "")
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(page.Entries).Should(BeEmpty())
+			unchanged, err := allTimeStats()
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(unchanged).Should(Equal(before))
+
+			Expect(w.flush(entries, agg)).Should(Succeed())
+			Expect(w.flush(nil, agg)).Should(Succeed())
+			after, err := allTimeStats()
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(after.Total - before.Total).Should(Equal(uint64(6)))
+			Expect(after.Dropped - before.Dropped).Should(Equal(uint64(3)))
+			Expect(after.Errors - before.Errors).Should(Equal(uint64(2)))
+			Expect(after.Forwarded - before.Forwarded).Should(Equal(uint64(1)))
+			page, err = storage.GetQueryLogsPage("", 10, entries[0].Domain, "", "", "")
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(page.Entries).Should(HaveLen(1))
+		},
+		Entry("batch creation", "begin"),
+		Entry("query log insertion", "query_logs"),
+		Entry("metric persistence", "metrics"),
+	)
+
+	Describe("Bounded retries", func() {
+		var w *AsyncLogWriter
+		BeforeEach(func() {
+			Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
+			child, cancel := context.WithCancel(ctx)
+			w = &AsyncLogWriter{
+				ch: make(chan *storage.QueryLogEntry, 2), done: make(chan struct{}),
+				batchSize: 2, flushInterval: 50 * time.Millisecond, cancel: cancel,
+			}
+			go w.consume(child)
+			DeferCleanup(func() { _ = w.Close() })
+			DeferCleanup(func() { Expect(storage.InitDB(sharedDBPath)).Should(Succeed()) })
+		})
+
+		It("retries a failed batch without consuming an unbounded queue or duplicating counters", func() {
+			before, err := allTimeStats()
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(storage.CloseDB()).Should(Succeed())
+			entry := &LogEntry{
+				Start: time.Now(), QuestionName: "bounded-retry.test.",
+				ResponseType: "RESOLVED", QuestionType: "A",
+			}
+			w.Write(entry)
+			w.Write(entry)
+			Eventually(func() int { return len(w.ch) }).Should(BeZero())
+			for range 5 {
+				w.Write(entry)
+			}
+			Expect(w.ch).Should(HaveLen(2))
+			w.RecordError()
+			w.RecordError()
+			Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
+
+			Eventually(func() uint64 {
+				stats, statsErr := allTimeStats()
+				if statsErr != nil {
+					return 0
+				}
+
+				return stats.Total - before.Total
+			}, "5s", "10ms").Should(Equal(uint64(9)))
+			Expect(w.Close()).Should(Succeed())
+			page, err := storage.GetQueryLogsPage("", 10, "bounded-retry.test", "", "", "")
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(page.Entries).Should(HaveLen(4))
+			after, err := allTimeStats()
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(after.Dropped - before.Dropped).Should(Equal(uint64(3)))
+			Expect(after.Errors - before.Errors).Should(Equal(uint64(2)))
+		})
+
+		It("wakes a paused consumer on Close and reports a persistent final flush failure", func() {
+			Expect(storage.CloseDB()).Should(Succeed())
+			entry := &LogEntry{Start: time.Now(), QuestionName: "close-failure.test.", ResponseType: "RESOLVED"}
+			w.Write(entry)
+			w.Write(entry)
+			Eventually(func() int { return len(w.ch) }).Should(BeZero())
+			result := make(chan error, 1)
+			go func() { result <- w.Close() }()
+			var closeErr error
+			Eventually(result, "2s").Should(Receive(&closeErr))
+			Expect(closeErr).Should(MatchError(ContainSubstring("2 unwritten query log entries")))
+			Expect(w.Close()).Should(MatchError(closeErr))
+			Expect(w.done).Should(BeClosed())
+			w.Write(entry)
+			w.RecordError()
+			Expect(w.ch).Should(BeEmpty())
+			Expect(w.failed.Load()).Should(BeZero())
+		})
+	})
+
 	Describe("Window rollups", func() {
 		It("should fold flushed entries into the trailing window rollups", func() {
 			w, err := NewAsyncLogWriter(ctx, sharedDBPath,
@@ -182,20 +318,35 @@ var _ = Describe("AsyncLogWriter", func() {
 			Expect(w.Close()).Should(Succeed())
 			Expect(w.Close()).Should(Succeed()) // second call is a no-op
 		})
+
+		It("makes concurrent callers wait for the same shutdown", func() {
+			child, cancel := context.WithCancel(ctx)
+			w := &AsyncLogWriter{cancel: cancel, done: make(chan struct{})}
+			result := make(chan error, 2)
+			go func() { result <- w.Close() }()
+			Eventually(child.Done()).Should(BeClosed())
+			go func() { result <- w.Close() }()
+			Consistently(result, "50ms").ShouldNot(Receive())
+			close(w.done)
+			Eventually(result).Should(Receive(BeNil()))
+			Eventually(result).Should(Receive(BeNil()))
+		})
+
+		It("stops admission when the context is cancelled", func() {
+			w, err := NewAsyncLogWriter(ctx, sharedDBPath, config.QueryLogRetention{}, time.Hour, 100)
+			Expect(err).Should(Succeed())
+			cancelFn()
+			Expect(w.Close()).Should(Succeed())
+			w.Write(&LogEntry{Start: time.Now(), QuestionName: "after-close.test."})
+			w.RecordError()
+			Expect(w.ch).Should(BeEmpty())
+			Expect(w.failed.Load()).Should(BeZero())
+		})
 	})
 
 	Describe("Channel full behavior", func() {
 		It("should drop entries when channel is full", func() {
-			w, err := NewAsyncLogWriter(ctx, sharedDBPath,
-				config.QueryLogRetention{HistoryMonths: 1},
-				1*time.Hour, 10000)
-
-			Expect(err).Should(Succeed())
-
-			// Cancel the context and wait for the consumer to exit so that
-			// nothing drains the channel while it is being filled.
-			cancelFn()
-			Eventually(w.done).Should(BeClosed())
+			w := &AsyncLogWriter{ch: make(chan *storage.QueryLogEntry, defaultChanCap)}
 
 			// Fill the channel (cap is 2000).
 			for range 2500 {
@@ -214,7 +365,7 @@ var _ = Describe("AsyncLogWriter", func() {
 			// At most 2000 entries fit into the channel, so the rest is
 			// dropped instead of blocking the caller.
 			Expect(w.dropped.Load()).Should(BeNumerically(">=", uint64(500)))
-			Expect(w.closed.Load()).Should(BeFalse())
+			Expect(w.closed).Should(BeFalse())
 		})
 	})
 

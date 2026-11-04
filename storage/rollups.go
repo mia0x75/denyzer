@@ -223,12 +223,6 @@ func (p *rollupPlan) apply(now time.Time) error {
 				return err
 			}
 		}
-
-		if p.storeds[i] != p.starts[i] {
-			if err := writeWindowStart(spec.Granularity, p.starts[i]); err != nil {
-				return err
-			}
-		}
 	}
 
 	return nil
@@ -308,8 +302,7 @@ func rebuildWindowRollup(spec WindowSpec, start, end int64) error {
 	})
 }
 
-// subtractDayFromRollup removes the day that just left the window from both
-// entity dimensions.
+// subtractDayFromRollup removes an expired day and advances its watermark atomically.
 func subtractDayFromRollup(spec WindowSpec, day int64) error {
 	return withTx(func(tx *sql.Tx) error {
 		for _, dimension := range []string{DimensionDomain, DimensionClient} {
@@ -321,7 +314,7 @@ func subtractDayFromRollup(spec WindowSpec, day int64) error {
 			}
 		}
 
-		return nil
+		return writeWindowStartTx(tx, spec.Granularity, nextDayBucket(day))
 	})
 }
 

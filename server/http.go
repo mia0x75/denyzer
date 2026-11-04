@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -72,13 +73,10 @@ func (s *httpServer) String() string {
 }
 
 func (s *httpServer) Serve(ctx context.Context, l net.Listener) error {
-	go func() {
-		<-ctx.Done()
+	stop := context.AfterFunc(ctx, func() { _ = s.inner.Close() })
+	defer stop()
 
-		s.inner.Close()
-	}()
-
-	if err := s.inner.Serve(l); err != nil {
+	if err := s.inner.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("HTTP server '%s' failed to serve: %w", s.name, err)
 	}
 

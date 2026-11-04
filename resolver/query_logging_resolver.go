@@ -186,7 +186,10 @@ func (r *QueryLoggingResolver) periodicCleanUp(ctx context.Context) {
 		case <-ticker.C:
 			r.doCleanUp()
 		case <-ctx.Done():
-			r.closeWriter()
+			if err := r.Close(); err != nil {
+				log.PrefixedLog(queryLoggingResolverType).WarnContext(ctx,
+					"failed to close query log writer", slog.Any("error", err))
+			}
 
 			return
 		}
@@ -297,15 +300,13 @@ func (r *QueryLoggingResolver) createLogEntry(request *model.Request, response *
 	return &entry
 }
 
-// closeWriter lets writers that hold external resources (e.g. the dnstap socket)
-// flush and release them on shutdown. Writers without a Close — the DB/CSV/console
-// retention writers — are unaffected.
-func (r *QueryLoggingResolver) closeWriter() {
+// Close flushes and releases the writer after the server has drained its requests.
+func (r *QueryLoggingResolver) Close() error {
 	if c, ok := r.writer.(io.Closer); ok {
-		if err := c.Close(); err != nil {
-			log.PrefixedLog(queryLoggingResolverType).Warn("failed to close query log writer", slog.Any("error", err))
-		}
+		return c.Close()
 	}
+
+	return nil
 }
 
 func readInstanceID(file string) (string, error) {

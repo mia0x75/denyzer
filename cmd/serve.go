@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -20,7 +21,6 @@ import (
 
 //nolint:gochecknoglobals
 var (
-	done              = make(chan bool, 1)
 	isConfigMandatory = true
 	signals           = make(chan os.Signal, 1)
 
@@ -99,6 +99,7 @@ func startServer(_ *cobra.Command, _ []string) error {
 	warnMissingPrivilegedPortCapability(cfg.Ports)
 
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	defer cancelFn()
@@ -115,33 +116,19 @@ func startServer(_ *cobra.Command, _ []string) error {
 
 	var terminationErr error
 
-	go func() {
-		select {
-		case <-signals:
-			log.Log().InfoContext(ctx, "Terminating...")
-
-			// Cancel background operations (periodic refresh, etc.)
-			cancelFn()
-
-			// Preserve logging fields, but do not cancel graceful shutdown with
-			// the background operations that were just stopped.
-			stopCtx, stopCancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
-			defer stopCancel()
-
-			util.LogOnError(stopCtx, "can't stop server: ", srv.Stop(stopCtx))
-			done <- true
-
-		case err := <-errChan:
-			log.Log().ErrorContext(ctx, fmt.Sprint("server start failed: ", err))
-			terminationErr = err
-			done <- true
-		}
-	}()
-
 	evt.Bus().Publish(evt.ApplicationStarted, util.Version, util.BuildTime)
-	<-done
+	select {
+	case <-signals:
+		log.Log().InfoContext(ctx, "Terminating...")
+	case err := <-errChan:
+		terminationErr = err
+	}
 
-	return terminationErr
+	// Drain requests and flush writers before cancelling their background context.
+	stopCtx, stopCancel := context.WithTimeout(ctx, shutdownTimeout)
+	defer stopCancel()
+
+	return errors.Join(terminationErr, srv.Stop(stopCtx))
 }
 
 func printBanner() {

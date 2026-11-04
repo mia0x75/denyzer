@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,24 +25,25 @@ const (
 
 const maxDurationMs = ^uint16(0)
 
-// AsyncLogWriter is a high-performance, non-blocking query log writer backed by
-// the embedded SQLite store. It uses an unbuffered channel as a ring buffer,
-// dual-trigger flushing (batch size OR timeout), and in-memory pre-aggregation
-// to reduce the number of DB operations per flush cycle.
+// AsyncLogWriter uses a bounded queue and batch-size/timer flushing to write
+// query logs and pre-aggregated metrics to SQLite together.
 type AsyncLogWriter struct {
 	ch            chan *storage.QueryLogEntry
 	flushInterval time.Duration
 	batchSize     int
 	retention     config.QueryLogRetention
 	done          chan struct{}
-	closed        atomic.Bool
+	mu            sync.RWMutex // protects admission while shutdown drains the queue
+	closed        bool
+	cancel        context.CancelFunc
+	workers       sync.WaitGroup
+	closeErr      error // published when done closes
 	dropped       atomic.Uint64
 	failed        atomic.Uint64
 }
 
 // NewAsyncLogWriter creates and starts an AsyncLogWriter. The underlying SQLite
-// database is opened (or reused) and two goroutines are launched: a consumer
-// that flushes buffered entries on dual-trigger, and a TTL cleanup worker.
+// database is opened (or reused) before the consumer and maintenance workers start.
 func NewAsyncLogWriter(ctx context.Context, dbPath string, retention config.QueryLogRetention,
 	flushInterval time.Duration, batchSize int,
 ) (*AsyncLogWriter, error) {
@@ -57,17 +59,19 @@ func NewAsyncLogWriter(ctx context.Context, dbPath string, retention config.Quer
 		batchSize = defaultBatchSize
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
 	w := &AsyncLogWriter{
 		ch:            make(chan *storage.QueryLogEntry, defaultChanCap),
 		flushInterval: flushInterval,
 		batchSize:     batchSize,
 		retention:     retention,
 		done:          make(chan struct{}),
+		cancel:        cancel,
 	}
 
+	w.workers.Go(func() { w.ttlCleanup(ctx) })
+	w.workers.Go(func() { w.maintainWindows(ctx) })
 	go w.consume(ctx)
-	go w.ttlCleanup(ctx)
-	go w.maintainWindows(ctx)
 
 	return w, nil
 }
@@ -76,7 +80,9 @@ func NewAsyncLogWriter(ctx context.Context, dbPath string, retention config.Quer
 // fashion. If the channel is full, the entry is dropped (same semantics as the
 // old QueryLoggingResolver).
 func (w *AsyncLogWriter) Write(entry *LogEntry) {
-	if w.closed.Load() {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.closed {
 		return
 	}
 
@@ -103,7 +109,9 @@ func (w *AsyncLogWriter) Write(entry *LogEntry) {
 // entry. The counter is folded into the next flush so it appears in the
 // statistics as a failed query.
 func (w *AsyncLogWriter) RecordError() {
-	if w.closed.Load() {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.closed {
 		return
 	}
 
@@ -113,19 +121,20 @@ func (w *AsyncLogWriter) RecordError() {
 // CleanUp is a no-op; TTL cleanup is handled by the background goroutine.
 func (w *AsyncLogWriter) CleanUp() {}
 
-// Close signals the consumer goroutine to drain remaining entries and blocks
-// until it is done. Safe to call multiple times.
+// Close stops admission and waits for the final flush and all workers.
+// Every caller receives the same final flush error, if any.
 func (w *AsyncLogWriter) Close() error {
-	if w.closed.Swap(true) {
-		return nil
-	}
-
-	// The consumer goroutine exits its drain loop when the channel is closed
-	// and the buffer is empty, then closes w.done.
-	close(w.ch)
+	w.stop()
 	<-w.done
 
-	return nil
+	return w.closeErr
+}
+
+func (w *AsyncLogWriter) stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closed = true
+	w.cancel()
 }
 
 // consume implements the dual-trigger flush loop: entries are buffered in a
@@ -133,61 +142,63 @@ func (w *AsyncLogWriter) Close() error {
 // timer fires. On context cancellation it drains the channel.
 func (w *AsyncLogWriter) consume(ctx context.Context) {
 	defer close(w.done)
+	defer w.workers.Wait()
 
 	ticker := time.NewTicker(w.flushInterval)
 	defer ticker.Stop()
 
 	buf := make([]*storage.QueryLogEntry, 0, w.batchSize)
 	agg := newAggregationMaps()
+	flush := func() {
+		if err := w.flush(buf, agg); err != nil {
+			log.PrefixedLog(loggerPrefixAsyncLogWriter).ErrorContext(ctx, "query log flush failed; batch retained",
+				"error", err, "entries", len(buf))
+
+			return
+		}
+		clear(buf)
+		buf = buf[:0]
+	}
 
 	for {
+		entries := w.ch
+		if len(buf) >= w.batchSize {
+			// Keep one failed batch; the bounded queue applies backpressure until the timer retries it.
+			entries = nil
+		}
 		select {
-		case entry, ok := <-w.ch:
-			if !ok {
-				// Channel closed — final drain.
-				w.flush(buf, agg)
-
-				return
-			}
-
+		case entry := <-entries:
 			buf = append(buf, entry)
 
 			if len(buf) >= w.batchSize {
-				w.flush(buf, agg)
-				buf = buf[:0]
-				agg.reset()
+				flush()
 				ticker.Reset(w.flushInterval)
 			}
 
 		case <-ticker.C:
-			w.flush(buf, agg)
-			buf = buf[:0]
-			agg.reset()
+			flush()
 
 		case <-ctx.Done():
-			w.drain(buf, agg)
+			w.stop()
+			w.closeErr = w.drain(buf, agg)
 
 			return
 		}
 	}
 }
 
-// drain consumes whatever is left in the channel after cancellation and flushes it.
-func (w *AsyncLogWriter) drain(buf []*storage.QueryLogEntry, agg *aggregationMaps) {
+// drain flushes the bounded queue once; a persistent storage failure must not cause an endless shutdown retry.
+func (w *AsyncLogWriter) drain(buf []*storage.QueryLogEntry, agg *aggregationMaps) error {
 	for {
 		select {
-		case entry, ok := <-w.ch:
-			if !ok {
-				w.flush(buf, agg)
-
-				return
-			}
-
+		case entry := <-w.ch:
 			buf = append(buf, entry)
 		default:
-			w.flush(buf, agg)
+			if err := w.flush(buf, agg); err != nil {
+				return fmt.Errorf("final flush failed with %d unwritten query log entries: %w", len(buf), err)
+			}
 
-			return
+			return nil
 		}
 	}
 }
@@ -222,53 +233,43 @@ func (a *aggregationMaps) reset() {
 // for the flush cycle into one storage batch, committing once so the cycle is
 // atomic. Entries dropped because the channel was full and resolver failures
 // recorded since the last flush are folded into the current bucket.
-func (w *AsyncLogWriter) flush(buf []*storage.QueryLogEntry, agg *aggregationMaps) {
-	logger := log.PrefixedLog(loggerPrefixAsyncLogWriter)
-
+func (w *AsyncLogWriter) flush(buf []*storage.QueryLogEntry, agg *aggregationMaps) (err error) {
+	agg.reset()
 	dropped := w.dropped.Swap(0)
 	failed := w.failed.Swap(0)
 
 	if len(buf) == 0 && dropped == 0 && failed == 0 {
-		return
+		return nil
 	}
+	defer func() {
+		if err != nil {
+			w.dropped.Add(dropped)
+			w.failed.Add(failed)
+		}
+	}()
 
 	agg.aggregate(buf)
 	agg.addFailures(dropped, failed)
 
 	batch, err := storage.NewBatch()
 	if err != nil {
-		logger.Error(fmt.Sprintf("can't create storage batch, dropping %d query log entries: %v", len(buf), err))
-
-		return
+		return fmt.Errorf("create query log batch: %w", err)
 	}
-
-	committed := false
-
-	defer func() {
-		if !committed {
-			storage.RollbackBatch(batch)
-		}
-	}()
+	defer storage.RollbackBatch(batch)
 
 	if err := storage.BatchInsertQueryLogs(buf, batch); err != nil {
-		logger.Error(fmt.Sprintf("batch insert query_logs failed: %v", err))
-
-		return
+		return fmt.Errorf("insert query logs: %w", err)
 	}
 
 	if err := agg.persist(batch); err != nil {
-		logger.Error(fmt.Sprintf("can't stage metric updates: %v", err))
-
-		return
+		return fmt.Errorf("stage query log metrics: %w", err)
 	}
 
 	if err := storage.CommitBatch(batch); err != nil {
-		logger.Error(fmt.Sprintf("can't commit query log and metric batch: %v", err))
-
-		return
+		return fmt.Errorf("commit query logs and metrics: %w", err)
 	}
 
-	committed = true
+	return nil
 }
 
 // addWindowDeltas folds one entry into the trailing window rollups. It is a

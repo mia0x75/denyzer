@@ -1,9 +1,13 @@
 package storage
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/require"
 )
 
 // storageFixture holds the seeded state shared by the storage subtests.
@@ -40,6 +44,55 @@ func TestStorage(t *testing.T) {
 	t.Run("WindowRollupsMatchDayBuckets", func(t *testing.T) { testWindowRollups(t, fixture) })
 	t.Run("WindowRollupRebuildDropsStaleRows", func(t *testing.T) { testWindowRollupRebuild(t, fixture) })
 	t.Run("WindowRollupsExpireDays", func(t *testing.T) { testWindowRollupExpiry(t, fixture) })
+}
+
+func TestCommitBatchFailureIsAtomic(t *testing.T) {
+	resetStorageState()
+	t.Cleanup(resetStorageState)
+	require.NoError(t, InitDB(filepath.Join(t.TempDir(), "commit.db")))
+	conn, err := getDB()
+	require.NoError(t, err)
+	conn.SetMaxOpenConns(1)
+	setCommitHook := func(hook func() int) {
+		raw, err := conn.Conn(t.Context())
+		require.NoError(t, err)
+		require.NoError(t, raw.Raw(func(driverConn any) error {
+			sqlite, ok := driverConn.(*sqlite3.SQLiteConn)
+			require.True(t, ok)
+			sqlite.RegisterCommitHook(hook)
+
+			return nil
+		}))
+		require.NoError(t, raw.Close())
+	}
+	setCommitHook(func() int { return 1 })
+	write := func() error {
+		batch, err := NewBatch()
+		require.NoError(t, err)
+		defer RollbackBatch(batch)
+		require.NoError(t, BatchInsertQueryLogs([]*QueryLogEntry{{Domain: "commit.test"}}, batch))
+		require.NoError(t, UpsertMetrics(batch, []MetricInput{{
+			Dimension: DimensionGlobal, Granularity: GranularityAllTime, Delta: MetricsDelta{Total: 1},
+		}}))
+
+		return CommitBatch(batch)
+	}
+	require.Error(t, write())
+	page, err := GetQueryLogsPage("", 10, "", "", "", "")
+	require.NoError(t, err)
+	require.Empty(t, page.Entries)
+	stats, err := GetGlobalStats(GranularityAllTime, 0)
+	require.NoError(t, err)
+	require.Zero(t, stats.Total)
+
+	setCommitHook(func() int { return 0 })
+	require.NoError(t, write())
+	page, err = GetQueryLogsPage("", 10, "", "", "", "")
+	require.NoError(t, err)
+	require.Len(t, page.Entries, 1)
+	stats, err = GetGlobalStats(GranularityAllTime, 0)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), stats.Total)
 }
 
 // setupStorageFixture opens the shared database and seeds it with one
@@ -766,6 +819,34 @@ func testWindowRollupExpiry(t *testing.T, _ storageFixture) {
 	// Eight days later the seeded days are outside the 7-day window but still
 	// inside the 30-day window.
 	later := time.Now().AddDate(0, 0, 8)
+	conn, err := getDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.ExecContext(t.Context(), `CREATE TRIGGER fail_window_watermark BEFORE INSERT ON metrics
+WHEN NEW.dimension = 'meta' BEGIN SELECT RAISE(ABORT, 'watermark unavailable'); END`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = conn.ExecContext(context.Background(), `DROP TRIGGER IF EXISTS fail_window_watermark`) })
+
+	if err := MaintainWindowRollups(later); err == nil {
+		t.Fatal("maintenance succeeded despite the failed watermark write")
+	}
+	unchanged, err := GetTopEntities(DimensionDomain, GranularityWindow7d, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total uint64
+	for _, entity := range unchanged {
+		total += entity.Total
+	}
+	if total != 10 {
+		t.Fatalf("failed expiry changed rollup total to %d, want 10", total)
+	}
+	if _, err := conn.ExecContext(t.Context(), `DROP TRIGGER fail_window_watermark`); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := MaintainWindowRollups(later); err != nil {
 		t.Fatalf("MaintainWindowRollups: %v", err)
