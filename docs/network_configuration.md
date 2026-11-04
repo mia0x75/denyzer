@@ -77,39 +77,19 @@ Cross-origin management requests are not supported. See
 
 When Denyzer's HTTP / DoH listener is fronted by a reverse proxy
 (nginx, Traefik, Caddy, HAProxy, ...), the TCP peer Denyzer sees is
-the proxy, not the real client. To preserve per-client behavior
-(client groups, query logging, custom DNS rules), Denyzer inspects
-forwarding headers in this fixed precedence order:
-
-1. **`Forwarded`** (RFC 7239) — the standardized header. The first
-   `for=` parameter wins. Both `for=192.0.2.43` and
-   `for="[2001:db8::1]:8080"` are accepted.
-2. **`X-Forwarded-For`** — the de facto standard. The leftmost IP in
-   the comma-separated list wins (per convention, it is the original
-   client).
-3. **`RemoteAddr`** — direct TCP peer; used when no forwarding header
-   is present.
-
-The first header found wins; later headers are ignored. So if your
-proxy sets both `Forwarded` and `X-Forwarded-For`, Denyzer uses
-`Forwarded`.
-
-!!! warning
-
-    Denyzer uses `Forwarded` / `X-Forwarded-For` whenever those
-    headers are present; this is not a separate feature you can
-    enable or disable. If Denyzer is reachable directly by clients,
-    they can send these headers themselves and spoof their identity.
-    Ensure Denyzer is only reachable through a trusted reverse proxy,
-    or that the proxy strips any incoming `Forwarded` /
-    `X-Forwarded-For` headers and overwrites them with trusted values.
+the proxy, not the real client. Denyzer ignores `Forwarded` and
+`X-Forwarded-For`: clients can forge those headers. Client groups,
+rate limits, upstream selection and query logs use the connection IP.
+All clients behind an ordinary HTTP reverse proxy therefore share
+the proxy's identity. To preserve client IPs, use the existing
+[PROXY protocol support](#running-dotdoh-behind-a-tcp-proxy) on a
+listener reachable only from trusted proxies.
 
 !!! example "nginx"
 
     ```nginx
     location /dns-query {
         proxy_pass http://denyzer-backend:8080/dns-query;
-        proxy_set_header X-Forwarded-For $remote_addr;
     }
     ```
 
@@ -123,7 +103,7 @@ proxy sets both `Forwarded` and `X-Forwarded-For`, Denyzer uses
             servers:
               - url: "http://denyzer-backend:8080"
       middlewares: {}
-      # Traefik sets X-Forwarded-For automatically; no extra config needed.
+      # All clients use the proxy's IP unless PROXY protocol is configured.
     ```
 
 ## Running DoT/DoH behind a TCP proxy

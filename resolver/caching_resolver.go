@@ -290,15 +290,22 @@ func (r *CachingResolver) isRequestCacheable(request *model.Request) bool {
 	if questionsMatchAnyExcludedElement(request.Req.Question, r.compiledExclusions) {
 		return false
 	}
-	// don't cache responses with EDNS Client Subnet option with masks that include more than one client
-	if so := util.GetEdns0Option[*dns.EDNS0_SUBNET](request.Req); so != nil {
-		if (so.Family == ecsFamilyIPv4 && so.SourceNetmask != ecsMaskIPv4) ||
-			(so.Family == ecsFamilyIPv6 && so.SourceNetmask != ecsMaskIPv6) {
-			return false
-		}
+	// shortcut: client-dependent answers bypass caching; add per-view keys and view-aware prefetching if needed.
+	if util.GetEdns0Option[*dns.EDNS0_SUBNET](request.Req) != nil {
+		return false
 	}
 
-	return true
+	cacheable := true
+	ForEach(r.next, func(next Resolver) {
+		if _, clientViews := next.(*UpstreamTreeResolver); clientViews {
+			cacheable = false
+		}
+		if ecs, ok := next.(*ECSResolver); ok && (ecs.cfg.IPv4Mask > 0 || ecs.cfg.IPv6Mask > 0) {
+			cacheable = false
+		}
+	})
+
+	return cacheable
 }
 
 func questionsMatchAnyExcludedElement(questions []dns.Question, exclutions []*regexp.Regexp) bool {

@@ -107,8 +107,7 @@ var _ = Describe("ECSClientResolver", func() {
 // With ecs.useAsClient, the EDNS Client Subnet address must be adopted as the internal
 // client IP *before* the client-name lookup and the cache, so that:
 //   - the client name is resolved from the ECS client (not the connecting forwarder), and
-//   - cached responses are still attributed to the ECS client (the cache short-circuits the
-//     chain on a hit, so anything below it never runs for cached answers).
+//   - client-dependent requests bypass the shared result cache.
 var _ = Describe("ECS as client across the resolver chain", func() {
 	var (
 		ecsClient   *ECSClientResolver
@@ -162,7 +161,7 @@ var _ = Describe("ECS as client across the resolver chain", func() {
 		return req
 	}
 
-	It("attributes both the resolved and the cached response to the ECS client", func(ctx context.Context) {
+	It("attributes repeated uncached responses to the ECS client", func(ctx context.Context) {
 		By("resolving the first query upstream", func() {
 			req := newECSRequest()
 
@@ -173,12 +172,12 @@ var _ = Describe("ECS as client across the resolver chain", func() {
 			Expect(req.ClientNames).Should(Equal([]string{"ecs-client"}))
 		})
 
-		By("serving the second identical query from cache, still attributed to the ECS client", func() {
+		By("resolving the second identical query without sharing the ECS view", func() {
 			req := newECSRequest()
 
 			resp, err := ecsClient.Resolve(ctx, req)
 			Expect(err).Should(Succeed())
-			Expect(resp.RType).Should(Equal(ResponseTypeCACHED))
+			Expect(resp.RType).Should(Equal(ResponseTypeRESOLVED))
 			Expect(req.ClientIP).Should(Equal(ecsIP))
 			Expect(req.ClientNames).Should(Equal([]string{"ecs-client"}))
 		})

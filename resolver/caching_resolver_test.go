@@ -795,7 +795,7 @@ var _ = Describe("CachingResolver", func() {
 					Should(BeFalse())
 			})
 		})
-		When("request is cacheable", func() {
+		When("ECS specifies a single client", func() {
 			BeforeEach(func() {
 				request = newRequest("example.com.", A)
 				e := new(dns.EDNS0_SUBNET)
@@ -806,11 +806,83 @@ var _ = Describe("CachingResolver", func() {
 				util.SetEdns0Option(request.Req, e)
 			})
 
-			It("should return true", func() {
+			It("should still return false", func() {
 				Expect(sut.isRequestCacheable(request)).
-					Should(BeTrue())
+					Should(BeFalse())
 			})
 		})
+	})
+
+	Describe("Client-specific cache views", func() {
+		It("does not share answers between upstream groups, including through a chained resolver", func() {
+			firstAnswer, err := util.NewMsgWithAnswer("example.com.", 300, A, "192.0.2.1")
+			Expect(err).Should(Succeed())
+			secondAnswer, err := util.NewMsgWithAnswer("example.com.", 300, A, "192.0.2.2")
+			Expect(err).Should(Succeed())
+			first, second := &mockResolver{}, &mockResolver{}
+			first.On("Resolve", mock.Anything).Return(&Response{Res: firstAnswer, RType: ResponseTypeRESOLVED}, nil)
+			second.On("Resolve", mock.Anything).Return(&Response{Res: secondAnswer, RType: ResponseTypeRESOLVED}, nil)
+			tree := &UpstreamTreeResolver{
+				typed: withType(upstreamTreeResolverType),
+				branches: map[string]Resolver{
+					upstreamDefaultCfgName: first,
+					"192.0.2.20":           second,
+				},
+			}
+			Chain(sut, NewECSResolver(config.ECS{}), tree)
+
+			for range 2 {
+				Expect(sut.Resolve(ctx, newRequestWithClient("example.com.", A, "192.0.2.10"))).
+					Should(SatisfyAll(HaveResponseType(ResponseTypeRESOLVED), BeDNSRecord("example.com.", A, "192.0.2.1")))
+				Expect(sut.Resolve(ctx, newRequestWithClient("example.com.", A, "192.0.2.20"))).
+					Should(SatisfyAll(HaveResponseType(ResponseTypeRESOLVED), BeDNSRecord("example.com.", A, "192.0.2.2")))
+			}
+			Expect(sut.EntryCount()).Should(BeZero())
+		})
+
+		DescribeTable("does not share answers between ECS clients",
+			func(firstIP, secondIP string, mask uint8, generated bool) {
+				if generated {
+					ecsCfg := config.ECS{}
+					if net.ParseIP(firstIP).To4() != nil {
+						ecsCfg.IPv4Mask = config.ECSv4Mask(mask)
+					} else {
+						ecsCfg.IPv6Mask = config.ECSv6Mask(mask)
+					}
+					Chain(sut, NewECSResolver(ecsCfg), m)
+				}
+				m.ResolveFn = func(_ context.Context, req *Request) (*Response, error) {
+					ecs := util.GetEdns0Option[*dns.EDNS0_SUBNET](req.Req)
+					answer, err := util.NewMsgWithAnswer("example.com.", 300, A, "192.0.2.1")
+					Expect(err).Should(Succeed())
+					if ecs.Address.Equal(net.ParseIP(secondIP)) {
+						answer, err = util.NewMsgWithAnswer("example.com.", 300, A, "192.0.2.2")
+						Expect(err).Should(Succeed())
+					}
+
+					return &Response{Res: answer, RType: ResponseTypeRESOLVED}, nil
+				}
+				for range 2 {
+					for i, ip := range []string{firstIP, secondIP} {
+						req := newRequestWithClient("example.com.", A, ip)
+						if !generated {
+							addEcsOption(req.Req, net.ParseIP(ip), mask)
+						}
+						Expect(sut.Resolve(ctx, req)).Should(SatisfyAll(
+							HaveResponseType(ResponseTypeRESOLVED),
+							BeDNSRecord("example.com.", A, fmt.Sprintf("192.0.2.%d", i+1)),
+						))
+					}
+				}
+				Expect(sut.EntryCount()).Should(BeZero())
+			},
+			Entry("IPv4 full prefixes", "198.51.100.1", "198.51.100.2", uint8(32), false),
+			Entry("IPv4 partial prefixes", "198.51.100.0", "203.0.113.0", uint8(24), false),
+			Entry("IPv6 full prefixes", "2001:db8::1", "2001:db8::2", uint8(128), false),
+			Entry("server-generated IPv4 full prefixes", "198.51.100.1", "198.51.100.2", uint8(32), true),
+			Entry("server-generated IPv4 partial prefixes", "198.51.100.0", "203.0.113.0", uint8(24), true),
+			Entry("server-generated IPv6 full prefixes", "2001:db8::1", "2001:db8::2", uint8(128), true),
+		)
 	})
 
 	Describe("Request with excluded suffix should not be cached", func() {
