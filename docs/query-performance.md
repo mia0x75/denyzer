@@ -551,11 +551,13 @@ Run the standard-library regex benchmark with and without the pre-filter for:
   hit, near-hit, uppercase, suffix, and malformed-UTF-8 query variants, a
   non-empty filter is allowed to skip the rule only when `MatchString` also
   reports no match; and
-- zero-allocation miss checks after cache construction.
+- zero-allocation checks for pre-filtered misses after cache construction.
 
 The grouped-cache guardrails include exact-hit, wildcard-hit, and miss
 benchmarks. Exact and wildcard hits still short-circuit before the regex cache,
-while a miss still checks every cache and remains allocation-free.
+while the benchmark's pre-filtered misses still check every cache without
+allocating. Unfiltered standard-library regex execution can allocate when its
+matching-state pool is empty, especially under the race detector.
 
 ### Result
 

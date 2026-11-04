@@ -76,7 +76,7 @@ func TestRegexCacheDifferential(t *testing.T) {
 		`foo{0,3}`, `(?:foo){1,3}`, `(?i)kelvin`, `(?i:foo)Bar`,
 		`(?s).*foo.*`, `\Qfoo.bar\E`, `\x66oo`, `\141bc`, `foo\\bar`,
 		`\bfoo\b`, `[a-z]+\.test`, `\p{Greek}+`, `bücher\.example`,
-		`(?i)k`, `(?i)s`, `�`, `a�b`, `(?P<name>foo)bar`,
+		`(?i)k`, `(?i)s`, `(?i)bar`, `�`, `a�b`, `(?P<name>foo)bar`,
 		`foo.*longer`, `foo(?:bar|baz)quux`, `a\x00b`, ``, `^$`,
 	}
 	queries := []string{
@@ -84,7 +84,7 @@ func TestRegexCacheDifferential(t *testing.T) {
 		"foo\\bar", "abc", "foo\nbar", "bar\nfoo", "foo\n", "longerfoo",
 		"fooXXlonger", "fooBar", "FOOBar", "kelvin", "KELVIN", "ſ", "K",
 		"bücher.example", "BÜCHER.example", "αβ", "a\x00b", "�", "\xff", "a\xffb",
-		"example.com", "www.example.com", "example.com.invalid", "not-example.com",
+		"example.com", "www.example.com", "example.com.invalid", "not-example.com", "unlisted.invalid", "BAR",
 	}
 	for i, pattern := range patterns {
 		t.Run(fmt.Sprintf("pattern_%d", i), func(t *testing.T) {
@@ -126,11 +126,18 @@ func TestRegexCacheRealListDifferential(t *testing.T) {
 }
 
 func TestRegexCacheMissAllocations(t *testing.T) {
+	// Only pre-filter rejections guarantee zero allocations; race builds can
+	// randomly discard the standard-library regexp's pooled matching state.
 	factory := newRegexCacheFactory()
-	for _, entry := range []string{`/^(.*\.)?example\.com$/`, `/^foo/`, `/(?i)bar/`} {
+	for _, entry := range []string{`/^(.*\.)?example\.com$/`, `/^foo/`, `/(?i:bar)baz/`} {
 		factory.addEntry(entry)
 	}
-	cache := factory.create()
+	cache := factory.create().(regexCache)
+	for _, entry := range cache {
+		if entry.required == "" {
+			t.Fatalf("rule %q has no required literal", entry.re.String())
+		}
+	}
 	for _, query := range []string{"unlisted.invalid", "", "\xff"} {
 		if _, ok := cache.findMatch(query); ok {
 			t.Fatalf("unexpected match: %q", query)

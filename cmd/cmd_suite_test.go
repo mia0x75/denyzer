@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -19,6 +20,28 @@ func TestCmd(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Command Suite")
 }
+
+var _ = BeforeEach(keepGlobals)
+
+var _ = Describe("Command test isolation", Ordered, func() {
+	var originalPath string
+
+	BeforeAll(func() {
+		originalPath = configPath
+		Expect(log.IsSilenced(log.Log())).Should(BeTrue())
+	})
+
+	It("can change global command and logging settings", func() {
+		configPath = "test-only-config.yml"
+		log.SetOutput(log.Log(), new(bytes.Buffer))
+		Expect(log.IsSilenced(log.Log())).Should(BeFalse())
+	})
+
+	It("restores settings before the next spec", func() {
+		Expect(configPath).Should(Equal(originalPath))
+		Expect(log.IsSilenced(log.Log())).Should(BeTrue())
+	})
+})
 
 // withContext wraps a cobra.Command and sets a context on it for testing
 func withContext(cmd *cobra.Command) *cobra.Command {

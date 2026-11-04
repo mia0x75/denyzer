@@ -26,7 +26,6 @@ var _ = Describe("Serve command logging to syslog", func() {
 	BeforeEach(func() {
 		tmpDir = helpertest.NewTmpFolder("config")
 
-		keepGlobals()
 		configPath = defaultConfigPath
 
 		out = new(bytes.Buffer)

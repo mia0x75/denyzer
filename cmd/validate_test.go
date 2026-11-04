@@ -41,7 +41,6 @@ var _ = Describe("Validate command", func() {
 	})
 
 	DescribeTable("management authentication rules", func(admin string, authenticated, valid bool) {
-		keepGlobals()
 		hook, cleanup := log.Capture(log.Log())
 		DeferCleanup(cleanup)
 
@@ -84,7 +83,6 @@ var _ = Describe("Validate command", func() {
 
 	When("Validate is called with a configuration file that only logs errors", func() {
 		It("should still report the configuration's warnings", func() {
-			keepGlobals()
 			hook, cleanup := log.Capture(log.Log())
 			DeferCleanup(cleanup)
 

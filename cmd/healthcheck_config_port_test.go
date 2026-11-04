@@ -104,7 +104,6 @@ var _ = Describe("Healthcheck derives the port from the config", func() {
 	})
 
 	It("keeps working and logs why when the config is invalid", func() {
-		keepGlobals()
 		hook, cleanup := log.Capture(log.Log())
 		DeferCleanup(cleanup)
 

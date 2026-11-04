@@ -64,7 +64,8 @@ var _ = Describe("root command", func() {
 				"  clientGroupsBlock:",
 				"    default:",
 				"      - ads",
-				"port: 5333",
+				"ports:",
+				"  dns: 5333",
 			)
 			dohOnlyConfig = tmpDir.CreateStringFile("config_without_admin",
 				"upstreams:", "  groups:", "    default:", "      - 1.1.1.1",
@@ -73,7 +74,6 @@ var _ = Describe("root command", func() {
 		})
 
 		It("rejects API commands when ports.admin is not configured", func() {
-			keepGlobals()
 			command := NewRootCommand()
 			command.SetArgs([]string{"refresh", "--config", dohOnlyConfig.Path})
 
@@ -81,7 +81,6 @@ var _ = Describe("root command", func() {
 		})
 
 		It("allows an explicit API address without ports.admin", func() {
-			keepGlobals()
 			command := NewRootCommand()
 			server := testHTTPAPIServer(func(http.ResponseWriter, *http.Request) {})
 			DeferCleanup(server.Close)
