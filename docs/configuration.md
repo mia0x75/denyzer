@@ -759,6 +759,8 @@ It only has an effect together with `rewrite`; without any rewrite rules it is i
         lan.net: 192.170.1.2,192.170.1.3
         # for reverse DNS lookups of local devices
         178.168.192.in-addr.arpa: 192.168.178.1
+        # for all queries under a TLD (e.g. *.xyz)
+        xyz: 1.1.1.1
         # for all unqualified hostnames
         .: 168.168.0.1
     ```
@@ -766,6 +768,12 @@ It only has an effect together with `rewrite`; without any rewrite rules it is i
 !!! tip
 
     You can use `.` as wildcard for all non full qualified domains (domains without dot)
+
+Queries for qualified names match their domain or a mapped parent domain. A bare TLD key
+can therefore forward queries under that TLD to a specific resolver. For example,
+`xyz: 1.1.1.1` sends every query ending in `.xyz` (such as `foo.xyz` and `a.b.xyz`) to `1.1.1.1`,
+just like dnsmasq's `server=/xyz/1.1.1.1`.
+Single-label queries, including `xyz` itself, still use the `.` mapping when configured.
 
 In this example, a DNS query "client.fritz.box" will be redirected to the router's DNS server at 192.168.178.1 and client.lan.net to 192.170.1.2 and 192.170.1.3.
 The query "client.example.com" will be rewritten to "client.fritz.box" and also redirected to the resolver at 192.168.178.1.
