@@ -86,7 +86,6 @@ var _ = Describe("HTTP Util", func() {
 
 // Go and cmp don't define func comparisons, besides with nil.
 // In practice we can just compare them as pointers.
-// See https://github.com/google/go-cmp/issues/162
 func cmpAsPtrs[T any](x, y T) bool {
 	return reflect.ValueOf(x).Pointer() == reflect.ValueOf(y).Pointer()
 }
