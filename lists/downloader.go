@@ -131,8 +131,6 @@ func (d *httpDownloader) download(ctx context.Context, link string, reqHeader ht
 					result = &downloadResponse{statusCode: resp.StatusCode, header: resp.Header, body: resp.Body}
 
 					if resp.StatusCode == http.StatusNotModified {
-						// Drain body before closing to allow connection reuse
-						_, _ = io.Copy(io.Discard, resp.Body)
 						_ = resp.Body.Close()
 						result.body = nil
 					}
@@ -140,9 +138,7 @@ func (d *httpDownloader) download(ctx context.Context, link string, reqHeader ht
 					return nil
 				}
 
-				// Drain body before closing to allow connection reuse
-				// See: https://pkg.go.dev/net/http#Response.Body
-				_, _ = io.Copy(io.Discard, resp.Body)
+				// An error body can be arbitrarily large or never finish; do not drain it just for connection reuse.
 				_ = resp.Body.Close()
 
 				return &httpStatusError{code: resp.StatusCode}
@@ -155,6 +151,7 @@ func (d *httpDownloader) download(ctx context.Context, link string, reqHeader ht
 
 			return fmt.Errorf("HTTP request to '%s' failed: %w", link, httpErr)
 		},
+		retry.Context(ctx),
 		retry.Attempts(d.cfg.Attempts),
 		retry.DelayType(retry.FixedDelay),
 		retry.Delay(d.cfg.Cooldown.ToDuration()),

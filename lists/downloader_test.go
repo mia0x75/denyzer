@@ -74,6 +74,47 @@ var _ = Describe("Downloader", func() {
 
 	Describe("Download of a file", func() {
 		var server *httptest.Server
+		It("cancels immediately during a retry cooldown", func(ctx context.Context) {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}))
+			DeferCleanup(server.Close)
+			child, cancel := context.WithCancel(ctx)
+			DeferCleanup(cancel)
+			sut.cfg.Attempts = 3
+			sut.cfg.Cooldown = config.Duration(time.Hour)
+			result := make(chan error, 1)
+			go func() {
+				_, err := sut.DownloadFile(child, server.URL)
+				result <- err
+			}()
+			Eventually(failedDownloadCountEvtChannel).Should(Receive(Equal(server.URL)))
+			cancel()
+			var err error
+			Eventually(result, "200ms").Should(Receive(&err))
+			Expect(errors.Is(err, context.Canceled)).Should(BeTrue())
+		})
+
+		It("closes an error response without draining an unbounded body", func(ctx context.Context) {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = http.NewResponseController(w).Flush()
+				<-r.Context().Done()
+			}))
+			DeferCleanup(server.Close)
+			child, cancel := context.WithCancel(ctx)
+			DeferCleanup(cancel)
+			sut.cfg.Attempts = 1
+			result := make(chan error, 1)
+			go func() {
+				_, err := sut.DownloadFile(child, server.URL)
+				result <- err
+			}()
+			var err error
+			Eventually(result, "500ms").Should(Receive(&err))
+			Expect(err).Should(MatchError(ContainSubstring("status code 503")))
+		})
+
 		When("Download was successful", func() {
 			BeforeEach(func() {
 				server = TestServer("line.one\nline.two")

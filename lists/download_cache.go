@@ -86,6 +86,9 @@ func (c *cachingDownloader) conditionalHeader(link string) http.Header {
 func (c *cachingDownloader) DownloadFile(ctx context.Context, link string) (io.ReadCloser, error) {
 	resp, err := c.inner.download(ctx, link, c.conditionalHeader(link))
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
 		// Only serve the stale cached copy when the source was unreachable
 		// (connection/timeout/DNS error). If the host answered with an HTTP error
 		// status (4xx/5xx) it is reachable, so we surface the error and let the

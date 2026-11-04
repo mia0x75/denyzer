@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync"
 	"sync/atomic"
 
 	"github.com/ThinkChaos/parcour"
@@ -53,7 +54,8 @@ type ListCache struct {
 
 	// refreshSem admits one refresh at a time. A caller waiting for its turn
 	// returns as soon as its context ends.
-	refreshSem chan struct{}
+	refreshSem   chan struct{}
+	loadedGroups sync.Map
 }
 
 // LogConfig implements `config.Configurable`.
@@ -269,14 +271,14 @@ func (b *ListCache) createCacheForGroup(
 	})
 
 	err := producers.Wait()
-	if err != nil && !hasEntries.Load() {
-		// Only fail the group if no entries were parsed at all
-		// If we have entries from some sources, proceed even if other sources had errors
-		// Transient errors will be retried on the next refresh cycle
-		return fmt.Errorf("failed to parse any entries for group %s: %w", group, err)
+	_, loaded := b.loadedGroups.Load(group)
+	if err != nil && (loaded || !hasEntries.Load()) {
+		// A partial initial load is better than no cache; refreshes must retain every old source.
+		return fmt.Errorf("failed to load sources for group %s: %w", group, err)
 	}
 
 	groupFactory.Finish()
+	b.loadedGroups.Store(group, struct{}{})
 
 	return nil
 }
@@ -421,14 +423,7 @@ func (b *ListCache) parseFile(ctx context.Context, opener SourceOpener, resultCh
 			logger().ErrorContext(ctx, fmt.Sprint("parse error: ", err))
 		}
 
-		// Only propagate the error if no entries were parsed
-		// If the file was partially parsed, we'll settle for that
-
-		if count == 0 {
-			return fmt.Errorf("failed to parse list source %s (no entries parsed): %w", opener, err)
-		}
-
-		return nil
+		return fmt.Errorf("failed to parse list source %s: %w", opener, err)
 	}
 
 	logger().InfoContext(ctx, "import succeeded")

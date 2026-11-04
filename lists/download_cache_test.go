@@ -228,6 +228,19 @@ var _ = Describe("cachingDownloader", func() {
 	})
 
 	When("a download fails after a copy was cached", func() {
+		It("does not replace cancellation with a stale cached response", func(ctx context.Context) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("fresh.test"))
+			}))
+			DeferCleanup(server.Close)
+			Expect(os.WriteFile(cacheFilePath(dir, server.URL), []byte("cached.test"), 0o600)).Should(Succeed())
+			child, cancel := context.WithCancel(ctx)
+			cancel()
+			reader, err := sut.DownloadFile(child, server.URL)
+			Expect(errors.Is(err, context.Canceled)).Should(BeTrue())
+			Expect(reader).Should(BeNil())
+		})
+
 		It("serves the stale cached copy instead of failing", func(ctx context.Context) {
 			server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 				_, _ = rw.Write([]byte("a.com\nb.com"))

@@ -227,6 +227,51 @@ var _ = Describe("ListCache", func() {
 				})
 			})
 		})
+		When("a refresh only loads part of a group", func() {
+			BeforeEach(func() {
+				lists = map[string][]config.BytesSource{
+					"gr1": config.NewBytesSources(file1.Path, file2.Path),
+				}
+			})
+
+			DescribeTable("retains the old group until every source succeeds",
+				func(truncated bool) {
+					Expect(os.WriteFile(file1.Path, []byte("replacement1.com\n"), 0o600)).Should(Succeed())
+					if truncated {
+						body := "replacement2.com\n" + strings.Repeat("x", bufio.MaxScanTokenSize+1)
+						Expect(os.WriteFile(file2.Path, []byte(body), 0o600)).Should(Succeed())
+					} else {
+						Expect(os.Remove(file2.Path)).Should(Succeed())
+					}
+
+					Expect(sut.Refresh(ctx)).Should(HaveOccurred())
+					Expect(sut.Match("blocked1.com", []string{"gr1"})).Should(HaveKey("gr1"))
+					Expect(sut.Match("blocked2.com", []string{"gr1"})).Should(HaveKey("gr1"))
+					Expect(sut.Match("replacement1.com", []string{"gr1"})).Should(BeEmpty())
+					Expect(sut.Match("replacement2.com", []string{"gr1"})).Should(BeEmpty())
+
+					Expect(os.WriteFile(file2.Path, []byte("replacement2.com\n"), 0o600)).Should(Succeed())
+					Expect(sut.Refresh(ctx)).Should(Succeed())
+					Expect(sut.Match("blocked1.com", []string{"gr1"})).Should(BeEmpty())
+					Expect(sut.Match("blocked2.com", []string{"gr1"})).Should(BeEmpty())
+					Expect(sut.Match("replacement1.com", []string{"gr1"})).Should(HaveKey("gr1"))
+					Expect(sut.Match("replacement2.com", []string{"gr1"})).Should(HaveKey("gr1"))
+				},
+				Entry("unavailable source", false),
+				Entry("truncated source", true),
+			)
+
+			It("does not treat an existing empty group as an initial load", func() {
+				Expect(os.WriteFile(file1.Path, []byte("# empty\n"), 0o600)).Should(Succeed())
+				Expect(os.WriteFile(file2.Path, []byte("# empty\n"), 0o600)).Should(Succeed())
+				Expect(sut.Refresh(ctx)).Should(Succeed())
+
+				Expect(os.WriteFile(file1.Path, []byte("replacement.com\n"), 0o600)).Should(Succeed())
+				Expect(os.Remove(file2.Path)).Should(Succeed())
+				Expect(sut.Refresh(ctx)).Should(HaveOccurred())
+				Expect(sut.Match("replacement.com", []string{"gr1"})).Should(BeEmpty())
+			})
+		})
 		When("Configuration has 3 external working urls", func() {
 			BeforeEach(func() {
 				lists = map[string][]config.BytesSource{
