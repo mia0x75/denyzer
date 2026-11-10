@@ -1839,9 +1839,6 @@ var _ = Describe("Running DNS server", func() {
 	})
 
 	Describe("response compression", func() {
-		// miekg's Truncate sets Compress=false when the message already fits uncompressed
-		// ("don't waste effort compressing this message"). resolve must honor that decision
-		// instead of clobbering it by forcing Compress=true on every response.
 		newServerWithResponse := func(res *dns.Msg) *Server {
 			m := resolver.NewMockChainedResolver(GinkgoT())
 			m.EXPECT().Resolve(mock.Anything, mock.Anything).RunAndReturn(
@@ -1860,7 +1857,7 @@ var _ = Describe("Running DNS server", func() {
 		}
 
 		When("the response fits the client buffer uncompressed", func() {
-			It("leaves compression disabled so Pack does not waste effort", func() {
+			It("still compresses the answer name", func() {
 				res, err := util.NewMsgWithAnswer("example.com.", 123, A, "1.2.3.4")
 				Expect(err).Should(Succeed())
 
@@ -1871,7 +1868,11 @@ var _ = Describe("Running DNS server", func() {
 
 				resp, err := s.resolve(ctx, req)
 				Expect(err).Should(Succeed())
-				Expect(resp.Res.Compress).Should(BeFalse())
+
+				packed, err := resp.Res.Pack()
+				Expect(err).Should(Succeed())
+				// DNS header (12 bytes) + question (17 bytes), then the answer owner name.
+				Expect(packed[29:31]).Should(Equal([]byte{0xc0, 0x0c}))
 			})
 		})
 
