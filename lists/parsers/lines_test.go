@@ -82,6 +82,40 @@ var _ = Describe("Lines", func() {
 		})
 	})
 
+	When("the first line starts with a UTF-8 byte order mark", func() {
+		It("strips it before parsing a comment", func() {
+			sutReader = linesReader("\xef\xbb\xbf# comment", "first")
+			sut = Lines(sutReader)
+
+			line, err := sut.Next(context.Background())
+			Expect(err).Should(Succeed())
+			Expect(line).Should(Equal("first"))
+			Expect(sut.Position()).Should(Equal("line 2"))
+		})
+
+		It("strips it before parsing an entry", func() {
+			sutReader = linesReader("\xef\xbb\xbffirst")
+			sut = Lines(sutReader)
+
+			line, err := sut.Next(context.Background())
+			Expect(err).Should(Succeed())
+			Expect(line).Should(Equal("first"))
+		})
+	})
+
+	When("a later line starts with a UTF-8 byte order mark", func() {
+		It("preserves it as ordinary input", func() {
+			sutReader = linesReader("first", "\ufeffsecond")
+			sut = Lines(sutReader)
+
+			_, err := sut.Next(context.Background())
+			Expect(err).Should(Succeed())
+			line, err := sut.Next(context.Background())
+			Expect(err).Should(Succeed())
+			Expect(line).Should(Equal("\ufeffsecond"))
+		})
+	})
+
 	When("it has commented lines", func() {
 		BeforeEach(func() {
 			sutReader = linesReader(
