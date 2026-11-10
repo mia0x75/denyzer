@@ -830,6 +830,7 @@ var _ = Describe("Running DNS server", func() {
 			cfg.Ports = config.Ports{
 				DNS: config.ListenConfig{}, Admin: config.ListenConfig{"127.0.0.1:0"}, DOHPath: "/dns-query",
 			}
+			Expect(cfg.Debug.Pprof).Should(BeFalse())
 			srv, err := NewServer(ctx, &cfg)
 			Expect(err).Should(Succeed())
 			errCh := make(chan error, 1)
@@ -842,6 +843,10 @@ var _ = Describe("Running DNS server", func() {
 			Expect(response.StatusCode).Should(Equal(http.StatusOK))
 			Expect(response.TLS).ShouldNot(BeNil())
 			Expect(srv.http3Server).Should(BeNil())
+			response, err = adminClient.Get("https://" + firstHTTPListenerAddr(srv) + "/debug/pprof/cmdline")
+			Expect(err).Should(Succeed())
+			DeferCleanup(response.Body.Close)
+			Expect(response.StatusCode).Should(Equal(http.StatusNotFound))
 		})
 
 		It("logs every listener with the same wording and its actual bound address", func() {
