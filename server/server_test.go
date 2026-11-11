@@ -811,19 +811,32 @@ var _ = Describe("Running DNS server", func() {
 			Expect(err).Should(MatchError(ContainSubstring("without authentication")))
 		})
 
-		It("closes the DoH listener if management listener creation fails", func() {
+		It("defers management listener bind errors until startup", func() {
 			reserved, err := net.Listen("tcp", "127.0.0.1:0")
 			Expect(err).Should(Succeed())
+			DeferCleanup(func() { _ = reserved.Close() })
 			address := reserved.Addr().String()
-			Expect(reserved.Close()).Should(Succeed())
 			cfg.Ports.DNS = config.ListenConfig{}
-			cfg.Ports.HTTP = config.ListenConfig{address}
-			cfg.Ports.Admin = config.ListenConfig{"127.0.0.1:not-a-port"}
-			_, err = NewServer(ctx, &cfg)
-			Expect(err).Should(HaveOccurred())
-			reused, err := net.Listen("tcp", address)
+			cfg.Ports.HTTP = config.ListenConfig{"127.0.0.1:0"}
+			cfg.Ports.Admin = config.ListenConfig{address}
+			srv, err := NewServer(ctx, &cfg)
 			Expect(err).Should(Succeed())
-			DeferCleanup(reused.Close)
+			errCh := make(chan error, 1)
+			srv.Start(ctx, errCh)
+			DeferCleanup(func() { Expect(srv.Stop(ctx)).Should(Succeed()) })
+			Consistently(errCh, "100ms").ShouldNot(Receive())
+			Expect(reserved.Close()).Should(Succeed())
+			Eventually(func() bool {
+				srv.httpMu.Lock()
+				defer srv.httpMu.Unlock()
+				for listener := range srv.servers {
+					if listener.Addr().String() == address {
+						return true
+					}
+				}
+
+				return false
+			}).Should(BeTrue())
 		})
 
 		It("serves HTTPS with only a management listener configured", func() {
@@ -836,7 +849,12 @@ var _ = Describe("Running DNS server", func() {
 			errCh := make(chan error, 1)
 			go srv.Start(ctx, errCh)
 			DeferCleanup(func() { Expect(srv.Stop(ctx)).Should(Succeed()) })
-			Expect(srv.servers).Should(HaveLen(1))
+			Eventually(func() int {
+				srv.httpMu.Lock()
+				defer srv.httpMu.Unlock()
+
+				return len(srv.servers)
+			}).Should(Equal(1))
 			response, err := adminClient.Get("https://" + firstHTTPListenerAddr(srv) + "/api/login")
 			Expect(err).Should(Succeed())
 			DeferCleanup(response.Body.Close)
@@ -913,6 +931,13 @@ var _ = Describe("Running DNS server", func() {
 				CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 			}
 			addresses := make(map[string]string)
+			Eventually(func() int {
+				srv.httpMu.Lock()
+				defer srv.httpMu.Unlock()
+
+				return len(srv.servers)
+			}).Should(Equal(3))
+			srv.httpMu.Lock()
 			for listener, httpSrv := range srv.servers {
 				scheme := "http://"
 				if httpSrv.name != "http" {
@@ -920,6 +945,7 @@ var _ = Describe("Running DNS server", func() {
 				}
 				addresses[httpSrv.name] = scheme + listener.Addr().String()
 			}
+			srv.httpMu.Unlock()
 			Expect(addresses).Should(HaveLen(3))
 			loginResponse, err := client.Post(addresses["admin"]+"/api/login", jsonContentType,
 				strings.NewReader(`{"username":"admin","password":"`+authTestPassword+`"}`))
@@ -1145,11 +1171,89 @@ var _ = Describe("Running DNS server", func() {
 				// start again -> should fail
 				server.Start(ctx, errChan)
 
-				Eventually(errChan).Should(Receive())
+				Eventually(errChan).Should(Receive(MatchError("server already started")))
 			})
 		})
 	})
 	Describe("Server stop", func() {
+		It("cancels a pending HTTP bind without blocking another address", func() {
+			blocker, err := net.Listen("tcp", "127.0.0.1:0")
+			Expect(err).Should(Succeed())
+			DeferCleanup(func() { _ = blocker.Close() })
+			address := blocker.Addr().String()
+			cfg := &config.Config{Ports: config.Ports{HTTP: config.ListenConfig{address, "127.0.0.1:0"}}}
+			httpSrv := newHTTPServer("http", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}), cfg)
+			srv := &Server{
+				cfg: cfg, servers: make(map[net.Listener]*httpServer),
+				serverConfigs: map[string]*httpServer{"http": httpSrv},
+			}
+			errCh := make(chan error, 1)
+			srv.Start(ctx, errCh)
+			DeferCleanup(func() { _ = srv.Stop(ctx) })
+			availableAddress := firstHTTPListenerAddr(srv)
+			client := &http.Client{Timeout: time.Second}
+			response, err := client.Get("http://" + availableAddress)
+			Expect(err).Should(Succeed())
+			Expect(response.StatusCode).Should(Equal(http.StatusOK))
+			Expect(response.Body.Close()).Should(Succeed())
+
+			stopCtx, cancel := context.WithTimeout(ctx, time.Second)
+			DeferCleanup(cancel)
+			Expect(srv.Stop(stopCtx)).Should(Succeed())
+			Expect(errCh).Should(BeEmpty())
+			Expect(blocker.Close()).Should(Succeed())
+			for _, address := range []string{address, availableAddress} {
+				rebound, err := net.Listen("tcp", address)
+				Expect(err).Should(Succeed())
+				DeferCleanup(func() { _ = rebound.Close() })
+			}
+		})
+
+		It("stops safely when startup races with shutdown", func() {
+			for i := range 20 {
+				cfg := &config.Config{Ports: config.Ports{HTTP: config.ListenConfig{"127.0.0.1:0"}}}
+				srv := &Server{
+					cfg: cfg, servers: make(map[net.Listener]*httpServer),
+					serverConfigs: map[string]*httpServer{"http": newHTTPServer("http", http.NotFoundHandler(), cfg)},
+					dnsServers: []*dns.Server{
+						{Net: networkTCP, Addr: "127.0.0.1:0", Handler: dns.NewServeMux()},
+						{Net: networkUDP, Addr: "127.0.0.1:0", Handler: dns.NewServeMux()},
+					},
+				}
+				errCh := make(chan error, 1)
+				started := make(chan struct{})
+				start := func() {
+					srv.Start(ctx, errCh)
+					close(started)
+				}
+				if i%2 == 0 {
+					start()
+				} else {
+					go start()
+				}
+				stopCtx, cancel := context.WithTimeout(ctx, time.Second)
+				stopErr := srv.Stop(stopCtx)
+				cancel()
+				Expect(stopErr).Should(Succeed())
+				Eventually(started).Should(BeClosed())
+				select {
+				case err := <-errCh:
+					Expect(err).Should(MatchError("server already stopped"))
+				default:
+				}
+				for _, dnsSrv := range srv.dnsServers {
+					if dnsSrv.Listener != nil {
+						Expect(dnsSrv.Listener.Close()).Should(MatchError(net.ErrClosed))
+					}
+					if dnsSrv.PacketConn != nil {
+						Expect(dnsSrv.PacketConn.Close()).Should(MatchError(net.ErrClosed))
+					}
+				}
+			}
+		})
+
 		It("closes bound listeners even when a DNS server never started", func() {
 			listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
 			Expect(listenErr).Should(Succeed())
@@ -1188,22 +1292,24 @@ var _ = Describe("Running DNS server", func() {
 				return nil
 			}}
 			res.On("GetNext").Return(nil)
+			cfg := &config.Config{Ports: config.Ports{HTTP: config.ListenConfig{"127.0.0.1:0"}}}
 			httpSrv := newHTTPServer("http", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				close(started)
 				<-release
 				handled.Store(true)
 				w.WriteHeader(http.StatusOK)
-			}), &config.Config{})
-			listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
-			Expect(listenErr).Should(Succeed())
+			}), cfg)
 			DeferCleanup(func() { _ = httpSrv.inner.Close() })
-			DeferCleanup(func() { _ = listener.Close() })
-			srv := &Server{servers: map[net.Listener]*httpServer{listener: httpSrv}, queryResolver: res}
+			srv := &Server{
+				cfg: cfg, servers: make(map[net.Listener]*httpServer),
+				serverConfigs: map[string]*httpServer{"http": httpSrv}, queryResolver: res,
+			}
 			errs := make(chan error, 1)
-			go func() { errs <- httpSrv.Serve(ctx, listener) }()
+			srv.Start(ctx, errs)
+			address := firstHTTPListenerAddr(srv)
 			response := make(chan error, 1)
 			go func() {
-				resp, requestErr := http.Get("http://" + listener.Addr().String())
+				resp, requestErr := http.Get("http://" + address)
 				if requestErr == nil {
 					requestErr = resp.Body.Close()
 				}
@@ -1219,7 +1325,7 @@ var _ = Describe("Running DNS server", func() {
 			Eventually(response).Should(Receive(BeNil()))
 			Eventually(stopped).Should(Receive(BeNil()))
 			Expect(closed).Should(BeClosed())
-			Eventually(errs).Should(Receive(BeNil()))
+			Consistently(errs, "50ms").ShouldNot(Receive())
 		})
 
 		It("returns resolver flush errors to the caller", func() {
@@ -2095,13 +2201,20 @@ func newProxyProtocolTestServer(ctx context.Context, configurePorts func(*config
 }
 
 func firstHTTPListenerAddr(srv *Server) string {
-	for listener := range srv.servers {
-		return listener.Addr().String()
-	}
+	var address string
+	Eventually(func() bool {
+		srv.httpMu.Lock()
+		defer srv.httpMu.Unlock()
+		for listener := range srv.servers {
+			address = listener.Addr().String()
 
-	Fail("server has no HTTP listener")
+			return true
+		}
 
-	return ""
+		return false
+	}).Should(BeTrue())
+
+	return address
 }
 
 func proxyProtocolLine(srcIP, dstIP net.IP) string {

@@ -131,7 +131,7 @@ var _ = Describe("Serve command logging to syslog", func() {
 		hook, cleanup := log.Capture(log.Log())
 		DeferCleanup(cleanup)
 
-		// a taken HTTP port makes the server fail once it has loaded the config, before it listens
+		// A taken HTTP port makes startup fail after the config is loaded.
 		taken, err := net.Listen("tcp", "127.0.0.1:0")
 		Expect(err).Should(Succeed())
 		DeferCleanup(taken.Close)
@@ -146,6 +146,7 @@ var _ = Describe("Serve command logging to syslog", func() {
 			"caching:",
 			"  minTime: 5",
 			"ports:",
+			"  dns: []",
 			"  http: 127.0.0.1:"+strconv.Itoa(taken.Addr().(*net.TCPAddr).Port),
 		)
 

@@ -165,7 +165,7 @@ var _ = Describe("Hosts", func() {
 				"*.\u200b.com",
 				"*.com\u3002xn--", // ideographic full stop as the separator
 				"com\uff0e\u00ad", // fullwidth full stop
-				"invalid\ufeffIP localhost",
+				"com.\ufeff",
 				// wildcard suffixes are validated like plain entries
 				"*.",
 				"*..com",

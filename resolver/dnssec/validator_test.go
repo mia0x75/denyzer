@@ -946,6 +946,52 @@ var _ = Describe("DNSSECValidator", func() {
 		})
 	})
 
+	Context("DNSSEC owner names with different case", func() {
+		newComAnchor := func() (*TrustAnchorStore, *dns.DNSKEY, *dns.RRSIG) {
+			key, priv, anchor := newSignedZoneKey("com.")
+			sig := signRRset([]dns.RR{key}, dns.TypeDNSKEY, key, priv, "com.")
+			store, err := NewTrustAnchorStore([]string{anchor})
+			Expect(err).Should(Succeed())
+
+			return store, key, sig
+		}
+
+		comResolver := func(key *dns.DNSKEY, sig *dns.RRSIG) func(context.Context, *model.Request) (*model.Response, error) {
+			return func(_ context.Context, req *model.Request) (*model.Response, error) {
+				q := req.Req.Question[0]
+				if q.Qtype == dns.TypeDNSKEY && dns.CanonicalName(q.Name) == "com." {
+					return &model.Response{Res: &dns.Msg{Answer: []dns.RR{key, sig}}}, nil
+				}
+
+				return &model.Response{Res: &dns.Msg{}}, nil
+			}
+		}
+
+		It("validates a mixed-case DNSKEY owner as Secure", func() {
+			store, key, sig := newComAnchor()
+			mixedKey, mixedSig := *key, *sig
+			mixedKey.Hdr.Name, mixedSig.Hdr.Name = "COm.", "COm."
+			mockUpstream.ResolveFn = comResolver(key, sig)
+			v := NewValidator(ctx, store, logger, mockUpstream, 1, 10, 150, 30, 3600)
+			question := dns.Question{Name: "COm.", Qtype: dns.TypeDNSKEY, Qclass: dns.ClassINET}
+			response := &dns.Msg{Answer: []dns.RR{&mixedKey, &mixedSig}}
+
+			Expect(v.ValidateResponse(ctx, response, question)).Should(Equal(ValidationResultSecure))
+		})
+
+		It("matches an RRSIG owner that differs in case from its RRset", func() {
+			store, key, sig := newComAnchor()
+			mixedKey := *key
+			mixedKey.Hdr.Name = "COm."
+			mockUpstream.ResolveFn = comResolver(key, sig)
+			v := NewValidator(ctx, store, logger, mockUpstream, 1, 10, 150, 30, 3600)
+			question := dns.Question{Name: "COm.", Qtype: dns.TypeDNSKEY, Qclass: dns.ClassINET}
+			response := &dns.Msg{Answer: []dns.RR{&mixedKey, sig}}
+
+			Expect(v.ValidateResponse(ctx, response, question)).Should(Equal(ValidationResultSecure))
+		})
+	})
+
 	Describe("NewValidator", func() {
 		It("should create validator with trust anchors", func() {
 			Expect(sut).ShouldNot(BeNil())

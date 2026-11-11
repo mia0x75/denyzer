@@ -13,9 +13,11 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"uuid"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/log"
 	"github.com/mia0x75/denyzer/model"
@@ -39,18 +41,36 @@ const (
 	networkUDP    = "udp"
 	networkTCP    = "tcp"
 	networkTCPTLS = "tcp-tls"
+	httpsName     = "https"
 )
 
 // Server controls the endpoints for DNS and HTTP
 type Server struct {
 	dnsServers    []*dns.Server
-	dnsServeFuncs []func() error
 	queryResolver resolver.ChainedResolver
 	cfg           *config.Config
 
 	servers          map[net.Listener]*httpServer
+	serverConfigs    map[string]*httpServer
+	serverTLSConfig  *tls.Config
 	http3Server      *http3Server     // nil when disabled
 	http3PacketConns []net.PacketConn // one per address in ports.https
+	httpServeWG      sync.WaitGroup
+	httpMu           sync.Mutex
+
+	// dnsStartCancels holds the cancel funcs of every DNS startup context
+	// created by Start; Stop cancels all of them to abort bind retries and
+	// stop the serve loops. Keep the upstream slice representation; repeated
+	// Start calls are rejected before another context or worker is created.
+	dnsStartCancels []context.CancelFunc
+	dnsCancelMu     sync.Mutex     // guards startup state and worker registration
+	dnsServeWG      sync.WaitGroup // tracks the DNS serve goroutines started in Start
+	dnsStarted      bool
+	// The DNS startup state above is populated by Start and read by Stop.
+	// dnsCancelMu serializes worker registration with shutdown so Start and
+	// Stop may run concurrently without racing WaitGroup registration.
+	stopped atomic.Bool // guards against a double Stop
+	bindWG  sync.WaitGroup
 }
 
 func logger() *slog.Logger {
@@ -135,25 +155,17 @@ func NewServer(ctx context.Context, cfg *config.Config) (server *Server, err err
 		return nil, fmt.Errorf("server creation failed: %w", err)
 	}
 
-	var httpListeners, httpsListeners, adminListeners []net.Listener
 	var http3PacketConns []net.PacketConn
 	defer func() {
 		if err != nil {
 			closeDNSServers(dnsServers)
-			closeAll(httpListeners)
-			closeAll(httpsListeners)
-			closeAll(adminListeners)
 			closeAll(http3PacketConns)
 		}
 	}()
 
-	httpListeners, httpsListeners, http3PacketConns, err = createHTTPListeners(ctx, cfg, tlsCfg)
+	http3PacketConns, err = createHTTP3PacketConns(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP/HTTPS listeners: %w", err)
-	}
-	adminListeners, err = newTLSListeners(ctx, "admin", cfg.Ports.Admin, tlsCfg, false)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create management listeners: %w", err)
+		return nil, fmt.Errorf("failed to create HTTP/3 UDP listeners: %w", err)
 	}
 
 	bootstrap, err := resolver.NewBootstrap(ctx, cfg)
@@ -168,21 +180,13 @@ func NewServer(ctx context.Context, cfg *config.Config) (server *Server, err err
 
 	server = &Server{
 		dnsServers:       dnsServers,
-		dnsServeFuncs:    make([]func() error, len(dnsServers)),
 		queryResolver:    queryResolver,
 		cfg:              cfg,
 		servers:          make(map[net.Listener]*httpServer),
+		serverConfigs:    make(map[string]*httpServer),
+		serverTLSConfig:  tlsCfg,
 		http3PacketConns: http3PacketConns,
 	}
-	for i, srv := range dnsServers {
-		// Select before serving: miekg/dns mutates Listener and PacketConn during
-		// startup. Repeated Start calls must not rely on logging for synchronization.
-		server.dnsServeFuncs[i] = srv.ListenAndServe
-		if srv.Listener != nil || srv.PacketConn != nil {
-			server.dnsServeFuncs[i] = srv.ActivateAndServe
-		}
-	}
-
 	server.printConfiguration()
 
 	server.registerDNSHandlers(ctx)
@@ -191,25 +195,20 @@ func NewServer(ctx context.Context, cfg *config.Config) (server *Server, err err
 	httpRouter := chi.NewRouter()
 	httpRouter.Use(newCORSMiddleware())
 	server.registerDoHEndpoints(httpRouter, cfg)
-	if len(adminListeners) > 0 {
+	if len(cfg.Ports.Admin) > 0 {
 		adminHandler, err := server.createAdminHandler()
 		if err != nil {
 			return nil, err
 		}
-		srv := newHTTPServer("admin", adminHandler, cfg)
-		for _, listener := range adminListeners {
-			server.servers[listener] = srv
-		}
+		server.serverConfigs["admin"] = newHTTPServer("admin", adminHandler, cfg)
 	}
 
 	if len(http3PacketConns) > 0 {
 		server.http3Server = newHTTP3Server(httpRouter, newH3TLSConfig(tlsCfg))
 	}
 
-	srv := newHTTPServer("http", httpRouter, cfg)
-
-	for _, l := range httpListeners {
-		server.servers[l] = srv
+	if len(cfg.Ports.HTTP) > 0 {
+		server.serverConfigs["http"] = newHTTPServer("http", httpRouter, cfg)
 	}
 
 	if len(cfg.Ports.HTTPS) != 0 {
@@ -218,11 +217,7 @@ func NewServer(ctx context.Context, cfg *config.Config) (server *Server, err err
 			httpsHandler = newAltSvcMiddleware(server.http3Server)(httpRouter)
 		}
 
-		srv := newHTTPServer("https", httpsHandler, cfg)
-
-		for _, l := range httpsListeners {
-			server.servers[l] = srv
-		}
+		server.serverConfigs["https"] = newHTTPServer("https", httpsHandler, cfg)
 	}
 
 	return server, err
@@ -274,23 +269,7 @@ func createServers(ctx context.Context, cfg *config.Config, tlsCfg *tls.Config) 
 	return dnsServers, nil
 }
 
-func createHTTPListeners(
-	ctx context.Context, cfg *config.Config, tlsCfg *tls.Config,
-) (httpListeners, httpsListeners []net.Listener, http3PacketConns []net.PacketConn, err error) {
-	httpListeners, err = newTCPListeners(ctx, "http", cfg.Ports.HTTP,
-		cfg.Ports.ProxyProtocol.Has(config.ProxyProtocolTypeHttp))
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create HTTP listeners: %w", err)
-	}
-
-	httpsListeners, err = newTLSListeners(ctx, "https", cfg.Ports.HTTPS, tlsCfg,
-		cfg.Ports.ProxyProtocol.Has(config.ProxyProtocolTypeHttps))
-	if err != nil {
-		closeAll(httpListeners)
-
-		return nil, nil, nil, fmt.Errorf("failed to create HTTPS listeners: %w", err)
-	}
-
+func createHTTP3PacketConns(ctx context.Context, cfg *config.Config) ([]net.PacketConn, error) {
 	if cfg.HTTP3.IsEnabled() {
 		switch {
 		case len(cfg.Ports.HTTPS) == 0:
@@ -299,17 +278,16 @@ func createHTTPListeners(
 			logger().WarnContext(ctx, "http3.enable is true but ports.proxyProtocol includes 'https'; "+
 				"HTTP/3 cannot carry PROXY protocol headers and is disabled to keep the client IP consistent")
 		default:
-			http3PacketConns, err = newUDPPacketConns(ctx, cfg.Ports.HTTPS)
+			http3PacketConns, err := newUDPPacketConns(ctx, cfg.Ports.HTTPS)
 			if err != nil {
-				closeAll(httpListeners)
-				closeAll(httpsListeners)
-
-				return nil, nil, nil, fmt.Errorf("failed to create HTTP/3 UDP listeners: %w", err)
+				return nil, fmt.Errorf("failed to create HTTP/3 UDP listeners: %w", err)
 			}
+
+			return http3PacketConns, nil
 		}
 	}
 
-	return httpListeners, httpsListeners, http3PacketConns, nil
+	return nil, nil
 }
 
 func closeAll[T io.Closer](closers []T) {
@@ -320,12 +298,7 @@ func closeAll[T io.Closer](closers []T) {
 
 func closeDNSServers(servers []*dns.Server) {
 	for _, server := range servers {
-		if server.Listener != nil {
-			_ = server.Listener.Close()
-		}
-		if server.PacketConn != nil {
-			_ = server.PacketConn.Close()
-		}
+		closeServerSocket(server)
 	}
 }
 
@@ -333,10 +306,9 @@ func newTCPListeners(
 	ctx context.Context, proto string, addresses config.ListenConfig, proxyProtocol bool,
 ) ([]net.Listener, error) {
 	listeners := make([]net.Listener, 0, len(addresses))
-	lc := &net.ListenConfig{}
 
 	for _, address := range addresses {
-		listener, err := lc.Listen(ctx, networkTCP, address)
+		listener, err := listenTCPRetry(ctx, address)
 		if err != nil {
 			closeAll(listeners)
 
@@ -413,7 +385,8 @@ func createDNSServer(ctx context.Context, network, address string, tlsCfg *tls.C
 	}
 
 	// When freeBind is enabled (and supported), pre-create the listener with the IP_FREEBIND socket
-	// option and hand it to the server, which is then started via ActivateAndServe (see Server.Start).
+	// option and hand it to the server, which is then started via ActivateAndServe (see retryServe).
+	// PROXY protocol listeners also need pre-created sockets so they can be wrapped before serving.
 	if (opts.freeBind && freebind.Supported) || (opts.proxyProtocol && network != networkUDP) {
 		if err := attachListener(ctx, srv, network, address, tlsCfg, listenerOptions{
 			freeBind:      opts.freeBind && freebind.Supported,
@@ -438,14 +411,26 @@ func attachListener(ctx context.Context, srv *dns.Server, network, address strin
 
 	switch network {
 	case networkUDP:
-		pc, err := lc.ListenPacket(ctx, networkUDP, address)
+		var pc net.PacketConn
+		err := retry.Do(func() error {
+			var err error
+			pc, err = lc.ListenPacket(ctx, networkUDP, address)
+
+			return err
+		}, bindRetryOptions(ctx, networkUDP, address)...)
 		if err != nil {
 			return fmt.Errorf("freebind udp listener on %s failed: %w", address, err)
 		}
 
 		srv.PacketConn = pc
 	case networkTCP:
-		l, err := lc.Listen(ctx, networkTCP, address)
+		var l net.Listener
+		err := retry.Do(func() error {
+			var err error
+			l, err = lc.Listen(ctx, networkTCP, address)
+
+			return err
+		}, bindRetryOptions(ctx, networkTCP, address)...)
 		if err != nil {
 			return fmt.Errorf("tcp listener on %s failed: %w", address, err)
 		}
@@ -453,7 +438,13 @@ func attachListener(ctx context.Context, srv *dns.Server, network, address strin
 		l = newProxyProtocolListener(l, opts.proxyProtocol)
 		srv.Listener = l
 	case networkTCPTLS:
-		l, err := lc.Listen(ctx, networkTCP, address)
+		var l net.Listener
+		err := retry.Do(func() error {
+			var err error
+			l, err = lc.Listen(ctx, networkTCP, address)
+
+			return err
+		}, bindRetryOptions(ctx, networkTCPTLS, address)...)
 		if err != nil {
 			return fmt.Errorf("tcp-tls listener on %s failed: %w", address, err)
 		}
@@ -699,54 +690,171 @@ func toMB(b uint64) uint64 {
 }
 
 // Start starts the server
+//
+//nolint:funlen,gocognit,gocyclo // Preserve the upstream startup layout to ease future merges.
 func (s *Server) Start(ctx context.Context, errCh chan<- error) {
 	logger().InfoContext(ctx, "Starting server")
+	s.dnsCancelMu.Lock()
+	if s.stopped.Load() {
+		s.dnsCancelMu.Unlock()
+		select {
+		case errCh <- errors.New("server already stopped"):
+		case <-ctx.Done():
+		}
 
-	for i, srv := range s.dnsServers {
-		serve := s.dnsServeFuncs[i]
-		go func() {
-			if err := serve(); err != nil {
-				errCh <- fmt.Errorf("start %s listener failed: %w", srv.Net, err)
+		return
+	}
+	if s.dnsStarted {
+		s.dnsCancelMu.Unlock()
+		select {
+		case errCh <- errors.New("server already started"):
+		case <-ctx.Done():
+		}
+
+		return
+	}
+	s.dnsStarted = true
+	// dnsCtx is cancelled by Stop to abort in-progress bind retries and stop
+	// the DNS serve loops (see retryServe). It also cancels deferred HTTP binds.
+	dnsCtx, cancel := context.WithCancel(ctx)
+	s.dnsStartCancels = append(s.dnsStartCancels, cancel)
+	s.bindWG.Add(len(s.dnsServers))
+
+	for _, srv := range s.dnsServers {
+		ready := sync.OnceFunc(s.bindWG.Done)
+		s.dnsServeWG.Go(func() {
+			defer ready()
+			notify := srv.NotifyStartedFunc
+			srv.NotifyStartedFunc = func() {
+				if notify != nil {
+					notify()
+				}
+				ready()
 			}
-		}()
+			if err := retryServe(dnsCtx, srv); err != nil && dnsCtx.Err() == nil {
+				// The error send is cancellation-aware: if the channel has no
+				// reader (or is full) while Stop cancels dnsCtx, we must not
+				// block, otherwise the serve goroutine never finishes and
+				// dnsServeWG.Wait() in Stop hangs past its deadline.
+				select {
+				case errCh <- fmt.Errorf("start %s listener failed: %w", srv.Net, err):
+				case <-dnsCtx.Done():
+				}
+			}
+		})
 	}
 
-	for listener, srv := range s.servers {
-		go func() {
-			logger().InfoContext(ctx, fmt.Sprintf("%s server is up and running on address %s",
-				strings.ToUpper(srv.String()), listener.Addr()))
+	for name, srv := range s.serverConfigs {
+		addresses := s.cfg.Ports.HTTP
+		switch name {
+		case httpsName:
+			addresses = s.cfg.Ports.HTTPS
+		case "admin":
+			addresses = s.cfg.Ports.Admin
+		}
+		for _, address := range addresses {
+			s.bindWG.Add(1)
+			s.httpServeWG.Go(func() {
+				bound := sync.OnceFunc(s.bindWG.Done)
+				defer bound()
+				var listeners []net.Listener
+				var err error
+				if name == "http" {
+					listeners, err = newTCPListeners(dnsCtx, name, config.ListenConfig{address},
+						s.cfg.Ports.ProxyProtocol.Has(config.ProxyProtocolTypeHttp))
+				} else {
+					listeners, err = newTLSListeners(dnsCtx, name, config.ListenConfig{address}, s.serverTLSConfig,
+						name == httpsName && s.cfg.Ports.ProxyProtocol.Has(config.ProxyProtocolTypeHttps))
+				}
+				if err != nil {
+					if dnsCtx.Err() == nil {
+						select {
+						case errCh <- err:
+						case <-dnsCtx.Done():
+						}
+					}
 
-			err := srv.Serve(ctx, listener)
-			if err != nil {
-				errCh <- fmt.Errorf("%s on %s: %w", srv, listener.Addr(), err)
-			}
-		}()
+					return
+				}
+				listener := listeners[0]
+				s.httpMu.Lock()
+				if dnsCtx.Err() != nil {
+					s.httpMu.Unlock()
+					closeAll(listeners)
+
+					return
+				}
+				s.servers[listener] = srv
+				s.httpMu.Unlock()
+				bound()
+				logger().InfoContext(ctx, fmt.Sprintf("%s server is up and running on address %s",
+					strings.ToUpper(srv.String()), listener.Addr()))
+				if err := srv.Serve(ctx, listener); err != nil && dnsCtx.Err() == nil {
+					select {
+					case errCh <- fmt.Errorf("%s on %s: %w", srv, listener.Addr(), err):
+					case <-dnsCtx.Done():
+					}
+				}
+			})
+		}
 	}
 
 	if s.http3Server != nil {
 		for _, pc := range s.http3PacketConns {
-			go func() {
+			s.httpServeWG.Go(func() {
+				if dnsCtx.Err() != nil {
+					return
+				}
 				logger().InfoContext(ctx, fmt.Sprintf("%s server is up and running on address %s",
 					strings.ToUpper(s.http3Server.String()), pc.LocalAddr()))
 
 				err := s.http3Server.inner.Serve(pc)
-				if err != nil &&
+				if err != nil && dnsCtx.Err() == nil &&
 					!errors.Is(err, quic.ErrServerClosed) &&
 					!errors.Is(err, http.ErrServerClosed) &&
 					!errors.Is(err, net.ErrClosed) {
-					errCh <- fmt.Errorf("%s on %s: %w", s.http3Server, pc.LocalAddr(), err)
+					select {
+					case errCh <- fmt.Errorf("%s on %s: %w", s.http3Server, pc.LocalAddr(), err):
+					case <-dnsCtx.Done():
+					}
 				}
-			}()
+			})
 		}
 	}
+	// Register every worker before Stop can begin waiting.
+	s.dnsCancelMu.Unlock()
 
-	registerPrintConfigurationTrigger(ctx, s)
+	registerPrintConfigurationTrigger(dnsCtx, s)
 }
 
 // Stop stops the server
+//
+//nolint:funlen // Preserve shutdown ordering and the upstream layout to ease future merges.
 func (s *Server) Stop(ctx context.Context) error {
 	logger().InfoContext(ctx, "Stopping server")
 	var errs []error
+	if s.stopped.Swap(true) {
+		// A repeated Stop is only an error when DNS servers were configured;
+		// without them there is nothing left to double-stop (and the previous
+		// implementation returned nil), so keep that behaviour for callers that
+		// stop a server defensively.
+		if len(s.dnsServers) > 0 {
+			return errors.New("server already stopped")
+		}
+
+		return nil
+	}
+	// Cancel every DNS startup context first: a listener whose bind is still
+	// being retried has no socket to close, and cancelling the context makes
+	// the retry loop and the serve loop (see retryServe) stop promptly.
+	s.dnsCancelMu.Lock()
+	for _, cancel := range s.dnsStartCancels {
+		cancel()
+	}
+	s.dnsStartCancels = nil
+	s.dnsCancelMu.Unlock()
+	// Pending binds are cancellation-aware; wait before reading sockets or snapshotting listeners.
+	s.bindWG.Wait()
 
 	// Shut down HTTP/3 in order: server first (drains in-flight
 	// requests and unblocks the Serve goroutines), then UDP packet
@@ -776,13 +884,31 @@ func (s *Server) Stop(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("close %s listener: %w", srv.name, err))
 		}
 	}
-
-	for _, server := range s.dnsServers {
-		if err := server.ShutdownContext(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("stop %s listener failed: %w", server.Net, err))
-			closeDNSServers([]*dns.Server{server})
-		}
+	httpDone := make(chan struct{})
+	go func() {
+		s.httpServeWG.Wait()
+		close(httpDone)
+	}()
+	select {
+	case <-httpDone:
+	case <-ctx.Done():
+		errs = append(errs, fmt.Errorf("stopping HTTP listeners timed out: %w", ctx.Err()))
 	}
+
+	// Wait for the DNS serve goroutines to finish, bounded by the shutdown
+	// timeout carried by ctx. Keep enforcing cancellation when ctx is already
+	// done so shutdown cannot wait indefinitely for an in-flight request.
+	dnsDone := make(chan struct{})
+	go func() {
+		s.dnsServeWG.Wait()
+		close(dnsDone)
+	}()
+	select {
+	case <-dnsDone:
+	case <-ctx.Done():
+		errs = append(errs, fmt.Errorf("stopping DNS listeners timed out: %w", ctx.Err()))
+	}
+	closeDNSServers(s.dnsServers)
 	resolver.ForEach(s.queryResolver, func(res resolver.Resolver) {
 		if c, ok := res.(io.Closer); ok {
 			if err := c.Close(); err != nil {

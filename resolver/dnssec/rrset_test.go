@@ -197,6 +197,18 @@ var _ = Describe("RRset validation functions", func() {
 		})
 	})
 
+	Describe("findMatchingRRSIGs", func() {
+		It("matches owner names without regard to case", func() {
+			sig := &dns.RRSIG{
+				Hdr:         dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeRRSIG},
+				TypeCovered: dns.TypeDNSKEY,
+			}
+
+			Expect(findMatchingRRSIGs([]*dns.RRSIG{sig}, "EXAMPLE.COM.", dns.TypeDNSKEY)).
+				Should(Equal([]*dns.RRSIG{sig}))
+		})
+	})
+
 	Describe("findMatchingDNSKEY", func() {
 		It("should find key with matching key tag", func() {
 			key1 := &dns.DNSKEY{
