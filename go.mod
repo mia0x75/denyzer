@@ -17,7 +17,7 @@ require (
 	github.com/jedisct1/go-dnsstamps v0.0.0-20260518121737-6579dc73e4a2
 	github.com/jellydator/ttlcache/v3 v3.4.1
 	github.com/mattn/go-colorable v0.1.16
-	github.com/mattn/go-sqlite3 v1.14.52
+	github.com/mattn/go-sqlite3 v1.14.53
 	github.com/miekg/dns v1.1.73
 	github.com/moby/moby/api v1.56.1
 	github.com/oapi-codegen/runtime v1.8.0
