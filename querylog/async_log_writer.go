@@ -58,6 +58,9 @@ func NewAsyncLogWriter(ctx context.Context, dbPath string, retention config.Quer
 	if batchSize <= 0 {
 		batchSize = defaultBatchSize
 	}
+	if err := storage.MaintainWindowRollups(time.Now()); err != nil {
+		return nil, fmt.Errorf("initialize window rollups: %w", err)
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	w := &AsyncLogWriter{
@@ -248,28 +251,30 @@ func (w *AsyncLogWriter) flush(buf []*storage.QueryLogEntry, agg *aggregationMap
 		}
 	}()
 
-	agg.aggregate(buf)
-	agg.addFailures(dropped, failed)
+	return storage.WithWindowRollupUpdate(func() error {
+		agg.aggregate(buf)
+		agg.addFailures(dropped, failed)
 
-	batch, err := storage.NewBatch()
-	if err != nil {
-		return fmt.Errorf("create query log batch: %w", err)
-	}
-	defer storage.RollbackBatch(batch)
+		batch, err := storage.NewBatch()
+		if err != nil {
+			return fmt.Errorf("create query log batch: %w", err)
+		}
+		defer storage.RollbackBatch(batch)
 
-	if err := storage.BatchInsertQueryLogs(buf, batch); err != nil {
-		return fmt.Errorf("insert query logs: %w", err)
-	}
+		if err := storage.BatchInsertQueryLogs(buf, batch); err != nil {
+			return fmt.Errorf("insert query logs: %w", err)
+		}
 
-	if err := agg.persist(batch); err != nil {
-		return fmt.Errorf("stage query log metrics: %w", err)
-	}
+		if err := agg.persist(batch); err != nil {
+			return fmt.Errorf("stage query log metrics: %w", err)
+		}
 
-	if err := storage.CommitBatch(batch); err != nil {
-		return fmt.Errorf("commit query logs and metrics: %w", err)
-	}
+		if err := storage.CommitBatch(batch); err != nil {
+			return fmt.Errorf("commit query logs and metrics: %w", err)
+		}
 
-	return nil
+		return nil
+	})
 }
 
 // addWindowDeltas folds one entry into the trailing window rollups. It is a
@@ -498,8 +503,6 @@ func (w *AsyncLogWriter) maintainWindows(ctx context.Context) {
 			logger.ErrorContext(ctx, fmt.Sprintf("window rollup maintenance failed: %v", err))
 		}
 	}
-
-	maintain()
 
 	ticker := time.NewTicker(windowMaintenanceInterval)
 	defer ticker.Stop()

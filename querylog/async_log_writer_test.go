@@ -262,6 +262,55 @@ var _ = Describe("AsyncLogWriter", func() {
 	})
 
 	Describe("Window rollups", func() {
+		It("returns an error before starting workers when initialization fails", func() {
+			Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
+			conn, err := sql.Open("sqlite3", sharedDBPath)
+			Expect(err).ShouldNot(HaveOccurred())
+			DeferCleanup(func() { _ = conn.Close() })
+			_, err = conn.Exec(`DELETE FROM metrics WHERE dimension = 'meta' AND entity = 'window_30d'`)
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = conn.Exec(`CREATE TRIGGER fail_window_init BEFORE INSERT ON metrics
+WHEN NEW.dimension = 'meta' BEGIN SELECT RAISE(ABORT, 'window initialization failed'); END`)
+			Expect(err).ShouldNot(HaveOccurred())
+			DeferCleanup(func() { _, _ = conn.Exec(`DROP TRIGGER fail_window_init`) })
+			w, err := NewAsyncLogWriter(ctx, sharedDBPath, config.QueryLogRetention{}, time.Hour, 1)
+			Expect(err).Should(MatchError(ContainSubstring("initialize window rollups")))
+			Expect(w).Should(BeNil())
+		})
+
+		It("waits for window maintenance before aggregating and committing a flush", func() {
+			Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
+			Expect(storage.MaintainWindowRollups(time.Now())).Should(Succeed())
+			w := &AsyncLogWriter{}
+			started := make(chan struct{})
+			finished := make(chan error, 1)
+			Expect(storage.WithWindowRollupUpdate(func() error {
+				go func() {
+					close(started)
+					finished <- w.flush([]*storage.QueryLogEntry{{
+						Timestamp: time.Now().UnixMilli(), Domain: "exclusive-flush.test",
+						ResponseType: "RESOLVED",
+					}}, newAggregationMaps())
+				}()
+				<-started
+				Consistently(finished, "50ms", "5ms").ShouldNot(Receive())
+
+				return nil
+			})).Should(Succeed())
+			Eventually(finished).Should(Receive(BeNil()))
+			for _, spec := range storage.WindowSpecs() {
+				rows, err := storage.GetTopEntities(storage.DimensionDomain, spec.Granularity, 0, 0)
+				Expect(err).ShouldNot(HaveOccurred())
+				var total uint64
+				for _, row := range rows {
+					if row.Entity == "exclusive-flush.test" {
+						total = row.Total
+					}
+				}
+				Expect(total).Should(Equal(uint64(1)))
+			}
+		})
+
 		It("should fold flushed entries into the trailing window rollups", func() {
 			w, err := NewAsyncLogWriter(ctx, sharedDBPath,
 				config.QueryLogRetention{HistoryMonths: 1},
@@ -270,9 +319,7 @@ var _ = Describe("AsyncLogWriter", func() {
 			Expect(err).Should(Succeed())
 			DeferCleanup(func() { _ = w.Close() })
 
-			// The writer only adds rollup deltas once the rollups have been
-			// built from the day buckets, which happens right after start-up.
-			Eventually(storage.WindowRollupsReady, "5s", "10ms").Should(BeTrue())
+			Expect(storage.WindowRollupsReady()).Should(BeTrue())
 
 			const domain = "rollup-spec.test"
 

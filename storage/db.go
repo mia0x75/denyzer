@@ -154,6 +154,7 @@ func InitDB(dbPath string) error {
 		return err
 	}
 
+	windowRollupsReady.Store(false)
 	dbPtr.Store(conn)
 
 	return nil
