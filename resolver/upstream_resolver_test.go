@@ -603,6 +603,11 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 	})
 
 	Describe("Using DNS over QUIC (DoQ) upstream", func() {
+		BeforeEach(func() {
+			// A cold QUIC/TLS handshake under -race can exceed the suite's 50 ms timeout.
+			sutConfig.Timeout = config.Duration(time.Second)
+		})
+
 		When("Configured DoQ resolver can resolve query", func() {
 			It("should return answer from DoQ upstream", func() {
 				mockUpstream := NewMockDoQUpstreamServer().WithAnswerRR("example.com 123 IN A 123.124.122.122")
@@ -644,6 +649,7 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 
 		When("DoQ upstream is not reachable", func() {
 			It("should return error", func() {
+				sutConfig.Timeout = defaultUpstreamsConfig.Timeout
 				sutConfig.Upstream = config.Upstream{
 					Net:  config.NetProtocolQuic,
 					Host: "127.0.0.1",
@@ -1358,6 +1364,9 @@ var _ = Describe("UpstreamResolver connection pooling", Label("upstreamResolver"
 		// its self-signed certificate.
 		newDoHResolver := func(upstream config.Upstream) *UpstreamResolver {
 			cfg := newUpstreamConfig(upstream, defaultUpstreamsConfig)
+			// A cold TLS handshake under -race can exceed the suite's 50 ms timeout.
+			cfg.Timeout = config.Duration(time.Second)
+
 			r := newUpstreamResolverUnchecked(cfg, systemResolverBootstrap)
 			client := r.upstreamClient.(*httpUpstreamClient)
 			client.client.Transport.(*http.Transport).TLSClientConfig.InsecureSkipVerify = true

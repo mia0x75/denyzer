@@ -46,14 +46,15 @@ var _ = Describe("Basic functionality", func() {
 						`))
 					Expect(err).Should(HaveOccurred())
 
-					// Verify container exit status
+					// IsRunning is cached; wait for Docker's real state before reading the exit code.
+					Eventually(denyzer.State).WithContext(ctx).WithTimeout(startupTimeout).
+						Should(HaveField("Running", false))
 					state, err := denyzer.State(ctx)
 					Expect(err).Should(Succeed())
 					Expect(state.ExitCode).Should(Equal(1))
 				})
 
 				It("fails to start with appropriate error message", func(ctx context.Context) {
-					Eventually(denyzer.IsRunning, "5s", "2ms").Should(BeFalse())
 					Expect(getContainerLogs(ctx, denyzer)).
 						Should(ContainElement(ContainSubstring("address already in use")))
 				})
