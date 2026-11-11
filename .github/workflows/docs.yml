@@ -1,6 +1,7 @@
 name: docs
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - v*
@@ -16,39 +17,48 @@ concurrency:
   group: ${{ github.workflow }}
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     if: ${{ github.event.repository.has_pages && (github.repository_owner != 'mia0x75' || github.ref_type == 'tag' || github.ref_name == 'main') }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
+
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v6
 
       - uses: actions/setup-python@v7
         with:
           python-version: 3.x
 
       - name: install tools
-        run: pip install mkdocs-material mike
+        run: pip install mkdocs-material
 
-      - name: Setup doc deploy
+      - name: Build documentation
+        env:
+          SITE_URL: ${{ steps.pages.outputs.base_url }}/
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          mkdocs build --strict
+          # Keep the old versioned URLs as aliases of the current documentation.
+          cp -a site "$RUNNER_TEMP/docs-site"
+          for alias in docs latest main; do
+            cp -a "$RUNNER_TEMP/docs-site" "site/$alias"
+            test -s "site/$alias/index.html"
+          done
+
+      - name: Upload documentation
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
 
       - name: Deploy documentation
-        run: |
-          VERSION=docs
-          if [[ ${{github.ref}} =~ ^refs/tags/ ]]; then
-            EXTRA_ALIAS=latest
-          fi
-          mike deploy --update-aliases "$VERSION" $EXTRA_ALIAS
-          # Keep the generated tree, but publish it without commit parents.
-          SNAPSHOT=$(git commit-tree "refs/heads/gh-pages^{tree}" -m "Deploy documentation")
-          git update-ref refs/heads/gh-pages "$SNAPSHOT"
-          test "$(git rev-list --count refs/heads/gh-pages)" -eq 1
-          git push --force-with-lease origin refs/heads/gh-pages:refs/heads/gh-pages
-          tr '[:upper:]' '[:lower:]' <<< "https://${{github.repository_owner}}.github.io/${{github.event.repository.name}}/" >> "$GITHUB_STEP_SUMMARY"
+        id: deployment
+        uses: actions/deploy-pages@v5
