@@ -78,10 +78,38 @@ func TestNewCache_Expires(t *testing.T) {
 	c.Put("k", &val, 5*time.Millisecond)
 
 	require.Eventually(t, func() bool {
-		got, _ := c.Get("k")
-
-		return got == nil
+		return c.cache.Metrics().Evictions == 1
 	}, time.Second, time.Millisecond)
+
+	got, _ := c.Get("k")
+	assert.Nil(t, got)
+}
+
+func TestNewCache_CleanupStops(t *testing.T) {
+	for _, alreadyCanceled := range []bool{false, true} {
+		name := "immediate stop"
+		if alreadyCanceled {
+			name = "already canceled context"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if alreadyCanceled {
+				cancel()
+			}
+			c := NewCache[string](Options{})
+			c.Start(ctx)
+			if !alreadyCanceled {
+				c.Stop()
+			}
+			select {
+			case <-c.cleanupDone:
+			case <-time.After(time.Second):
+				t.Fatal("cache cleanup did not stop")
+			}
+			c.Stop()
+		})
+	}
 }
 
 func TestNewCacheWithOnExpired_KeepAlive(t *testing.T) {

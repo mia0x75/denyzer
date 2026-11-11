@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"runtime"
+	"testing"
 	"time"
+	"weak"
 
 	"github.com/creasty/defaults"
 	"github.com/mia0x75/denyzer/cache"
@@ -20,6 +23,30 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/mock"
 )
+
+func TestCachingResolverEvictsExpiredAnswers(t *testing.T) {
+	g := NewWithT(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	resolver, err := NewCachingResolver(ctx, config.Caching{Prefetching: false}, config.DNSSEC{})
+	g.Expect(err).Should(Succeed())
+
+	answer := func() weak.Pointer[byte] {
+		value := make([]byte, 64*1024)
+		pointer := weak.Make(&value[0])
+		resolver.resultCache.Put("expired", &value, time.Millisecond)
+
+		return pointer
+	}()
+
+	// A cache miss or a zero live count does not prove expired storage was freed.
+	g.Eventually(func() bool {
+		runtime.GC()
+
+		return answer.Value() == nil
+	}, 10*time.Second, 20*time.Millisecond).Should(BeTrue())
+	runtime.KeepAlive(resolver)
+}
 
 var _ = Describe("CachingResolver", func() {
 	var (

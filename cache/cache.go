@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -10,9 +11,7 @@ import (
 
 // Options configures an in-memory expiring cache.
 type Options struct {
-	// CleanupInterval is accepted for compatibility with the previous cache
-	// implementation. ttlcache schedules its own janitor from the nearest
-	// expiry, so the value is informational only.
+	// CleanupInterval controls expiration sweeps (default: one second).
 	CleanupInterval time.Duration
 	// MaxSize bounds the number of entries (0 means unlimited).
 	MaxSize uint
@@ -51,15 +50,17 @@ type PrefetchingOptions[T any] struct {
 	OnPrefetchCacheHit func(key string)
 }
 
-// ttlCache is a ttlcache-backed ExpiringCache. ttlcache provides per-item TTL,
-// synchronous visibility and eviction callbacks, so no margin/janitor glue is
-// needed on top of it.
+// ttlCache is a ttlcache-backed ExpiringCache with context-bound expiration sweeps.
 type ttlCache[T any] struct {
-	cache     *ttlcache.Cache[string, T]
-	onExpired OnExpirationCallback[T]
-	onHit     func(key string)
-	onMiss    func(key string)
-	onPut     func(count int)
+	cache           *ttlcache.Cache[string, T]
+	onExpired       OnExpirationCallback[T]
+	onHit           func(key string)
+	onMiss          func(key string)
+	onPut           func(count int)
+	cleanupInterval time.Duration
+	cleanupMu       sync.Mutex
+	cleanupCancel   context.CancelFunc
+	cleanupDone     chan struct{}
 }
 
 // NewCache creates an in-memory TTL cache with optional capacity and callbacks.
@@ -68,7 +69,7 @@ func NewCache[T any](opts Options) *ttlCache[T] {
 }
 
 // NewCacheWithOnExpired creates a TTL cache backed by ttlcache. Entries are
-// removed by ttlcache when their TTL elapses; onExpired, when set, is consulted
+// removed on the next sweep after their TTL elapses; onExpired, when set, is consulted
 // at eviction time and may return a fresh value with a positive TTL to keep the
 // entry alive. The caller is responsible for starting the cache's janitor via
 // Start.
@@ -87,6 +88,10 @@ func NewCacheWithOnExpired[T any](opts Options, onExpired OnExpirationCallback[T
 
 	c.cache = ttlcache.New(cacheOpts...)
 	c.cache.OnEviction(c.handleEviction)
+	c.cleanupInterval = opts.CleanupInterval
+	if c.cleanupInterval <= 0 {
+		c.cleanupInterval = time.Second
+	}
 
 	return c
 }
@@ -109,17 +114,38 @@ func (c *ttlCache[T]) handleEviction(
 // Start launches the background janitor that sweeps expired entries. It stops
 // automatically when ctx is cancelled.
 func (c *ttlCache[T]) Start(ctx context.Context) {
-	go c.cache.Start()
-
+	c.cleanupMu.Lock()
+	defer c.cleanupMu.Unlock()
+	if c.cleanupDone != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	c.cleanupCancel = cancel
+	c.cleanupDone = make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		c.cache.Stop()
+		defer close(c.cleanupDone)
+		defer cancel()
+		ticker := time.NewTicker(c.cleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.cache.DeleteExpired()
+			}
+		}
 	}()
 }
 
 // Stop terminates the background janitor.
 func (c *ttlCache[T]) Stop() {
-	c.cache.Stop()
+	c.cleanupMu.Lock()
+	defer c.cleanupMu.Unlock()
+	if c.cleanupCancel != nil {
+		c.cleanupCancel()
+		<-c.cleanupDone
+	}
 }
 
 func (c *ttlCache[T]) Put(key string, val *T, expiration time.Duration) {

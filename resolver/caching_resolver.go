@@ -120,7 +120,9 @@ func configureCaches(ctx context.Context, c *CachingResolver, cfg *config.Cachin
 	}
 
 	if !cfg.Prefetching {
-		c.resultCache = cache.NewCache[[]byte](options)
+		resultCache := cache.NewCache[[]byte](options)
+		resultCache.Start(ctx)
+		c.resultCache = resultCache
 
 		return
 	}
