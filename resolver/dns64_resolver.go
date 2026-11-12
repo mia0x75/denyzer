@@ -223,6 +223,7 @@ func (r *DNS64Resolver) synthesizeFromA(
 		ClientIP:        originalRequest.ClientIP,
 		RequestClientID: originalRequest.RequestClientID,
 		Protocol:        originalRequest.Protocol,
+		ClientNames:     originalRequest.ClientNames,
 	}
 
 	// Send A query through next resolver

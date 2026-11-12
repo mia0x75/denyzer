@@ -264,6 +264,38 @@ var _ = Describe("DNS64Resolver", func() {
 			Expect(resp.Reason).Should(Equal("DNS64"))
 		})
 
+		It("should keep the client names on the synthesized A query", func() {
+			request := util.NewMsgWithQuestion("example.com.", dns.Type(dns.TypeAAAA))
+
+			aaaaResponse := new(dns.Msg)
+			aaaaResponse.SetReply(request)
+
+			aRequest := util.NewMsgWithQuestion("example.com.", dns.Type(dns.TypeA))
+			aResponse := new(dns.Msg)
+			aResponse.SetReply(aRequest)
+			aResponse.Answer = []dns.RR{
+				&dns.A{
+					Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+					A:   net.ParseIP("192.0.2.1"),
+				},
+			}
+
+			m.On("Resolve", mock.MatchedBy(func(req *model.Request) bool {
+				return req.Req.Question[0].Qtype == dns.TypeAAAA
+			})).Return(&model.Response{Res: aaaaResponse}, nil)
+
+			m.On("Resolve", mock.MatchedBy(func(req *model.Request) bool {
+				return req.Req.Question[0].Qtype == dns.TypeA &&
+					len(req.ClientNames) == 1 && req.ClientNames[0] == "office-laptop"
+			})).Return(&model.Response{Res: aResponse}, nil)
+
+			resp, err := sut.Resolve(ctx, &model.Request{Req: request, ClientNames: []string{"office-laptop"}})
+
+			Expect(err).Should(Succeed())
+			Expect(resp.Res.Answer).Should(HaveLen(1))
+			m.AssertNumberOfCalls(GinkgoT(), "Resolve", 2)
+		})
+
 		It("should synthesize multiple AAAA records from multiple A records", func() {
 			request := util.NewMsgWithQuestion("example.com.", dns.Type(dns.TypeAAAA))
 
