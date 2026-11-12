@@ -354,6 +354,51 @@ WHEN NEW.dimension = 'meta' BEGIN SELECT RAISE(ABORT, 'window initialization fai
 		})
 	})
 
+	Describe("History cleanup", func() {
+		It("removes expired history on startup", func() {
+			Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
+
+			old := &storage.QueryLogEntry{
+				Timestamp:    time.Now().AddDate(0, -2, 0).UnixMilli(),
+				ClientIP:     "192.0.2.1",
+				Domain:       "startup-cleanup-old.test",
+				QueryType:    "A",
+				ResponseType: "RESOLVED",
+			}
+			recent := &storage.QueryLogEntry{
+				Timestamp:    time.Now().UnixMilli(),
+				ClientIP:     "192.0.2.2",
+				Domain:       "startup-cleanup-recent.test",
+				QueryType:    "A",
+				ResponseType: "RESOLVED",
+			}
+			Expect(storage.BatchInsertQueryLogs([]*storage.QueryLogEntry{old, recent})).Should(Succeed())
+
+			w, err := NewAsyncLogWriter(ctx, sharedDBPath,
+				config.QueryLogRetention{HistoryMonths: 1}, time.Hour, 1)
+			Expect(err).Should(Succeed())
+			DeferCleanup(func() { _ = w.Close() })
+
+			conn, err := sql.Open("sqlite3", sharedDBPath)
+			Expect(err).ShouldNot(HaveOccurred())
+			DeferCleanup(func() { _ = conn.Close() })
+
+			count := func(domain string) int {
+				var n int
+				if err := conn.QueryRow(
+					`SELECT COUNT(*) FROM query_logs WHERE domain = ?`, domain).Scan(&n); err != nil {
+					return -1
+				}
+
+				return n
+			}
+
+			Eventually(func() int { return count("startup-cleanup-old.test") }, "5s", "50ms").
+				Should(BeZero())
+			Expect(count("startup-cleanup-recent.test")).Should(Equal(1))
+		})
+	})
+
 	Describe("Close", func() {
 		It("should be safe to call Close multiple times", func() {
 			w, err := NewAsyncLogWriter(ctx, sharedDBPath,

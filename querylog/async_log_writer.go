@@ -470,21 +470,29 @@ func (a *aggregationMaps) persist(batch storage.Batch) error {
 	return nil
 }
 
-// ttlCleanup runs a periodic TTL cleanup across all tables.
+// ttlCleanup runs the TTL cleanup at startup and periodically across all tables.
 func (w *AsyncLogWriter) ttlCleanup(ctx context.Context) {
+	logger := log.PrefixedLog(loggerPrefixAsyncLogWriter)
+
+	cleanup := func() {
+		logger.DebugContext(ctx, "running history cleanup")
+
+		if _, err := storage.CleanUp(w.retention.EffectiveHistoryMonths()); err != nil {
+			logger.ErrorContext(ctx, fmt.Sprintf("history cleanup failed: %v", err))
+		}
+	}
+
 	ticker := time.NewTicker(ttlCleanupInterval)
 	defer ticker.Stop()
 
-	logger := log.PrefixedLog(loggerPrefixAsyncLogWriter)
+	// Run once at startup so restarts shorter than the cleanup interval still
+	// enforce the retention window.
+	cleanup()
 
 	for {
 		select {
 		case <-ticker.C:
-			logger.DebugContext(ctx, "running history cleanup")
-
-			if _, err := storage.CleanUp(w.retention.EffectiveHistoryMonths()); err != nil {
-				logger.ErrorContext(ctx, fmt.Sprintf("history cleanup failed: %v", err))
-			}
+			cleanup()
 
 		case <-ctx.Done():
 			return
