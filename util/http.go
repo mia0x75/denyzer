@@ -24,29 +24,7 @@ func init() {
 
 // DefaultHTTPTransport returns a new Transport with the same defaults as net/http.
 func DefaultHTTPTransport() *http.Transport {
-	return &http.Transport{
-		DialContext:            baseTransport.DialContext,
-		DialTLSContext:         baseTransport.DialTLSContext,
-		DisableCompression:     baseTransport.DisableCompression,
-		DisableKeepAlives:      baseTransport.DisableKeepAlives,
-		ExpectContinueTimeout:  baseTransport.ExpectContinueTimeout,
-		ForceAttemptHTTP2:      baseTransport.ForceAttemptHTTP2,
-		GetProxyConnectHeader:  baseTransport.GetProxyConnectHeader,
-		IdleConnTimeout:        baseTransport.IdleConnTimeout,
-		MaxConnsPerHost:        baseTransport.MaxConnsPerHost,
-		MaxIdleConns:           baseTransport.MaxIdleConns,
-		MaxIdleConnsPerHost:    baseTransport.MaxIdleConnsPerHost,
-		MaxResponseHeaderBytes: baseTransport.MaxResponseHeaderBytes,
-		OnProxyConnectResponse: baseTransport.OnProxyConnectResponse,
-		Proxy:                  baseTransport.Proxy,
-		ProxyConnectHeader:     baseTransport.ProxyConnectHeader,
-		ReadBufferSize:         baseTransport.ReadBufferSize,
-		ResponseHeaderTimeout:  baseTransport.ResponseHeaderTimeout,
-		TLSClientConfig:        baseTransport.TLSClientConfig,
-		TLSHandshakeTimeout:    baseTransport.TLSHandshakeTimeout,
-		TLSNextProto:           baseTransport.TLSNextProto,
-		WriteBufferSize:        baseTransport.WriteBufferSize,
-	}
+	return baseTransport.Clone()
 }
 
 // HTTPClientIP uses the connection address (including configured PROXY protocol), never spoofable HTTP headers.

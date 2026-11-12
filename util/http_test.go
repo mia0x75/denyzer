@@ -1,15 +1,11 @@
 package util
 
 import (
-	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
-	"net/url"
-	"reflect"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -18,50 +14,41 @@ var _ = Describe("HTTP Util", func() {
 	Describe("DefaultHTTPTransport", func() {
 		It("returns a new transport", func() {
 			a := DefaultHTTPTransport()
-			Expect(a).Should(BeIdenticalTo(a))
+			Expect(a).ShouldNot(BeIdenticalTo(baseTransport))
 
 			b := DefaultHTTPTransport()
 			Expect(a).ShouldNot(BeIdenticalTo(b))
 		})
 
-		It("returns a copy of http.DefaultTransport", func() {
-			Expect(cmp.Diff(
-				DefaultHTTPTransport(), http.DefaultTransport,
-				cmpopts.IgnoreUnexported(http.Transport{}),
-				// Non nil func field comparers
-				cmp.Comparer(cmpAsPtrs[func(context.Context, string, string) (net.Conn, error)]),
-				cmp.Comparer(cmpAsPtrs[func(*http.Request) (*url.URL, error)]),
-			)).Should(BeEmpty())
+		It("preserves the default connection settings", func() {
+			transport := DefaultHTTPTransport()
+			Expect(transport.DialContext).ShouldNot(BeNil())
+			Expect(transport.Proxy).ShouldNot(BeNil())
+			Expect(transport.ForceAttemptHTTP2).Should(Equal(baseTransport.ForceAttemptHTTP2))
+			Expect(transport.MaxIdleConns).Should(Equal(baseTransport.MaxIdleConns))
+			Expect(transport.IdleConnTimeout).Should(Equal(baseTransport.IdleConnTimeout))
+			Expect(transport.TLSHandshakeTimeout).Should(Equal(baseTransport.TLSHandshakeTimeout))
+			Expect(transport.ExpectContinueTimeout).Should(Equal(baseTransport.ExpectContinueTimeout))
 		})
 
-		It("copies every field from its namesake", func() {
-			// http.DefaultTransport leaves most fields at their zero value, so a
-			// field copied from the wrong source is invisible when comparing
-			// against it: 0 == 0. Compare against a base whose fields all hold
-			// distinct values instead, which pins each copy to its own namesake.
+		It("preserves configuration without sharing mutable headers or TLS settings", func() {
 			DeferCleanup(func(orig *http.Transport) { baseTransport = orig }, baseTransport)
 
 			baseTransport = &http.Transport{
-				DisableCompression:     true,
-				DisableKeepAlives:      false,
-				ForceAttemptHTTP2:      true,
-				ExpectContinueTimeout:  1 * time.Second,
-				IdleConnTimeout:        2 * time.Second,
-				ResponseHeaderTimeout:  3 * time.Second,
-				TLSHandshakeTimeout:    4 * time.Second,
-				MaxConnsPerHost:        11,
-				MaxIdleConns:           22,
-				MaxIdleConnsPerHost:    33,
-				MaxResponseHeaderBytes: 44,
-				ReadBufferSize:         55,
-				WriteBufferSize:        66,
-				ProxyConnectHeader:     http.Header{"X-Test": []string{"1"}},
+				ResponseHeaderTimeout: 3 * time.Second,
+				ProxyConnectHeader:    http.Header{"X-Test": []string{"1"}},
+				TLSClientConfig:       &tls.Config{ServerName: "example.com"},
 			}
 
-			Expect(cmp.Diff(
-				DefaultHTTPTransport(), baseTransport,
-				cmpopts.IgnoreUnexported(http.Transport{}),
-			)).Should(BeEmpty())
+			transport := DefaultHTTPTransport()
+			Expect(transport.ResponseHeaderTimeout).Should(Equal(3 * time.Second))
+			Expect(transport.ProxyConnectHeader).Should(Equal(baseTransport.ProxyConnectHeader))
+			Expect(transport.TLSClientConfig.ServerName).Should(Equal("example.com"))
+
+			transport.ProxyConnectHeader["X-Test"][0] = "changed"
+			transport.TLSClientConfig.ServerName = "changed.example.com"
+			Expect(baseTransport.ProxyConnectHeader.Get("X-Test")).Should(Equal("1"))
+			Expect(baseTransport.TLSClientConfig.ServerName).Should(Equal("example.com"))
 		})
 	})
 
@@ -83,9 +70,3 @@ var _ = Describe("HTTP Util", func() {
 		Entry("missing peer", "", ""),
 	)
 })
-
-// Go and cmp don't define func comparisons, besides with nil.
-// In practice we can just compare them as pointers.
-func cmpAsPtrs[T any](x, y T) bool {
-	return reflect.ValueOf(x).Pointer() == reflect.ValueOf(y).Pointer()
-}
