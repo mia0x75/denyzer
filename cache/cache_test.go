@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -206,4 +207,179 @@ func TestNewPrefetchingCache_LeavesColdKeysToCaller(t *testing.T) {
 	got, _ := c.Get("cold")
 	assert.Nil(t, got)
 	assert.Zero(t, reloads.Load())
+}
+
+func TestNewPrefetchingCache_CoalescesConcurrentReloads(t *testing.T) {
+	const requests = 10
+
+	var (
+		reloads atomic.Int32
+		misses  atomic.Int32
+	)
+	reloadStarted := make(chan struct{}, 1)
+	releaseReload := make(chan struct{})
+	c := NewPrefetchingCache[string](t.Context(), Options{
+		CleanupInterval: time.Millisecond,
+		OnCacheMissFn:   func(string) { misses.Add(1) },
+	}, PrefetchingOptions[string]{
+		PrefetchExpires:   time.Minute,
+		PrefetchThreshold: 0,
+		ReloadFn: func(_ context.Context, _ string) (*string, time.Duration) {
+			reloads.Add(1)
+			select {
+			case reloadStarted <- struct{}{}:
+			default:
+			}
+			<-releaseReload
+			fresh := "reloaded"
+
+			return &fresh, time.Minute
+		},
+	})
+	defer c.Stop()
+
+	initial := "initial"
+	c.Put("k", &initial, time.Minute)
+	_, _ = c.Get("k") // Make the key eligible for prefetching.
+	c.Del("k")
+
+	results := make(chan *string, requests)
+	var wg sync.WaitGroup
+	for range requests {
+		wg.Go(func() {
+			got, _ := c.Get("k")
+			results <- got
+		})
+	}
+
+	select {
+	case <-reloadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("prefetch reload did not start")
+	}
+	require.Eventually(t, func() bool { return misses.Load() == requests }, time.Second, time.Millisecond)
+	close(releaseReload)
+	wg.Wait()
+	close(results)
+
+	for got := range results {
+		require.NotNil(t, got)
+		assert.Equal(t, "reloaded", *got)
+	}
+	assert.Equal(t, int32(1), reloads.Load())
+}
+
+func TestNewPrefetchingCache_ReturnsRemainingReloadTTL(t *testing.T) {
+	const reloadTTL = time.Second
+
+	t.Run("returns remaining TTL", func(t *testing.T) {
+		value, ttl := testPrefetchReloadTTL(t, reloadTTL, 50*time.Millisecond)
+		require.NotNil(t, value)
+		assert.Equal(t, "reloaded", *value)
+		assert.Less(t, ttl, reloadTTL-25*time.Millisecond)
+	})
+	t.Run("does not return expired value", func(t *testing.T) {
+		value, ttl := testPrefetchReloadTTL(t, reloadTTL, reloadTTL+25*time.Millisecond)
+		assert.Nil(t, value)
+		assert.Zero(t, ttl)
+	})
+}
+
+func testPrefetchReloadTTL(
+	t *testing.T,
+	reloadTTL time.Duration,
+	delay time.Duration,
+) (*string, time.Duration) {
+	t.Helper()
+	callbackStarted := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseCallback) }) }
+	c := NewPrefetchingCache[string](t.Context(), Options{CleanupInterval: time.Hour}, PrefetchingOptions[string]{
+		PrefetchExpires:   time.Minute,
+		PrefetchThreshold: 0,
+		ReloadFn: func(_ context.Context, _ string) (*string, time.Duration) {
+			value := "reloaded"
+
+			return &value, reloadTTL
+		},
+		OnPrefetchEntryReloaded: func(string) {
+			close(callbackStarted)
+			<-releaseCallback
+		},
+	})
+	defer c.Stop()
+	defer release()
+
+	initial := "initial"
+	c.Put("k", &initial, time.Minute)
+	_, _ = c.Get("k") // Make the key eligible for prefetching.
+	c.Del("k")
+
+	type result struct {
+		value *string
+		ttl   time.Duration
+	}
+	got := make(chan result, 1)
+	go func() {
+		value, ttl := c.Get("k")
+		got <- result{value: value, ttl: ttl}
+	}()
+
+	select {
+	case <-callbackStarted:
+	case <-time.After(time.Second):
+		t.Fatal("reload callback did not start")
+	}
+	time.Sleep(delay)
+	// An in-flight normal lookup can replace the entry while reload callbacks run.
+	replacement := "replacement"
+	c.Put("k", &replacement, time.Hour)
+	release()
+
+	select {
+	case reloaded := <-got:
+		return reloaded.value, reloaded.ttl
+	case <-time.After(time.Second):
+		t.Fatal("cache Get did not return")
+
+		return nil, 0
+	}
+}
+
+func TestNewPrefetchingCache_CleanupStopsWithLifecycle(t *testing.T) {
+	for _, stopExplicitly := range []bool{false, true} {
+		name := "context cancellation"
+		if stopExplicitly {
+			name = "explicit stop"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			c := NewPrefetchingCache[string](ctx, Options{CleanupInterval: time.Millisecond}, PrefetchingOptions[string]{
+				PrefetchExpires: time.Millisecond,
+			})
+			c.trackQuery("k")
+
+			require.Eventually(t, func() bool { return c.counts.Metrics().Evictions == 1 }, time.Second, time.Millisecond)
+			if stopExplicitly {
+				c.Stop()
+			} else {
+				cancel()
+			}
+
+			for name, done := range map[string]<-chan struct{}{
+				"answer cache cleanup": c.cleanupDone,
+				"count cache cleanup":  c.countsCleanupDone,
+			} {
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatalf("%s did not stop", name)
+				}
+			}
+
+			c.Stop()
+			cancel()
+		})
+	}
 }

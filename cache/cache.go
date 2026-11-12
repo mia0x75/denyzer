@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jellydator/ttlcache/v3"
+	"golang.org/x/sync/singleflight"
 )
 
 // Options configures an in-memory expiring cache.
@@ -199,7 +200,11 @@ type prefetchingCache[T any] struct {
 	*ttlCache[T]
 
 	counts                  *ttlcache.Cache[string, *atomic.Uint32]
+	entryMu                 sync.RWMutex
+	countsCleanupCancel     context.CancelFunc
+	countsCleanupDone       chan struct{}
 	reloadFn                ReloadEntryFn[T]
+	reloadGroup             singleflight.Group
 	prefetchExpires         time.Duration
 	prefetchThreshold       int
 	onPrefetchEntryReloaded func(key string)
@@ -236,7 +241,23 @@ func NewPrefetchingCache[T any](
 	}
 
 	pc.counts = ttlcache.New(countOpts...)
-	go pc.counts.Start()
+	countsCtx, cancel := context.WithCancel(ctx)
+	pc.countsCleanupCancel = cancel
+	pc.countsCleanupDone = make(chan struct{})
+	go func() {
+		defer cancel()
+		defer close(pc.countsCleanupDone)
+		ticker := time.NewTicker(base.cleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-countsCtx.Done():
+				return
+			case <-ticker.C:
+				pc.counts.DeleteExpired()
+			}
+		}
+	}()
 
 	base.Start(ctx)
 
@@ -250,16 +271,15 @@ func (c *prefetchingCache[T]) Get(key string) (*T, time.Duration) {
 	// path, not the loader.
 	previousCount := c.trackQuery(key)
 
-	item := c.cache.Get(key)
-	if item != nil {
+	val, expiresAt := c.getEntry(key)
+	if val != nil {
 		if c.onPrefetchCacheHit != nil {
 			c.onPrefetchCacheHit(key)
 		}
 
-		val := item.Value()
-		remaining := max(time.Until(item.ExpiresAt()), 0)
+		remaining := max(time.Until(expiresAt), 0)
 
-		return &val, remaining
+		return val, remaining
 	}
 
 	if c.onMiss != nil {
@@ -272,27 +292,93 @@ func (c *prefetchingCache[T]) Get(key string) (*T, time.Duration) {
 		return nil, 0
 	}
 
-	val, ttl := c.reloadFn(c.ctx, key)
-	if val == nil || ttl <= 0 {
+	result, err, _ := c.reloadGroup.Do(key, func() (any, error) {
+		if val, expiresAt := c.getEntry(key); val != nil {
+			return prefetchResult[T]{value: val, expiresAt: expiresAt}, nil
+		}
+
+		val, ttl := c.reloadFn(c.ctx, key)
+		if val == nil || ttl <= 0 {
+			return prefetchResult[T]{}, nil
+		}
+
+		c.entryMu.Lock()
+		item := c.cache.Set(key, *val, ttl)
+		expiresAt := item.ExpiresAt()
+		c.entryMu.Unlock()
+
+		if c.onPrefetchEntryReloaded != nil {
+			c.onPrefetchEntryReloaded(key)
+		}
+
+		if c.onPut != nil {
+			c.onPut(c.TotalCount())
+		}
+
+		return prefetchResult[T]{value: val, expiresAt: expiresAt}, nil
+	})
+
+	return copyPrefetchResult[T](result, err)
+}
+
+func (c *prefetchingCache[T]) getEntry(key string) (*T, time.Time) {
+	c.entryMu.RLock()
+	defer c.entryMu.RUnlock()
+
+	item := c.cache.Get(key)
+	if item == nil {
+		return nil, time.Time{}
+	}
+
+	value := item.Value()
+	expiresAt := item.ExpiresAt()
+
+	return &value, expiresAt
+}
+
+func copyPrefetchResult[T any](result any, err error) (*T, time.Duration) {
+	if err != nil {
 		return nil, 0
 	}
 
-	c.cache.Set(key, *val, ttl)
-
-	if c.onPrefetchEntryReloaded != nil {
-		c.onPrefetchEntryReloaded(key)
+	reloaded, ok := result.(prefetchResult[T])
+	if !ok || reloaded.value == nil {
+		return nil, 0
 	}
 
-	if c.onPut != nil {
-		c.onPut(c.TotalCount())
+	value := *reloaded.value
+	ttl := time.Until(reloaded.expiresAt)
+	if ttl <= 0 {
+		return nil, 0
 	}
 
-	return val, ttl
+	return &value, ttl
+}
+
+type prefetchResult[T any] struct {
+	value     *T
+	expiresAt time.Time
+}
+
+func (c *prefetchingCache[T]) Stop() {
+	c.countsCleanupCancel()
+	c.ttlCache.Stop()
+	<-c.countsCleanupDone
 }
 
 // put stores a value without counting it as a query.
 func (c *prefetchingCache[T]) Put(key string, val *T, expiration time.Duration) {
-	c.ttlCache.Put(key, val, expiration)
+	if expiration <= 0 || val == nil {
+		return
+	}
+
+	c.entryMu.Lock()
+	c.cache.Set(key, *val, expiration)
+	c.entryMu.Unlock()
+
+	if c.onPut != nil {
+		c.onPut(c.TotalCount())
+	}
 }
 
 // trackQuery increments the sliding-window query counter for a key and returns
