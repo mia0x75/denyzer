@@ -354,8 +354,12 @@ func (a *aggregationMaps) addEntry(entry *storage.QueryLogEntry) {
 	}
 
 	qtypeDelta := &storage.MetricsDelta{
-		Total:          1,
-		TotalLatencyMs: uint64(entry.DurationMs),
+		Total: 1,
+	}
+	if category == storage.StatError {
+		qtypeDelta.Errors = 1
+	} else {
+		qtypeDelta.TotalLatencyMs = uint64(entry.DurationMs)
 	}
 	if blocked {
 		qtypeDelta.Blocked = 1
@@ -388,6 +392,7 @@ func (a *aggregationMaps) add(
 		delta.Local = 1
 	case storage.StatError:
 		delta.Errors = 1
+		delta.TotalLatencyMs = 0
 	default:
 		delta.Other = 1
 	}

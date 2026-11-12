@@ -112,6 +112,7 @@ type MetricRow struct {
 // MetricsDelta is a set of counter increments for one metric bucket. Total is
 // incremented once per query (including dropped and failed queries); errors and
 // dropped are also exposed as dedicated counters.
+// TotalLatencyMs only includes queries counted by Total - Dropped - Errors.
 type MetricsDelta struct {
 	Total          uint64
 	Blocked        uint64
@@ -182,7 +183,8 @@ func (s GlobalStats) CacheHitRate() float64 {
 	return float64(s.Cached) / float64(lookups)
 }
 
-// AverageResponseMs returns the mean response time over answered queries.
+// AverageResponseMs returns the mean response time excluding dropped and errored
+// queries, including DNSSEC validation failures. TotalLatencyMs must exclude them too.
 func (s GlobalStats) AverageResponseMs() uint64 {
 	answered := s.Total - min(s.Dropped+s.Errors, s.Total)
 	if answered == 0 {

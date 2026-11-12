@@ -74,7 +74,70 @@ var _ = Describe("AsyncLogWriter", func() {
 		DeferCleanup(cancelFn)
 	})
 
+	DescribeTable("keeps latency and answered counts aligned across metric dimensions",
+		func(types []string, durations []uint16, wantErrors, wantLatency, wantAverage uint64) {
+			Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
+			now := time.Now()
+			Expect(storage.MaintainWindowRollups(now)).Should(Succeed())
+			agg := newAggregationMaps()
+			for i, responseType := range types {
+				agg.addEntry(&storage.QueryLogEntry{
+					Timestamp: now.UnixMilli(), Domain: "latency.test", ClientIP: "192.0.2.1",
+					QueryType: "A", ResponseType: responseType, DurationMs: durations[i],
+				})
+			}
+			Expect(agg.metrics).Should(HaveLen(16))
+			for key, delta := range agg.metrics {
+				Expect(delta.Total).Should(Equal(uint64(len(types))), "%+v", key)
+				Expect(delta.Errors).Should(Equal(wantErrors), "%+v", key)
+				Expect(delta.TotalLatencyMs).Should(Equal(wantLatency), "%+v", key)
+				stats := storage.GlobalStats{
+					Total: delta.Total, Errors: delta.Errors, TotalLatencyMs: delta.TotalLatencyMs,
+				}
+				Expect(stats.AverageResponseMs()).Should(Equal(wantAverage), "%+v", key)
+			}
+			agg.addFailures(1, 1)
+			delta := agg.globalDelta(storage.GranularityAllTime)
+			stats := storage.GlobalStats{
+				Total: delta.Total, Errors: delta.Errors, Dropped: delta.Dropped,
+				TotalLatencyMs: delta.TotalLatencyMs,
+			}
+			Expect(stats.AverageResponseMs()).Should(Equal(wantAverage))
+		},
+		Entry("mixed success and BOGUS", []string{"RESOLVED", "BOGUS"}, []uint16{10, 100}, uint64(1), uint64(10), uint64(10)),
+		Entry("only BOGUS", []string{"BOGUS", "BOGUS"}, []uint16{100, 200}, uint64(2), uint64(0), uint64(0)),
+		Entry("successful answers", []string{"RESOLVED", "CACHED"}, []uint16{10, 20}, uint64(0), uint64(30), uint64(15)),
+	)
+
 	Describe("Write and flush", func() {
+		It("excludes BOGUS latency from persisted metrics but preserves query details", func() {
+			Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
+			before, err := allTimeStats()
+			Expect(err).ShouldNot(HaveOccurred())
+			w := &AsyncLogWriter{}
+			entries := []*storage.QueryLogEntry{
+				{Timestamp: time.Now().UnixMilli(), Domain: "bogus-latency.test", QueryType: "A",
+					ResponseType: "RESOLVED", DurationMs: 10},
+				{Timestamp: time.Now().UnixMilli(), Domain: "bogus-latency.test", QueryType: "A",
+					ResponseType: "BOGUS", DurationMs: 100},
+			}
+			Expect(w.flush(entries, newAggregationMaps())).Should(Succeed())
+			after, err := allTimeStats()
+			Expect(err).ShouldNot(HaveOccurred())
+			stats := storage.GlobalStats{
+				Total: after.Total - before.Total, Errors: after.Errors - before.Errors,
+				TotalLatencyMs: after.TotalLatencyMs - before.TotalLatencyMs,
+			}
+			Expect(stats.Total).Should(Equal(uint64(2)))
+			Expect(stats.Errors).Should(Equal(uint64(1)))
+			Expect(stats.TotalLatencyMs).Should(Equal(uint64(10)))
+			Expect(stats.AverageResponseMs()).Should(Equal(uint64(10)))
+			page, err := storage.GetQueryLogsPage("", 10, "bogus-latency.test", "BOGUS", "", "")
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(page.Entries).Should(HaveLen(1))
+			Expect(page.Entries[0].DurationMs).Should(Equal(uint16(100)))
+		})
+
 		It("should write entries and flush them to the database", func() {
 			w, err := NewAsyncLogWriter(ctx, sharedDBPath,
 				config.QueryLogRetention{HistoryMonths: 1},

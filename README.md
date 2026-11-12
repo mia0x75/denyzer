@@ -20,7 +20,9 @@ management listener (`ports.admin`) - no separate web server or external databas
 All-time counters (total queries, blocked ratio, cache hit rate, listed
 domains), the blocking status with its pause presets, the maintenance actions
 and the query volume over time - switchable between 1h, 24h, 7d and 30d and
-filterable per client.
+filterable per client. Average response time excludes dropped queries and errors,
+including DNSSEC validation failures (`BOGUS`); query logs retain the original
+response durations.
 
 ### Top lists
 
