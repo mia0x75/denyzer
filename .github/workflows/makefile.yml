@@ -8,6 +8,7 @@ on:
       - Makefile
       - "**.go"
       - "go.*"
+      - "frontend/**"
       - "helpertest/data/**"
   pull_request:
 
@@ -28,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        make: [build, test, race, docker-build, e2e-test, goreleaser, lint, generate-check]
+        make: [build, test, race, docker-build, e2e-test, goreleaser, lint, generate-check, frontend-verify]
 
     steps:
       - name: Check out code into the Go module directory
@@ -41,9 +42,19 @@ jobs:
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
-        if: matrix.make == 'build'
+        if: matrix.make == 'build' || matrix.make == 'frontend-verify'
         with:
           bun-version: "1.4.2"
+
+      - name: Install frontend dependencies
+        if: matrix.make == 'frontend-verify'
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      - name: Verify frontend
+        if: matrix.make == 'frontend-verify'
+        working-directory: frontend
+        run: bun run verify
 
       - name: Download dependencies
         run: go mod download
@@ -53,7 +64,7 @@ jobs:
 
       - name: make ${{ matrix.make }}
         run: make ${{ matrix.make }}
-        if: matrix.make != 'goreleaser' && matrix.make != 'generate-check'
+        if: matrix.make != 'goreleaser' && matrix.make != 'generate-check' && matrix.make != 'frontend-verify'
         env:
           GO_SKIP_GENERATE: 1
 

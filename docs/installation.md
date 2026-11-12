@@ -86,7 +86,7 @@ may not match the access address, and is rejected by the CLI. See
     mkdir -p config
     cp config.yml config/config.yml
     sudo chown 100:100 config config/config.yml
-    docker run --rm -it -v "$PWD/config:/config" mia0x75/denyzer \
+    docker run --rm -it -v "$PWD/config:/config" ghcr.io/mia0x75/denyzer \
       auth --config /config --username admin
     ```
 
@@ -121,7 +121,7 @@ may not match the access address, and is rejected by the CLI. See
         mounting a **named volume** over either path works with no host-side setup:
 
         ```sh
-        docker run -v denyzer_cache:/app/cache ... mia0x75/denyzer
+        docker run -v denyzer_cache:/app/cache ... ghcr.io/mia0x75/denyzer
         ```
 
         A **bind mount** always keeps the host directory's ownership, so it needs one of:
@@ -135,7 +135,7 @@ may not match the access address, and is rejected by the CLI. See
         The auth command writes credentials with mode `0600`, so preserve the
         container user's ownership rather than making them world-readable.
 
-    Denyzer docker images are deployed to DockerHub (`mia0x75/denyzer`) and GitHub Container Registry (`ghcr.io/mia0x75/denyzer`).
+    Denyzer Docker images are published to the [GitHub Container Registry](https://ghcr.io/mia0x75/denyzer).
 
     === "docker run"
 
@@ -144,7 +144,7 @@ may not match the access address, and is rejected by the CLI. See
         ```sh
         docker run --name denyzer -v /path/to/config:/config:ro \
           -e DENYZER_CONFIG_FILE=/config -p 127.0.0.1:4000:4000 \
-          -p 53:53/tcp -p 53:53/udp mia0x75/denyzer
+          -p 53:53/tcp -p 53:53/udp ghcr.io/mia0x75/denyzer
         ```
 
     === "docker-compose"
@@ -155,7 +155,7 @@ may not match the access address, and is rejected by the CLI. See
         version: "2.1"
         services:
           denyzer:
-            image: mia0x75/denyzer
+            image: ghcr.io/mia0x75/denyzer
             container_name: denyzer
             restart: unless-stopped
             # Optional the instance hostname for logging purpose
@@ -205,7 +205,7 @@ path like '/app/allowlists/allowlist.txt' in the config file.
     version: "2.1"
     services:
       denyzer:
-        image: mia0x75/denyzer
+        image: ghcr.io/mia0x75/denyzer
         container_name: denyzer
         restart: unless-stopped
         ports:
