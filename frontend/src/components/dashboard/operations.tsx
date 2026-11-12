@@ -28,6 +28,7 @@ import {
   refreshStatistics,
 } from "~/lib/api";
 import { type CleanupResult } from "~/lib/api-types";
+import { invalidateQueryLogs } from "./query-log-cache";
 import { NumberStepper } from "./number-stepper";
 
 const MIN_HISTORY_MONTHS = 1;
@@ -144,6 +145,7 @@ export function Operations() {
     mutationFn: (months: number) => cleanupHistory(months),
     onSuccess: (result) => {
       invalidateStatistics();
+      invalidateQueryLogs(queryClient);
 
       // The progress toast scrolls away, the summary toast appears below it.
       showCleanupResult(() => {
