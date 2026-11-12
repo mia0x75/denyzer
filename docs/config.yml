@@ -431,6 +431,9 @@ ports:
 auth:
   username: ""
   passwordHash: ""
+  # optional: stable administrator source IPs/CIDRs that bypass only the global login limit.
+  # Uses the socket peer IP, never forwarded headers. Keep this list narrow.
+  trustedIPs: []
 
 # optional: profiling on the HTTPS management listener, never on public DoH.
 debug:

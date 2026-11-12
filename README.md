@@ -225,6 +225,11 @@ to explicit loopback IPs and warns at startup. Configure a trusted `certFile` an
 `keyFile` matching the management hostname/IP; the default generated certificate
 is self-signed and the CLI will not bypass verification.
 
+Login attempts are limited per IP and globally before password verification.
+Use `auth.trustedIPs` for stable administrator IPs/CIDRs to bypass only the shared
+limit; passwords, per-IP limits and the concurrency cap still apply. Only socket
+peer IPs are trusted, never forwarded headers.
+
 Login returns an in-memory Bearer token with a fixed seven-day expiry. A password
 reset or restart invalidates all tokens. API/debug requests require Bearer tokens;
 the dashboard's Secure, HttpOnly page cookie authenticates pages only and lets a

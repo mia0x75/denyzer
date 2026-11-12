@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,6 +43,10 @@ func TestAuthValidation(t *testing.T) {
 		{name: "surrounding whitespace", auth: Auth{Username: " admin", PasswordHash: valid.PasswordHash}},
 		{name: "control character", auth: Auth{Username: "ad\tmin", PasswordHash: valid.PasswordHash}},
 		{name: "oversized name", auth: Auth{Username: strings.Repeat("a", 65), PasswordHash: valid.PasswordHash}},
+		{name: "invalid trusted IP", auth: Auth{TrustedIPs: []string{"admin.example"}}},
+		{name: "empty trusted IP", auth: Auth{TrustedIPs: []string{""}}},
+		{name: "invalid trusted CIDR", auth: Auth{TrustedIPs: []string{"192.0.2.0/33"}}},
+		{name: "valid trusted IP without credentials", auth: Auth{TrustedIPs: []string{"192.0.2.0/24"}}, ok: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.ok {
@@ -49,6 +54,35 @@ func TestAuthValidation(t *testing.T) {
 			} else {
 				assert.Error(t, tc.auth.validate())
 			}
+		})
+	}
+}
+
+func TestAuthTrustedIPs(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{Auth: Auth{TrustedIPs: []string{
+		"192.0.2.10", "198.51.100.0/24", "2001:db8::10", "2001:db8:1::/48",
+	}}}
+	a, err := cfg.ReadAuth()
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name    string
+		ip      string
+		trusted bool
+	}{
+		{name: "IPv4 address", ip: "192.0.2.10", trusted: true},
+		{name: "IPv4 outside address", ip: "192.0.2.11"},
+		{name: "IPv4 CIDR", ip: "198.51.100.42", trusted: true},
+		{name: "IPv4 outside CIDR", ip: "198.51.101.42"},
+		{name: "IPv4-mapped IPv6", ip: "::ffff:192.0.2.10", trusted: true},
+		{name: "IPv6 address", ip: "2001:db8::10", trusted: true},
+		{name: "IPv6 CIDR", ip: "2001:db8:1:2::42", trusted: true},
+		{name: "IPv6 outside CIDR", ip: "2001:db8:2::42"},
+		{name: "invalid peer", ip: "not-an-ip"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.trusted, a.IsTrustedIP(net.ParseIP(tc.ip)))
 		})
 	}
 }
@@ -105,6 +139,8 @@ func TestReadAuth(t *testing.T) {
 		{name: "duplicate username", yaml: "auth: {username: admin, username: other}\n"},
 		{name: "partial credentials", yaml: "auth: {username: admin}\n"},
 		{name: "invalid hash", yaml: "auth: {username: admin, passwordHash: bad}\n"},
+		{name: "trusted networks", yaml: "auth: {trustedIPs: [192.0.2.0/24, '2001:db8::/32']}\n", ok: true},
+		{name: "invalid trusted network", yaml: "auth: {trustedIPs: [192.0.2.0/33]}\n"},
 		{name: "broken YAML", yaml: "auth: [\n"},
 		{name: "non mapping", yaml: "- auth\n"},
 		{name: "multiple documents", yaml: "auth: {}\n---\nauth: {}\n"},
@@ -204,6 +240,30 @@ func TestSetAuthTargets(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, first, untouched)
 	})
+	t.Run("password reset preserves trusted IPs", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yml")
+		data := "auth:\n  trustedIPs: [192.0.2.0/24] # keep trusted network\n"
+		require.NoError(t, os.WriteFile(path, []byte(data), 0o600))
+		require.NoError(t, SetAuth(path, testAuth()))
+		cfg := Config{sourcePath: path}
+		credentials, err := cfg.ReadAuth()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"192.0.2.0/24"}, credentials.TrustedIPs)
+		updated, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Contains(t, string(updated), "# keep trusted network")
+	})
+	t.Run("directory reset preserves earlier trusted IPs", func(t *testing.T) {
+		path := t.TempDir()
+		first := []byte("auth: {trustedIPs: [192.0.2.0/24]}\n")
+		require.NoError(t, os.WriteFile(filepath.Join(path, "a.yml"), first, 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(path, "z.yml"), []byte("log: {level: info}\n"), 0o600))
+		require.NoError(t, SetAuth(path, testAuth()))
+		cfg := Config{sourcePath: path}
+		credentials, err := cfg.ReadAuth()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"192.0.2.0/24"}, credentials.TrustedIPs)
+	})
 	t.Run("symlink", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("symlink creation requires privileges on Windows")
@@ -279,7 +339,7 @@ func TestSetAuthAtomicReaders(t *testing.T) {
 	for range 100 {
 		credentials, err := cfg.ReadAuth()
 		require.NoError(t, err)
-		assert.True(t, credentials == first || credentials == second, "reader observed incomplete credentials")
+		assert.Contains(t, []Auth{first, second}, credentials, "reader observed incomplete credentials")
 	}
 	writers.Wait()
 	close(errors)

@@ -58,7 +58,7 @@ func authTestRequest(handler http.Handler, method, target, token string) *httpte
 	return recorder
 }
 
-func authTestSignIn(t *testing.T, handler http.Handler, password string) (authTestLogin, *http.Cookie) {
+func authTestLoginAttempt(t *testing.T, handler http.Handler, peer, password string) *httptest.ResponseRecorder {
 	t.Helper()
 	body, err := json.Marshal(map[string]string{"username": "admin", "password": password})
 	require.NoError(t, err)
@@ -69,8 +69,16 @@ func authTestSignIn(t *testing.T, handler http.Handler, password string) (authTe
 		strings.NewReader(string(body)),
 	)
 	request.Header.Set("Content-Type", jsonContentType)
+	request.RemoteAddr = peer
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
+
+	return recorder
+}
+
+func authTestSignIn(t *testing.T, handler http.Handler, password string) (authTestLogin, *http.Cookie) {
+	t.Helper()
+	recorder := authTestLoginAttempt(t, handler, "192.0.2.1:1234", password)
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 	var result authTestLogin
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &result))
@@ -364,6 +372,9 @@ func TestAuthService(t *testing.T) {
 			{name: "missing file", remove: true},
 			{name: "malformed YAML", data: "auth: [\n"},
 			{name: "unknown auth field", data: "auth: {password: plaintext}\n"},
+			{name: "invalid trusted IP", data: fmt.Sprintf(
+				"auth: {username: admin, passwordHash: %q, trustedIPs: [admin.example]}\n", hash,
+			)},
 			{name: "duplicate auth", data: "auth: {}\nauth: {}\n"},
 			{name: "multiple documents", data: "auth: {}\n---\nauth: {}\n"},
 			{name: "disabled while running", data: "ports: {admin: '127.0.0.1:4000'}\n"},
@@ -596,4 +607,146 @@ func TestLoginLimitersBounded(t *testing.T) {
 	assert.LessOrEqual(t, len(limiters.buckets), maxLoginClients)
 	// A fresh client is still served when the table is full; only old buckets are dropped.
 	assert.True(t, limiters.allow("198.51.100.1"))
+}
+
+func TestGlobalLoginLimiterBoundsRotatingClients(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		handler := authTestHandler(newAuthService(&config.Config{}))
+		for i := range maxLoginClients + 10 {
+			status := http.StatusTooManyRequests
+			if i < globalLoginBurst {
+				status = http.StatusUnauthorized
+			}
+			peer := fmt.Sprintf("[2001:db8::%x]:1234", i+1)
+			require.Equal(t, status, authTestLoginAttempt(t, handler, peer, "").Code)
+		}
+		time.Sleep(time.Second)
+		assert.Equal(t, http.StatusUnauthorized, authTestLoginAttempt(t, handler, "198.51.100.1:1234", "").Code)
+		assert.Equal(t, http.StatusTooManyRequests, authTestLoginAttempt(t, handler, "198.51.100.2:1234", "").Code)
+	})
+}
+
+func TestTrustedLoginIPs(t *testing.T) {
+	hash, err := auth.HashPassword([]byte(authTestPassword))
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	data := fmt.Sprintf("auth:\n  username: admin\n  passwordHash: %q\n"+
+		"  trustedIPs: [198.51.100.10, 198.51.101.0/24, '2001:db8::10', '2001:db8:1::/48', 'fe80::10', 'fe80:0:0:1::/64']\n", hash)
+	require.NoError(t, os.WriteFile(path, []byte(data), 0o600))
+	cfg, err := config.LoadConfig(path, true)
+	require.NoError(t, err)
+
+	newHandler := func(t *testing.T) (*authService, http.Handler) {
+		t.Helper()
+		service := newAuthService(cfg)
+		handler := authTestHandler(service)
+		for i := range globalLoginBurst {
+			peer := fmt.Sprintf("203.0.113.%d:1234", i+1)
+			require.Equal(t, http.StatusUnauthorized, authTestLoginAttempt(t, handler, peer, "").Code)
+		}
+
+		return service, handler
+	}
+	for _, tc := range []struct {
+		name     string
+		peer     string
+		password string
+		status   int
+	}{
+		{name: "IPv4 address", peer: "198.51.100.10:1234", password: authTestPassword, status: http.StatusOK},
+		{name: "IPv4 CIDR", peer: "198.51.101.42:1234", password: authTestPassword, status: http.StatusOK},
+		{
+			name: "IPv4-mapped IPv6", peer: "[::ffff:198.51.100.10]:1234",
+			password: authTestPassword, status: http.StatusOK,
+		},
+		{name: "IPv6 address", peer: "[2001:db8::10]:1234", password: authTestPassword, status: http.StatusOK},
+		{name: "IPv6 CIDR", peer: "[2001:db8:1:2::42]:1234", password: authTestPassword, status: http.StatusOK},
+		{name: "scoped IPv6 address", peer: "[fe80::10%eth0]:1234", password: authTestPassword, status: http.StatusOK},
+		{name: "scoped IPv6 CIDR", peer: "[fe80:0:0:1::42%eth0]:1234", password: authTestPassword, status: http.StatusOK},
+		{
+			name: "untrusted scoped IPv6", peer: "[fe80::11%eth0]:1234",
+			password: authTestPassword, status: http.StatusTooManyRequests,
+		},
+		{
+			name: "untrusted valid password", peer: "203.0.113.200:1234",
+			password: authTestPassword, status: http.StatusTooManyRequests,
+		},
+		{name: "invalid peer", peer: "not-an-ip", password: authTestPassword, status: http.StatusTooManyRequests},
+		{name: "trusted wrong password", peer: "198.51.101.77:1234", password: "wrong", status: http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				_, handler := newHandler(t)
+				response := authTestLoginAttempt(t, handler, tc.peer, tc.password)
+				require.Equal(t, tc.status, response.Code, response.Body.String())
+				if tc.status == http.StatusOK {
+					assert.NotEmpty(t, response.Header().Get("Set-Cookie"))
+				} else {
+					assert.Empty(t, response.Header().Get("Set-Cookie"))
+				}
+			})
+		})
+	}
+	t.Run("forwarded headers cannot grant trust", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			_, handler := newHandler(t)
+			request := httptest.NewRequestWithContext(
+				t.Context(),
+				http.MethodPost,
+				"/api/login",
+				strings.NewReader(`{}`),
+			)
+			request.Header.Set("Content-Type", jsonContentType)
+			request.RemoteAddr = "203.0.113.201:1234"
+			request.Header.Set("X-Forwarded-For", "198.51.100.10")
+			request.Header.Set("X-Real-IP", "198.51.100.10")
+			request.Header.Set("Forwarded", "for=198.51.100.10")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			assert.Equal(t, http.StatusTooManyRequests, response.Code)
+			assert.Equal(t, "1", response.Header().Get("Retry-After"))
+		})
+	})
+	t.Run("trusted peers still have a per-IP limit", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			_, handler := newHandler(t)
+			for i := range loginBurst {
+				peer := fmt.Sprintf("198.51.101.99:%d", 4000+i)
+				require.Equal(t, http.StatusUnauthorized, authTestLoginAttempt(t, handler, peer, "").Code)
+			}
+			response := authTestLoginAttempt(t, handler, "198.51.101.99:4999", "")
+			assert.Equal(t, http.StatusTooManyRequests, response.Code)
+			assert.Equal(t, "1", response.Header().Get("Retry-After"))
+		})
+	})
+	t.Run("trusted peers still share the concurrency cap", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			service, handler := newHandler(t)
+			service.loginSlots <- struct{}{}
+			service.loginSlots <- struct{}{}
+			response := authTestLoginAttempt(t, handler, "198.51.101.100:1234", authTestPassword)
+			<-service.loginSlots
+			<-service.loginSlots
+			assert.Equal(t, http.StatusTooManyRequests, response.Code)
+			assert.Empty(t, response.Header().Get("Set-Cookie"))
+		})
+	})
+	t.Run("trusted IP changes are reloaded without revoking sessions", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			_, handler := newHandler(t)
+			peer := "203.0.113.202:1234"
+			require.Equal(t, http.StatusTooManyRequests, authTestLoginAttempt(t, handler, peer, authTestPassword).Code)
+			updated := strings.Replace(data, "198.51.100.10", "203.0.113.202", 1)
+			require.NoError(t, os.WriteFile(path, []byte(updated), 0o600))
+			response := authTestLoginAttempt(t, handler, peer, authTestPassword)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var login authTestLogin
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &login))
+			require.NoError(t, os.WriteFile(path, []byte(data), 0o600))
+			assert.Equal(t, http.StatusTooManyRequests, authTestLoginAttempt(t, handler, peer, authTestPassword).Code)
+			assert.Equal(t, http.StatusOK, authTestRequest(handler, http.MethodGet, "/api/status", login.Token).Code)
+		})
+	})
 }

@@ -20,12 +20,14 @@ import (
 
 const authFilePermissions = 0o600
 
-// Auth configures the single administrator; both fields empty disables authentication.
+// Auth configures the single administrator; both credential fields empty disables authentication.
 type Auth struct {
 	// Administrator username, set with denyzer auth --username.
 	Username string `yaml:"username"`
 	// Argon2id PHC password hash. Never store a plaintext password here.
 	PasswordHash string `yaml:"passwordHash"`
+	// Trusted management client IPs or CIDRs exempt from the global login-attempt limit, not password verification.
+	TrustedIPs []string `yaml:"trustedIPs,omitempty"`
 }
 
 // Debug controls optional management debugging endpoints.
@@ -40,6 +42,11 @@ func (a Auth) IsEnabled() bool {
 }
 
 func (a Auth) validate() error {
+	for _, entry := range a.TrustedIPs {
+		if _, err := parseCIDRorIP(entry); err != nil {
+			return fmt.Errorf("auth: trustedIPs entry %q: %w", entry, err)
+		}
+	}
 	if a.Username == "" && a.PasswordHash == "" {
 		return nil
 	}
@@ -48,6 +55,18 @@ func (a Auth) validate() error {
 	}
 
 	return auth.ValidateHash(a.PasswordHash)
+}
+
+// IsTrustedIP reports whether ip is in the configured management client allowlist.
+func (a Auth) IsTrustedIP(ip net.IP) bool {
+	for _, entry := range a.TrustedIPs {
+		trusted, err := parseCIDRorIP(entry)
+		if err == nil && trusted.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // ValidateAdminListeners refuses unauthenticated management access outside explicit loopback IPs.

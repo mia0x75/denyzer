@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path"
 	"strings"
@@ -27,17 +28,19 @@ const (
 	maxSessions      = 128
 	loginBodyLimit   = 8 * 1024
 	loginBurst       = 5
+	globalLoginBurst = 20
 	maxLoginClients  = 1024
 	pageCookieName   = "denyzer_page_session"
 )
 
 type authService struct {
-	mu          sync.Mutex
-	credentials config.Auth
-	load        func() (config.Auth, error)
-	sessions    map[[sha256.Size]byte]time.Time
-	loginLimit  loginLimiters
-	loginSlots  chan struct{}
+	mu               sync.Mutex
+	credentials      config.Auth
+	load             func() (config.Auth, error)
+	sessions         map[[sha256.Size]byte]time.Time
+	loginLimit       loginLimiters
+	globalLoginLimit *rate.Limiter
+	loginSlots       chan struct{}
 }
 
 // loginLimiters bounds login attempts per client, so one host cannot lock out the administrator.
@@ -82,10 +85,11 @@ func clientKey(r *http.Request) string {
 
 func newAuthService(cfg *config.Config) *authService {
 	return &authService{
-		credentials: cfg.Auth,
-		load:        cfg.ReadAuth,
-		sessions:    make(map[[sha256.Size]byte]time.Time),
-		loginLimit:  loginLimiters{buckets: make(map[string]*rate.Limiter)},
+		credentials:      cfg.Auth,
+		load:             cfg.ReadAuth,
+		sessions:         make(map[[sha256.Size]byte]time.Time),
+		loginLimit:       loginLimiters{buckets: make(map[string]*rate.Limiter)},
+		globalLoginLimit: rate.NewLimiter(rate.Every(time.Second), globalLoginBurst),
 		// A global cap bounds concurrent Argon2 hashes (64 MiB each); the per-client
 		// limiter above stops one host from holding every slot.
 		loginSlots: make(chan struct{}, 2),
@@ -105,10 +109,10 @@ func (a *authService) currentLocked() (config.Auth, error) {
 
 		return config.Auth{}, errors.New("authentication cannot be disabled without restarting the server")
 	}
-	if credentials != a.credentials {
+	if credentials.Username != a.credentials.Username || credentials.PasswordHash != a.credentials.PasswordHash {
 		clear(a.sessions)
-		a.credentials = credentials
 	}
+	a.credentials = credentials
 
 	return credentials, nil
 }
@@ -279,7 +283,8 @@ func (a *authService) loginStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *authService) login(w http.ResponseWriter, r *http.Request) {
-	if !a.loginLimit.allow(clientKey(r)) {
+	client := clientKey(r)
+	if !a.loginLimit.allow(client) {
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many login attempts", http.StatusTooManyRequests)
 
@@ -318,6 +323,14 @@ func (a *authService) login(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	peerIP, _ := netip.ParseAddr(client)
+	// AsSlice omits the IPv6 zone; keep it in client for per-IP limits.
+	if !credentials.IsTrustedIP(net.IP(peerIP.AsSlice())) && !a.globalLoginLimit.Allow() {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many login attempts", http.StatusTooManyRequests)
+
+		return
+	}
 	// Always verify the password, including for the wrong username.
 	passwordOK := auth.VerifyPassword(credentials.PasswordHash, []byte(request.Password))
 	if !credentials.IsEnabled() || !passwordOK || request.Username != credentials.Username {
@@ -332,7 +345,8 @@ func (a *authService) login(w http.ResponseWriter, r *http.Request) {
 func (a *authService) startSession(w http.ResponseWriter, credentials config.Auth) {
 	a.mu.Lock()
 	current, err := a.currentLocked()
-	if err != nil || current != credentials {
+	credentialsChanged := current.Username != credentials.Username || current.PasswordHash != credentials.PasswordHash
+	if err != nil || credentialsChanged {
 		a.mu.Unlock()
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 

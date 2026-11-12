@@ -1046,6 +1046,13 @@
         "passwordHash": {
           "type": "string",
           "description": "Argon2id PHC password hash. Never store a plaintext password here."
+        },
+        "trustedIPs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Trusted management client IPs or CIDRs exempt from the global login-attempt limit, not password verification."
         }
       },
       "additionalProperties": false,

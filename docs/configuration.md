@@ -151,6 +151,7 @@ credentials; an empty directory gets `auth.yml`.
 | --- | --- | --- | --- |
 | auth.username | string | empty | Single administrator username, 1–64 bytes, without surrounding whitespace or control characters |
 | auth.passwordHash | string | empty | Argon2id PHC hash written by `denyzer auth`; never a plaintext password |
+| auth.trustedIPs | list of IPs or CIDRs | empty | Administrator source addresses exempt from the global login-attempt limit, not authentication |
 | debug.pprof | boolean | false | Enable profiling on the HTTPS management listener; requires Bearer authentication when auth is enabled |
 
 Both auth fields must be set together. With both empty or omitted, management
@@ -160,6 +161,24 @@ are reread for every authenticated request: a reset revokes all existing tokens
 on their next request. A missing or invalid credential file fails closed.
 Removing authentication from a running server also fails closed; disabling it
 requires a restart with a loopback management bind.
+
+Login attempts have a per-IP limit (five initially, then one per second) and a
+shared limit (twenty initially, then one per second), checked before password
+verification. Add stable administrator IPs or narrow CIDRs to the existing
+`auth` block to keep those sources outside the shared budget:
+
+```yaml
+  trustedIPs: [192.168.1.10, 'fd00::10/128']
+```
+
+Trusted sources still need the correct username and password, keep the per-IP
+limit, and share the cap of two concurrent login operations. The list is reread
+on each login; changing it does not revoke sessions, but changing credentials
+does. Limits are per process.
+
+Only the socket peer IP is used; `X-Forwarded-For`, `X-Real-IP` and `Forwarded`
+headers are ignored. Do not trust a shared proxy IP or a network containing
+untrusted clients: all such clients would share the exemption.
 
 Tokens exist only in memory and expire exactly seven days after login, without
 renewal. Restarting the server invalidates every token. The dashboard keeps its
