@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -121,7 +122,7 @@ var _ = Describe("Serve command", func() {
 			Eventually(result).Should(Receive(BeNil()))
 			Eventually(stopped, "5s").Should(Receive(BeNil()))
 			finished = true
-			page, err := storage.GetQueryLogsPage("", 10, domain, "", "", "")
+			page, err := storage.GetQueryLogsPage(context.Background(), "", 10, domain, "", "", "")
 			Expect(err).Should(Succeed())
 			Expect(page.Entries).Should(HaveLen(1))
 			Expect(page.Entries[0].ResponseType).Should(Equal("RESOLVED"))

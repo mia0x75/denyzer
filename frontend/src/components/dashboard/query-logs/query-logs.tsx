@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { fetchQueryLogs } from "~/lib/api";
 import { History, RefreshCw } from "lucide-react";
 import {
@@ -39,7 +39,6 @@ import {
   type QueryLogFilter,
 } from "./query-log-filter-combobox";
 import { toast } from "sonner";
-import { usePrefetchAdjacentPages } from "~/hooks/use-prefetch-adjacent-pages";
 
 export function QueryLogs() {
   const [filter, setFilter] = useState<QueryLogFilter>(null);
@@ -103,7 +102,7 @@ export function QueryLogs() {
     error,
   } = useQuery({
     queryKey: ["query-logs", searchParams],
-    queryFn: () => fetchQueryLogs(searchParams),
+    queryFn: ({ signal }) => fetchQueryLogs(searchParams, signal),
     placeholderData: (previousData) => {
       if (previousData === undefined) {
         return undefined;
@@ -138,7 +137,6 @@ export function QueryLogs() {
   }, [error]);
 
   const showLogsLoading = isLoadingLogs || isPlaceholderLogs;
-  const queryClient = useQueryClient();
 
   const goNext = () => {
     const next = queryLogsData?.nextCursor;
@@ -164,27 +162,6 @@ export function QueryLogs() {
   };
 
   const haveNext = queryLogsData?.hasMore ?? false;
-
-  usePrefetchAdjacentPages({
-    enabled: !isFetchingLogs && queryLogsData !== undefined,
-    currentPage: pageIndex,
-    totalPages: haveNext ? pageIndex + 2 : pageIndex + 1,
-    prefetchPage: (targetPage) => {
-      const targetCursor =
-        targetPage === pageIndex + 1
-          ? queryLogsData?.nextCursor
-          : cursors[targetPage];
-      if (!targetCursor) {
-        return;
-      }
-
-      void queryClient.prefetchQuery({
-        queryKey: ["query-logs", { ...searchParams, cursor: targetCursor }],
-        queryFn: () =>
-          fetchQueryLogs({ ...searchParams, cursor: targetCursor }),
-      });
-    },
-  });
 
   return (
     <Card>

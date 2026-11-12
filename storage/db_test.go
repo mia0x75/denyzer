@@ -78,7 +78,7 @@ func TestCommitBatchFailureIsAtomic(t *testing.T) {
 		return CommitBatch(batch)
 	}
 	require.Error(t, write())
-	page, err := GetQueryLogsPage("", 10, "", "", "", "")
+	page, err := GetQueryLogsPage(t.Context(), "", 10, "", "", "", "")
 	require.NoError(t, err)
 	require.Empty(t, page.Entries)
 	stats, err := GetGlobalStats(GranularityAllTime, 0)
@@ -87,7 +87,7 @@ func TestCommitBatchFailureIsAtomic(t *testing.T) {
 
 	setCommitHook(func() int { return 0 })
 	require.NoError(t, write())
-	page, err = GetQueryLogsPage("", 10, "", "", "", "")
+	page, err = GetQueryLogsPage(t.Context(), "", 10, "", "", "", "")
 	require.NoError(t, err)
 	require.Len(t, page.Entries, 1)
 	stats, err = GetGlobalStats(GranularityAllTime, 0)
@@ -212,7 +212,7 @@ func setupStorageFixture(t *testing.T) storageFixture {
 func testQueryLogsReadBack(t *testing.T, fixture storageFixture) {
 	t.Helper()
 
-	page, err := GetQueryLogsPage("", 10, "", "", "", "")
+	page, err := GetQueryLogsPage(t.Context(), "", 10, "", "", "", "")
 	if err != nil {
 		t.Fatalf("GetQueryLogsPage: %v", err)
 	}
@@ -245,7 +245,7 @@ func testQueryLogsCursorPagination(t *testing.T, fixture storageFixture) {
 	cursor := ""
 
 	for range 10 {
-		page, err := GetQueryLogsPage(cursor, 2, "", "", "", "")
+		page, err := GetQueryLogsPage(t.Context(), cursor, 2, "", "", "", "")
 		if err != nil {
 			t.Fatalf("GetQueryLogsPage: %v", err)
 		}
@@ -275,7 +275,7 @@ func testQueryLogsCursorPagination(t *testing.T, fixture storageFixture) {
 func testQueryLogsClientFilter(t *testing.T, _ storageFixture) {
 	t.Helper()
 
-	byName, err := GetQueryLogsPage("", 10, "", "", "laptop", "")
+	byName, err := GetQueryLogsPage(t.Context(), "", 10, "", "", "laptop", "")
 	if err != nil {
 		t.Fatalf("GetQueryLogsPage: %v", err)
 	}
@@ -284,7 +284,7 @@ func testQueryLogsClientFilter(t *testing.T, _ storageFixture) {
 		t.Fatalf("client name filter returned %d entries, want 2", len(byName.Entries))
 	}
 
-	byIP, err := GetQueryLogsPage("", 10, "", "", "10.0.0.2", "")
+	byIP, err := GetQueryLogsPage(t.Context(), "", 10, "", "", "10.0.0.2", "")
 	if err != nil {
 		t.Fatalf("GetQueryLogsPage: %v", err)
 	}

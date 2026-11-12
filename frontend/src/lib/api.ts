@@ -24,8 +24,8 @@ interface GoTopEntry {
   percentage: number;
 }
 
-async function fetchJSON<T>(url: string): Promise<T> {
-  const res = await apiFetch(url);
+async function fetchJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const res = await apiFetch(url, { signal });
   return res.json() as Promise<T>;
 }
 
@@ -189,6 +189,7 @@ export async function executeQuery(
 
 export async function fetchQueryLogs(
   options: QueryLogsOptions,
+  signal?: AbortSignal,
 ): Promise<QueryLogsResult> {
   const params = new URLSearchParams({
     limit: String(options.limit),
@@ -213,7 +214,7 @@ export async function fetchQueryLogs(
     }>;
     nextCursor?: string;
     hasMore: boolean;
-  }>(`/api/logs/query?${params}`);
+  }>(`/api/logs/query?${params}`, signal);
 
   return {
     items: data.items.map((item) => ({

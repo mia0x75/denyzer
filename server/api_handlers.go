@@ -450,8 +450,12 @@ func handleQueryLogs(w http.ResponseWriter, r *http.Request) {
 		limit = maxQueryLogLimit
 	}
 
-	page, err := storage.GetQueryLogsPage(cursor, limit, search, responseType, client, questionType)
+	page, err := storage.GetQueryLogsPage(r.Context(), cursor, limit, search, responseType, client, questionType)
 	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+
 		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("can't read query_logs: %v", err))
 
 		return

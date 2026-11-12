@@ -132,7 +132,7 @@ var _ = Describe("AsyncLogWriter", func() {
 			Expect(stats.Errors).Should(Equal(uint64(1)))
 			Expect(stats.TotalLatencyMs).Should(Equal(uint64(10)))
 			Expect(stats.AverageResponseMs()).Should(Equal(uint64(10)))
-			page, err := storage.GetQueryLogsPage("", 10, "bogus-latency.test", "BOGUS", "", "")
+			page, err := storage.GetQueryLogsPage(context.Background(), "", 10, "bogus-latency.test", "BOGUS", "", "")
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(page.Entries).Should(HaveLen(1))
 			Expect(page.Entries[0].DurationMs).Should(Equal(uint16(100)))
@@ -176,7 +176,7 @@ var _ = Describe("AsyncLogWriter", func() {
 				return int64(stats.Total) - int64(before.Total)
 			}, "5s", "50ms").Should(Equal(int64(5)))
 
-			page, err := storage.GetQueryLogsPage("", 100, "", "", "flush-client", "")
+			page, err := storage.GetQueryLogsPage(context.Background(), "", 100, "", "", "flush-client", "")
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(page.Entries).Should(HaveLen(5))
 
@@ -229,7 +229,7 @@ var _ = Describe("AsyncLogWriter", func() {
 				Expect(err).ShouldNot(HaveOccurred())
 			}
 
-			page, err := storage.GetQueryLogsPage("", 10, entries[0].Domain, "", "", "")
+			page, err := storage.GetQueryLogsPage(context.Background(), "", 10, entries[0].Domain, "", "", "")
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(page.Entries).Should(BeEmpty())
 			unchanged, err := allTimeStats()
@@ -244,7 +244,7 @@ var _ = Describe("AsyncLogWriter", func() {
 			Expect(after.Dropped - before.Dropped).Should(Equal(uint64(3)))
 			Expect(after.Errors - before.Errors).Should(Equal(uint64(2)))
 			Expect(after.Forwarded - before.Forwarded).Should(Equal(uint64(1)))
-			page, err = storage.GetQueryLogsPage("", 10, entries[0].Domain, "", "", "")
+			page, err = storage.GetQueryLogsPage(context.Background(), "", 10, entries[0].Domain, "", "", "")
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(page.Entries).Should(HaveLen(1))
 		},
@@ -295,7 +295,7 @@ var _ = Describe("AsyncLogWriter", func() {
 				return stats.Total - before.Total
 			}, "5s", "10ms").Should(Equal(uint64(9)))
 			Expect(w.Close()).Should(Succeed())
-			page, err := storage.GetQueryLogsPage("", 10, "bounded-retry.test", "", "", "")
+			page, err := storage.GetQueryLogsPage(context.Background(), "", 10, "bounded-retry.test", "", "", "")
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(page.Entries).Should(HaveLen(4))
 			after, err := allTimeStats()

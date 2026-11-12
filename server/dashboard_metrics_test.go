@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -36,6 +37,16 @@ func TestDashboardMetricsHandlers(t *testing.T) {
 
 	fixture := seedDashboardMetrics(t)
 	invalidateDashboardCache()
+	t.Run("query logs honor request cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/logs/query", nil)
+		rec := httptest.NewRecorder()
+		handleQueryLogs(rec, req)
+		if rec.Body.Len() != 0 {
+			t.Fatalf("canceled query wrote a response: %s", rec.Body.String())
+		}
+	})
 
 	t.Run("summary is backed by the all-time metric", func(t *testing.T) {
 		testDashboardSummary(t, fixture)
@@ -624,7 +635,7 @@ func testDashboardCleanup(t *testing.T, fixture dashboardFixture) {
 		t.Fatalf("all-time total after cleanup = %d, want 80", stats.Total)
 	}
 
-	page, err := storage.GetQueryLogsPage("", 100, "", "", "", "")
+	page, err := storage.GetQueryLogsPage(t.Context(), "", 100, "", "", "", "")
 	if err != nil {
 		t.Fatalf("storage.GetQueryLogsPage: %v", err)
 	}

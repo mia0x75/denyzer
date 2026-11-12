@@ -134,6 +134,27 @@ test("purging history refreshes query logs with Auto switched off", async () => 
     await waitFor(() => !container.textContent?.includes("deleted.example"));
     assert.equal(client.getQueryState(inactiveKey)?.isInvalidated, true);
     assert.equal(auto.getAttribute("aria-checked"), "false");
+
+    let pendingSignal: AbortSignal | null | undefined;
+    globalThis.fetch = (_input, options) => {
+      pendingSignal = options?.signal;
+      return new Promise((_resolve, reject) => {
+        pendingSignal?.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      });
+    };
+    const pending = client.refetchQueries({
+      queryKey: ["query-logs"],
+      type: "active",
+    });
+    assert.ok(pendingSignal);
+    assert.equal(pendingSignal.aborted, false);
+    await act(async () => {
+      root.render(<QueryClientProvider client={client} />);
+    });
+    assert.equal(pendingSignal.aborted, true);
+    await pending;
   } finally {
     await act(async () => {
       toast.dismiss();

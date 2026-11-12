@@ -105,8 +105,8 @@ type queryLogFilter struct {
 	questionType string
 }
 
-// queryLogsPageQuery builds the keyset page statement. Filters are applied to
-// the newest rows first, so a page never needs an offset scan.
+// queryLogsPageQuery builds the keyset page statement without an offset scan.
+// Sparse filters can still scan all rows below the cursor.
 func queryLogsPageQuery(cursor string, limit int, filter queryLogFilter) (string, []any, error) {
 	var (
 		builder strings.Builder
@@ -163,6 +163,7 @@ WHERE 1 = 1`)
 // The client filter matches either the resolved name or the raw IP, so
 // suggestions and plain IP searches both work.
 func GetQueryLogsPage(
+	ctx context.Context,
 	cursor string, limit int,
 	search, responseType, client, questionType string,
 ) (*QueryLogPage, error) {
@@ -185,7 +186,7 @@ func GetQueryLogsPage(
 		return nil, err
 	}
 
-	rows, err := conn.QueryContext(context.Background(), query, args...)
+	rows, err := conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("can't read %s: %w", TableQueryLogs, err)
 	}
