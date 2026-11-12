@@ -197,7 +197,13 @@ func (c *dashboardSnapshotCache) finishBuild(key string, done chan struct{}) {
 }
 
 func buildTopSnapshot(dimension, window string) (*topWindowSnapshot, error) {
-	entityGranularity, entityStart, entityEnd := topEntityBounds(window)
+	return buildTopSnapshotAt(time.Now(), dimension, window)
+}
+
+// buildTopSnapshotAt builds one snapshot from a single timestamp so the ranked
+// entities and the denominator always cover the same window.
+func buildTopSnapshotAt(now time.Time, dimension, window string) (*topWindowSnapshot, error) {
+	entityGranularity, entityStart, entityEnd := topEntityBounds(now, window)
 
 	entities, err := storage.GetTopEntities(dimension, entityGranularity, entityStart, entityEnd)
 	if err != nil {
@@ -206,7 +212,7 @@ func buildTopSnapshot(dimension, window string) (*topWindowSnapshot, error) {
 
 	// The percentages always use the complete window as the denominator, even
 	// when the entities themselves come from the trailing rollup.
-	totalGranularity, totalStart, totalEnd := topWindowBounds(window)
+	totalGranularity, totalStart, totalEnd := topWindowBounds(now, window)
 
 	global, err := storage.SumGlobalStats(totalGranularity, totalStart, totalEnd)
 	if err != nil {
@@ -298,9 +304,7 @@ func applyTopPercentages(items []topEntitySnapshot, total uint64) {
 // inclusive bucket range that hold the window totals. Sub-day windows use
 // minute/hour buckets; long windows use daily buckets. The returned
 // percentages are always based on the full window, not on the ranked subset.
-func topWindowBounds(window string) (granularity string, start, end int64) {
-	now := time.Now()
-
+func topWindowBounds(now time.Time, window string) (granularity string, start, end int64) {
 	switch window {
 	case windowOneHour:
 		endTime := now.Truncate(time.Minute)
@@ -325,18 +329,26 @@ func dailyWindowBounds(now time.Time, days int) (granularity string, start, end 
 
 // topEntityBounds returns where the ranked entities come from. The 7d and 30d
 // windows read the trailing window rollups (one row per entity) instead of
-// every day bucket. Until the rollups are ready, the day buckets are used.
-func topEntityBounds(window string) (granularity string, start, end int64) {
-	if storage.WindowRollupsReady() {
-		switch window {
-		case window7Days:
-			return storage.GranularityWindow7d, 0, 0
-		case window30Days:
-			return storage.GranularityWindow30d, 0, 0
-		}
+// every day bucket. The rollups are only read while their watermarks still
+// cover the window ending at now; after midnight the day buckets stay
+// authoritative until maintenance catches up.
+func topEntityBounds(now time.Time, window string) (granularity string, start, end int64) {
+	var rollupGranularity string
+
+	switch window {
+	case window7Days:
+		rollupGranularity = storage.GranularityWindow7d
+	case window30Days:
+		rollupGranularity = storage.GranularityWindow30d
+	default:
+		return topWindowBounds(now, window)
 	}
 
-	return topWindowBounds(window)
+	if !storage.WindowRollupsCurrent(now) {
+		return topWindowBounds(now, window)
+	}
+
+	return rollupGranularity, 0, 0
 }
 
 func normalizeWindow(window string, days, hours int) string {

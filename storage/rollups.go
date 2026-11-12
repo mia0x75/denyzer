@@ -78,6 +78,26 @@ func WindowRollupsReady() bool {
 	return windowRollupsReady.Load()
 }
 
+// WindowRollupsCurrent reports whether the stored rollup watermarks already
+// cover the windows ending at now. A rollup left over from a previous day is
+// stale: it still holds the day that just left the window, while the dashboard
+// denominators already use the new window.
+func WindowRollupsCurrent(now time.Time) bool {
+	conn, err := getDB()
+	if err != nil {
+		return false
+	}
+
+	for _, spec := range WindowSpecs() {
+		start, found, err := readWindowStart(conn, spec.Granularity)
+		if err != nil || !found || start != WindowStart(now, spec.Days) {
+			return false
+		}
+	}
+
+	return true
+}
+
 // rebuildRollupSQL folds the day buckets of the current window into one row per
 // domain and client. bucket_start is 0 for every rollup row.
 const rebuildRollupSQL = `
@@ -235,11 +255,16 @@ func windowStateID(granularity string) string {
 	return metricID(dimensionMeta, granularityWindowState, 0, granularity)
 }
 
+// rowQuerier is the read side shared by *sql.DB and *sql.Tx.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // readWindowStart reads the first day bucket the rollup currently covers.
-func readWindowStart(tx *sql.Tx, granularity string) (int64, bool, error) {
+func readWindowStart(q rowQuerier, granularity string) (int64, bool, error) {
 	var total int64
 
-	err := tx.QueryRowContext(context.Background(), `
+	err := q.QueryRowContext(context.Background(), `
 SELECT total FROM metrics
 WHERE granularity = ? AND dimension = ? AND bucket_start = 0 AND entity = ?`,
 		granularityWindowState, dimensionMeta, granularity).Scan(&total)

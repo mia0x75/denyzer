@@ -496,7 +496,7 @@ func handleSearchDomains(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	granularity, start, end := topEntityBounds(window)
+	granularity, start, end := topEntityBounds(time.Now(), window)
 
 	entities, err := storage.GetEntitySuggestions(
 		r.Context(),
@@ -537,7 +537,7 @@ func handleSearchClients(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	granularity, start, end := topEntityBounds(window)
+	granularity, start, end := topEntityBounds(time.Now(), window)
 
 	entities, err := storage.GetEntitySuggestions(
 		r.Context(),

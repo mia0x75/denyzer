@@ -73,6 +73,9 @@ func TestDashboardMetricsHandlers(t *testing.T) {
 	t.Run("top lists are served from the window rollups", func(t *testing.T) {
 		testDashboardWindowRollups(t, fixture)
 	})
+	t.Run("stale window rollups fall back to the day buckets", func(t *testing.T) {
+		testDashboardStaleWindowRollups(t, fixture)
+	})
 }
 
 // testDashboardSummary covers the "summary is backed by the all-time metric" scenario.
@@ -197,6 +200,45 @@ func testDashboardWindowRollups(t *testing.T, _ dashboardFixture) {
 
 	if len(found) != 0 {
 		t.Fatalf("search_domains read the day buckets: %+v", found)
+	}
+}
+
+// testDashboardStaleWindowRollups covers the window right after midnight:
+// maintenance has not advanced the rollup watermarks yet, so the dashboard must
+// read the day buckets instead of the rollup that still contains the expired day.
+func testDashboardStaleWindowRollups(t *testing.T, _ dashboardFixture) {
+	t.Helper()
+
+	now := time.Now()
+	tomorrow := now.AddDate(0, 0, 1)
+
+	if err := storage.MaintainWindowRollups(now); err != nil {
+		t.Fatalf("MaintainWindowRollups: %v", err)
+	}
+
+	// A query written after the last maintenance only exists in the day
+	// buckets, exactly like the first query after midnight.
+	seedDayDomain(t, storage.DayBucket(tomorrow), "day-only.test", 9)
+
+	for _, window := range []string{window7Days, window30Days} {
+		snapshot, err := buildTopSnapshotAt(tomorrow, storage.DimensionDomain, window)
+		if err != nil {
+			t.Fatalf("buildTopSnapshotAt(%s): %v", window, err)
+		}
+
+		found := false
+
+		for _, entry := range snapshot.All {
+			found = found || entry.Name == "day-only.test"
+		}
+
+		if !found {
+			t.Fatalf("%s read the stale window rollup instead of the day buckets", window)
+		}
+
+		if snapshot.Total != 77 {
+			t.Fatalf("%s total = %d, want 77", window, snapshot.Total)
+		}
 	}
 }
 

@@ -61,6 +61,26 @@ BEGIN SELECT RAISE(ABORT, 'second window failed'); END`)
 	assertWindows(3)
 }
 
+func TestWindowRollupsCurrentFollowsDayBoundary(t *testing.T) {
+	resetStorageState()
+	t.Cleanup(resetStorageState)
+	require.NoError(t, InitDB(filepath.Join(t.TempDir(), "current.db")))
+
+	now := time.Now()
+	require.False(t, WindowRollupsCurrent(now))
+
+	require.NoError(t, MaintainWindowRollups(now))
+	require.True(t, WindowRollupsCurrent(now))
+
+	// Midnight passed but maintenance has not run yet: the stored watermarks
+	// still cover the previous window.
+	next := now.AddDate(0, 0, 1)
+	require.False(t, WindowRollupsCurrent(next))
+
+	require.NoError(t, MaintainWindowRollups(next))
+	require.True(t, WindowRollupsCurrent(next))
+}
+
 func TestWindowMaintenanceWaitsForUpdate(t *testing.T) {
 	resetStorageState()
 	t.Cleanup(resetStorageState)
