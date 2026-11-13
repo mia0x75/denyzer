@@ -873,13 +873,13 @@ func (v *Validator) handleNoDSRecords(
 	hasNSEC3 := len(extractNSEC3Records(dsResponse.Ns)) > 0
 
 	if hasNSEC || hasNSEC3 {
-		if v.isAuthenticatedDSDenial(ctx, domain, dsResponse) {
+		if ttl, authenticated := v.authenticatedDSDenialTTL(ctx, domain, dsResponse); authenticated {
 			// Authenticated proof that no DS exists: genuine insecure delegation.
 			if logger := v.logger; logger.Enabled(ctx, slog.LevelDebug) {
 				logger.DebugContext(ctx, fmt.Sprintf("Zone %s is insecure (authenticated NSEC/NSEC3 DS denial)", domain))
 			}
 			result := ValidationResultInsecure
-			v.setCachedValidation(ctx, domain, result)
+			v.setCachedInsecureValidation(ctx, domain, ttl)
 
 			return result
 		}
@@ -905,7 +905,8 @@ func (v *Validator) handleNoDSRecords(
 			logger.DebugContext(ctx, fmt.Sprintf("Parent zone %s is insecure, so %s is also insecure", parentDomain, domain))
 		}
 		result := ValidationResultInsecure
-		v.setCachedValidation(ctx, domain, result)
+		_, ttl := v.validationCache.Get(validationCacheKey(ctx, parentDomain))
+		v.setCachedInsecureValidation(ctx, domain, ttl)
 
 		return result
 	}
@@ -933,12 +934,14 @@ func (v *Validator) handleNoDSRecords(
 // (a signed NSEC/NSEC3 chaining to a trust anchor) that the DS type is absent for
 // domain - i.e. a genuine insecure delegation. Mere presence of NSEC/NSEC3 is not
 // sufficient; the records must be cryptographically validated.
-func (v *Validator) isAuthenticatedDSDenial(ctx context.Context, domain string, dsResponse *dns.Msg) bool {
+func (v *Validator) authenticatedDSDenialTTL(
+	ctx context.Context, domain string, dsResponse *dns.Msg,
+) (time.Duration, bool) {
 	// First require the authority section (the NSEC/NSEC3 records and their RRSIGs) to
 	// cryptographically validate and chain to a trust anchor. An unsigned or forged denial
 	// proves nothing and must never downgrade a zone to insecure.
 	if v.validateRRsets(ctx, dsResponse.Ns, domain, dsResponse.Ns, domain) != ValidationResultSecure {
-		return false
+		return 0, false
 	}
 
 	// With an authenticated authority section, both an explicit NSEC/NSEC3 NODATA proof
@@ -950,5 +953,55 @@ func (v *Validator) isAuthenticatedDSDenial(ctx context.Context, domain string, 
 	hasNSEC := len(extractNSECRecords(dsResponse.Ns)) > 0
 	proof := v.validateDSAbsenceProof(ctx, domain, dsResponse, hasNSEC)
 
-	return proof == ValidationResultSecure || proof == ValidationResultInsecure
+	if proof != ValidationResultSecure && proof != ValidationResultInsecure {
+		return 0, false
+	}
+
+	ttl, ok := denialProofTTL(dsResponse.Ns)
+
+	return ttl, ok
+}
+
+func denialProofTTL(rrs []dns.RR) (time.Duration, bool) {
+	signatures := extractRRSIGs(rrs)
+	var ttl time.Duration
+	foundProof := false
+	for _, rr := range rrs {
+		if rr.Header().Rrtype != dns.TypeNSEC && rr.Header().Rrtype != dns.TypeNSEC3 {
+			continue
+		}
+
+		key := rrsetKey{name: dns.Fqdn(rr.Header().Name), rrType: rr.Header().Rrtype}
+		var sigTTL time.Duration
+		foundSignature := false
+		for _, sig := range signatures {
+			if sig.TypeCovered != key.rrType || dns.Fqdn(sig.Hdr.Name) != key.name {
+				continue
+			}
+			remaining := max(time.Until(time.Unix(int64(sig.Expiration), 0)), 0)
+			candidate := min(
+				time.Duration(sig.Hdr.Ttl)*time.Second,
+				time.Duration(sig.OrigTtl)*time.Second,
+				remaining,
+			)
+			if !foundSignature || candidate < sigTTL {
+				sigTTL = candidate
+			}
+			foundSignature = true
+		}
+		if !foundSignature {
+			return 0, false
+		}
+
+		rrTTL := time.Duration(rr.Header().Ttl) * time.Second
+		if !foundProof || rrTTL < ttl {
+			ttl = rrTTL
+		}
+		if sigTTL < ttl {
+			ttl = sigTTL
+		}
+		foundProof = true
+	}
+
+	return ttl, foundProof
 }

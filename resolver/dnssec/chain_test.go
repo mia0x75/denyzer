@@ -59,7 +59,7 @@ var _ = Describe("Chain of trust validation", func() {
 
 		It("should cache different results for different domains", func() {
 			sut.setCachedValidation(ctx, "secure.com.", ValidationResultSecure)
-			sut.setCachedValidation(ctx, "insecure.com.", ValidationResultInsecure)
+			sut.setCachedInsecureValidation(ctx, "insecure.com.", 5*time.Second)
 			sut.setCachedValidation(ctx, "bogus.com.", ValidationResultBogus)
 
 			result1, found1 := sut.getCachedValidation(ctx, "secure.com.")
@@ -90,12 +90,12 @@ var _ = Describe("Chain of trust validation", func() {
 
 		It("should keep a Bogus result for at most bogusTTL", func() {
 			sut.setCachedValidation(ctx, "bogus.com.", ValidationResultBogus)
-			sut.setCachedValidation(ctx, "insecure.com.", ValidationResultInsecure)
+			sut.setCachedInsecureValidation(ctx, "insecure.com.", 5*time.Second)
 
 			_, bogusLeft := sut.validationCache.Get(validationCacheKey(ctx, "bogus.com."))
 			_, insecureLeft := sut.validationCache.Get(validationCacheKey(ctx, "insecure.com."))
 			Expect(bogusLeft).Should(BeNumerically("~", bogusTTL, time.Second))
-			Expect(insecureLeft).Should(BeNumerically(">", 59*time.Minute))
+			Expect(insecureLeft).Should(BeNumerically("<=", sut.cacheExpiration))
 		})
 
 		It("should overwrite existing cache entries", func() {
@@ -107,6 +107,41 @@ var _ = Describe("Chain of trust validation", func() {
 			cached, found := sut.getCachedValidation(ctx, domain)
 			Expect(found).Should(BeTrue())
 			Expect(cached).Should(Equal(ValidationResultBogus))
+		})
+	})
+
+	Describe("setCachedInsecureValidation", func() {
+		It("does not cache beyond the denial lifetime", func() {
+			sut.setCachedInsecureValidation(ctx, "insecure.example.", 5*time.Second)
+			_, ttl := sut.validationCache.Get(validationCacheKey(ctx, "insecure.example."))
+			Expect(ttl).Should(BeNumerically("<=", 5*time.Second))
+			Expect(ttl).Should(BeNumerically(">", 0))
+		})
+
+		It("does not cache a denial after its proof expires", func() {
+			sut.setCachedInsecureValidation(ctx, "expired.example.", 0)
+			Expect(sut.cachedZoneStatus(ctx, "expired.example.")).Should(BeNil())
+		})
+	})
+
+	Describe("denialProofTTL", func() {
+		It("keeps a zero TTL across later positive proof records", func() {
+			first := &dns.NSEC{Hdr: dns.RR_Header{Name: "a.example.", Rrtype: dns.TypeNSEC, Ttl: 0}}
+			second := &dns.NSEC{Hdr: dns.RR_Header{Name: "b.example.", Rrtype: dns.TypeNSEC, Ttl: 30}}
+			sigA := &dns.RRSIG{Hdr: dns.RR_Header{Name: first.Hdr.Name, Ttl: 30}, TypeCovered: dns.TypeNSEC, OrigTtl: 30, Expiration: uint32(time.Now().Add(time.Minute).Unix())}
+			sigB := &dns.RRSIG{Hdr: dns.RR_Header{Name: second.Hdr.Name, Ttl: 30}, TypeCovered: dns.TypeNSEC, OrigTtl: 30, Expiration: uint32(time.Now().Add(time.Minute).Unix())}
+			ttl, ok := denialProofTTL([]dns.RR{first, sigA, second, sigB})
+			Expect(ok).Should(BeTrue())
+			Expect(ttl).Should(BeZero())
+		})
+
+		It("does not extend zero signature lifetime with a later valid signature", func() {
+			nsec := &dns.NSEC{Hdr: dns.RR_Header{Name: "a.example.", Rrtype: dns.TypeNSEC, Ttl: 30}}
+			sigExpired := &dns.RRSIG{Hdr: dns.RR_Header{Name: nsec.Hdr.Name, Ttl: 30}, TypeCovered: dns.TypeNSEC, OrigTtl: 30, Expiration: uint32(time.Now().Add(-time.Minute).Unix())}
+			sigValid := &dns.RRSIG{Hdr: dns.RR_Header{Name: nsec.Hdr.Name, Ttl: 30}, TypeCovered: dns.TypeNSEC, OrigTtl: 30, Expiration: uint32(time.Now().Add(time.Minute).Unix())}
+			ttl, ok := denialProofTTL([]dns.RR{nsec, sigExpired, sigValid})
+			Expect(ok).Should(BeTrue())
+			Expect(ttl).Should(BeZero())
 		})
 	})
 
@@ -673,6 +708,33 @@ var _ = Describe("Chain of trust validation", func() {
 			Expect(result).Should(Equal(ValidationResultSecure))
 			Expect(keys).Should(ConsistOf(chain.childKey))
 			Expect(queries).Should(Equal(3))
+		})
+
+		It("revalidates an insecure delegation after its authenticated proof TTL", func() {
+			chain := newSignedChain()
+			chain.child = "signed.example."
+			proofQueries := 0
+			mockUpstream.ResolveFn = func(ctx context.Context, req *model.Request) (*model.Response, error) {
+				q := req.Req.Question[0]
+				if q.Qtype == dns.TypeDS && q.Name == chain.child {
+					proofQueries++
+					proof := &dns.NSEC{Hdr: dns.RR_Header{Name: chain.child, Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 1}, NextDomain: "z.signed.example.", TypeBitMap: []uint16{dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC}}
+					sig := signRRset([]dns.RR{proof}, dns.TypeNSEC, chain.parentKey, chain.parentPriv, chain.parent)
+
+					return &model.Response{Res: &dns.Msg{Ns: []dns.RR{proof, sig}}}, nil
+				}
+
+				return chain.resolve(ctx, req)
+			}
+			v := NewValidator(ctx, chain.anchors, sut.logger, mockUpstream, 1, 10, 150, 30, 3600)
+
+			result, _ := v.walkChainOfTrust(ctx, chain.child)
+			Expect(result).Should(Equal(ValidationResultInsecure))
+			Expect(proofQueries).Should(Equal(1))
+			time.Sleep(1100 * time.Millisecond)
+			result, _ = v.walkChainOfTrust(ctx, chain.child)
+			Expect(result).Should(Equal(ValidationResultInsecure))
+			Expect(proofQueries).Should(Equal(2))
 		})
 
 		It("should validate a sibling zone with the cached parent keys", func() {

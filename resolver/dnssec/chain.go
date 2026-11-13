@@ -86,6 +86,13 @@ func (v *Validator) setCachedValidation(
 	v.validationCache.Put(validationCacheKey(ctx, domain), &zoneStatus{result: result, keys: keys}, ttl)
 }
 
+func (v *Validator) setCachedInsecureValidation(ctx context.Context, domain string, ttl time.Duration) {
+	ttl = min(ttl, v.cacheExpiration)
+	if ttl > 0 {
+		v.validationCache.Put(validationCacheKey(ctx, domain), &zoneStatus{result: ValidationResultInsecure}, ttl)
+	}
+}
+
 // walkChainOfTrust returns the security status of zone domain and, when it is Secure, the zone's
 // validated DNSKEY RRset. The walk starts at the closest trust anchor at or above domain and
 // validates each zone below it with the validated keys of the zone above. Every zone is cached
@@ -180,7 +187,9 @@ func (v *Validator) walkDown(
 			v.setCachedValidation(ctx, name, result, keys...)
 		default:
 			if result, keys, zoneCut = v.validateDomainLevel(ctx, name, keys); zoneCut {
-				v.setCachedValidation(ctx, name, result, keys...)
+				if result != ValidationResultInsecure {
+					v.setCachedValidation(ctx, name, result, keys...)
+				}
 			}
 		}
 
@@ -842,6 +851,10 @@ func (v *Validator) handleDSAbsence(
 				"Validated NSEC/NSEC3 proof that DS doesn't exist for %s - insecure delegation",
 				domain,
 			))
+		}
+
+		if ttl, ok := denialProofTTL(dsResponse.Ns); ok {
+			v.setCachedInsecureValidation(ctx, domain, ttl)
 		}
 
 		return nil, ValidationResultInsecure
