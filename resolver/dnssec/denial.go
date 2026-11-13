@@ -48,5 +48,5 @@ func (v *Validator) validateDenialOfExistence(
 	// No NSEC or NSEC3 records found - cannot validate denial of existence
 	v.logger.WarnContext(ctx, "No NSEC/NSEC3 records found for denial of existence: "+question.Name)
 
-	return ValidationResultInsecure
+	return v.classifyUnsignedResponse(ctx, question)
 }

@@ -113,31 +113,14 @@ func extractNSEC3Records(rrs []dns.RR) []*dns.NSEC3 {
 	return util.ExtractRecordsFromSlice[*dns.NSEC3](rrs)
 }
 
-// computeNSEC3Hash computes the NSEC3 hash per RFC 5155 §5 with caching
-// Caching is important because NSEC3 hash computation is expensive (iterative SHA-1)
+// Random query names must not accumulate in validator-lifetime storage.
 func (v *Validator) computeNSEC3Hash(name string, hashAlg uint8, salt string, iterations uint16) (string, error) {
 	if hashAlg != dns.SHA1 {
 		return "", fmt.Errorf("unsupported NSEC3 hash algorithm: %d", hashAlg)
 	}
 
-	// Convert name to canonical form for consistent cache keys
 	name = dns.Fqdn(strings.ToLower(name))
-
-	// Create cache key: name:algorithm:salt:iterations
-	cacheKey := fmt.Sprintf("%s:%d:%s:%d", name, hashAlg, salt, iterations)
-
-	// Check cache first
-	if cached, ok := v.nsec3HashCache.Load(cacheKey); ok {
-		if hash, ok := cached.(string); ok {
-			return hash, nil
-		}
-	}
-
-	// Compute hash using the miekg/dns library's built-in NSEC3 hash function
 	hash := dns.HashName(name, hashAlg, iterations, salt)
-
-	// Store in cache
-	v.nsec3HashCache.Store(cacheKey, hash)
 
 	return hash, nil
 }

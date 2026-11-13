@@ -47,7 +47,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/mia0x75/denyzer/cache"
@@ -102,7 +101,6 @@ type Validator struct {
 	logger                *slog.Logger
 	upstream              Resolver // Used to query for DNSKEY and DS records
 	validationCache       cache.ExpiringCache[zoneStatus]
-	nsec3HashCache        sync.Map // Cache for NSEC3 hash computations: key = "name:alg:salt:iterations"
 	cacheExpiration       time.Duration
 	maxChainDepth         uint // Maximum depth for chain of trust validation
 	maxNSEC3Iterations    uint // Maximum NSEC3 iterations (RFC 5155 §10.3)
@@ -264,6 +262,18 @@ func (v *Validator) validateAnswer(
 	ctx context.Context, response *dns.Msg, question dns.Question,
 ) ValidationResult {
 	result := v.validateRRsets(ctx, response.Answer, question.Name, response.Ns, question.Name)
+	if result == ValidationResultBogus {
+		return result
+	}
+	terminal, complete, valid := answerTerminal(response.Answer, question)
+	if !valid || (complete && response.Rcode == dns.RcodeNameError) {
+		return ValidationResultBogus
+	}
+	if response.Rcode == dns.RcodeNameError ||
+		(response.Rcode == dns.RcodeSuccess && !complete && hasDenialRecords(response.Ns)) {
+		question.Name = terminal
+		result = mergeValidationResults(result, v.validateNegativeResponse(ctx, response, question))
+	}
 	if result != ValidationResultSecure {
 		v.logger.WarnContext(ctx, fmt.Sprintf("Answer validation failed for %s: %s", question.Name, result.String()))
 	} else {
@@ -299,7 +309,7 @@ func (v *Validator) validateNegativeResponse(
 			logger.DebugContext(ctx, "No signatures in authority section for denial of existence: "+question.Name)
 		}
 
-		return ValidationResultInsecure
+		return v.classifyUnsignedResponse(ctx, question)
 	}
 
 	result := v.validateDenialOfExistence(ctx, response, question)
@@ -396,54 +406,16 @@ func (v *Validator) validateRRsets(
 	// Per RFC 4035: Each RRset must have the same owner name, class, and type
 	rrsets := groupRRsetsByNameAndType(rrs)
 
-	// Track mixed security statuses (can occur in CNAME chains crossing zone boundaries)
-	hasSecure := false
-	hasInsecure := false
-	hasIndeterminate := false
-
-	// Validate each RRset
+	result := ValidationResultSecure
 	for key, rrset := range rrsets {
-		// Use the actual RRset owner name instead of the generic domain parameter
-		result := v.validateSingleRRset(ctx, key.rrType, rrset, sigs, key.name, nsRecords, qname)
-
-		switch result {
-		case ValidationResultBogus:
-			// A genuine cryptographic failure fails the whole answer immediately, and must
-			// take precedence over any Indeterminate sibling: rrsets is a map (unordered), so
-			// deferring here would let a transient Indeterminate RRset mask a real Bogus one.
-			return ValidationResultBogus
-		case ValidationResultIndeterminate:
-			// "Could not validate" (transient/unreachable). Remember it but keep scanning in
-			// case another RRset is genuinely Bogus, which must win.
-			hasIndeterminate = true
-		case ValidationResultSecure:
-			hasSecure = true
-		case ValidationResultInsecure:
-			hasInsecure = true
+		result = mergeValidationResults(result,
+			v.validateSingleRRset(ctx, key.rrType, rrset, sigs, key.name, nsRecords, qname))
+		if result == ValidationResultBogus {
+			return result
 		}
 	}
 
-	// No RRset was Bogus. If any RRset could not be validated, the answer as a whole could not
-	// be validated - Indeterminate takes precedence over a Secure/Insecure verdict so we never
-	// assert AD (or a clean Insecure) over a partially-unvalidated answer.
-	if hasIndeterminate {
-		return ValidationResultIndeterminate
-	}
-
-	// Per RFC 4035 §5.2: A mix of Secure and Insecure RRsets is acceptable
-	// This happens with CNAME chains crossing from unsigned to signed zones (or vice versa)
-	if hasSecure {
-		// At least one RRset is validated with DNSSEC signatures
-		return ValidationResultSecure
-	}
-
-	if hasInsecure {
-		// All RRsets are from unsigned (insecure) zones - no DNSSEC validation possible
-		return ValidationResultInsecure
-	}
-
-	// Shouldn't reach here, but return Secure as fallback
-	return ValidationResultSecure
+	return result
 }
 
 // validateSingleRRset validates a single RRset with its signatures
