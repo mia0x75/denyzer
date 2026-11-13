@@ -12,15 +12,14 @@ import (
 )
 
 const (
-	defaultStatsDays   = 7
-	defaultTrendHours  = 24
-	defaultTopLimit    = 10
-	maxQueryLogLimit   = 100
-	percentageScale    = 100
-	blockedFilterTrue  = "true"
-	blockedFilterFalse = "false"
-	minHistoryMonths   = 1
-	maxHistoryMonths   = 12
+	defaultStatsDays  = 7
+	defaultTrendHours = 24
+	defaultTopLimit   = 10
+	maxQueryLogLimit  = 100
+	percentageScale   = 100
+	blockedFilterTrue = "true"
+	minHistoryMonths  = 1
+	maxHistoryMonths  = 12
 )
 
 // --- JSON response types ---
@@ -716,7 +715,3 @@ func handleStatsListed(w http.ResponseWriter, provider listCountsProvider) {
 		AllowlistDomains: allowlistDomains,
 	})
 }
-
-// Keep these constants referenced by future filters/documentation without
-// changing the public query contract.
-var _ = []string{blockedFilterFalse}

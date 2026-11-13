@@ -1,10 +1,6 @@
 package querylog
 
-import (
-	"time"
-
-	"github.com/mia0x75/denyzer/model"
-)
+import "time"
 
 type LogEntry struct {
 	Start           time.Time
@@ -18,11 +14,6 @@ type LogEntry struct {
 	QuestionName    string
 	Answer          string
 	DenyzerInstance string
-	QueryWire       []byte
-	ResponseWire    []byte
-	QueryTime       time.Time
-	ResponseTime    time.Time
-	SocketProtocol  model.RequestProtocol
 }
 
 type Writer interface {
