@@ -268,7 +268,6 @@ func (r *QueryLoggingResolver) createLogEntry(request *model.Request, response *
 	entry := querylog.LogEntry{
 		Start:           start,
 		ClientIP:        defaultClientIP,
-		ClientNames:     []string{"none"},
 		DenyzerInstance: r.instanceID,
 	}
 

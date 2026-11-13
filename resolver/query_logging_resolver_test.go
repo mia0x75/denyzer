@@ -290,6 +290,53 @@ var _ = Describe("QueryLoggingResolver", func() {
 		})
 	})
 
+	Describe("client identity with omitted names", func() {
+		DescribeTable("preserves explicitly enabled client names",
+			func(name string) {
+				sut.cfg.Fields = []config.QueryLogField{config.QueryLogFieldClientName}
+				entry := sut.createLogEntry(newRequestWithClient("example.com.", A, "192.0.2.1", name),
+					&Response{}, time.Now(), 0)
+				Expect(entry.ClientNames).Should(Equal([]string{name}))
+			},
+			Entry("ordinary name", "client-name"),
+			Entry("literal none name", "none"),
+		)
+
+		It("persists separate client metrics using IP fallback", func() {
+			Expect(storage.CloseDB()).Should(Succeed())
+			path := filepath.Join(GinkgoT().TempDir(), "clients.db")
+			DeferCleanup(func() { Expect(storage.CloseDB()).Should(Succeed()) })
+			cfg, err := config.WithDefaults[config.QueryLog]()
+			Expect(err).Should(Succeed())
+			cfg.Target = config.Secret(path)
+			cfg.Fields = []config.QueryLogField{config.QueryLogFieldClientIP, config.QueryLogFieldResponseReason}
+			logging, err := NewQueryLoggingResolver(ctx, cfg)
+			Expect(err).Should(Succeed())
+			DeferCleanup(func() { Expect(logging.Close()).Should(Succeed()) })
+			logging.Next(m)
+			startDay := storage.DayBucket(time.Now())
+			for _, ip := range []string{"192.0.2.1", "192.0.2.2"} {
+				_, err := logging.Resolve(ctx, newRequestWithClient("example.com.", A, ip, "hidden-name"))
+				Expect(err).Should(Succeed())
+			}
+			Expect(logging.Close()).Should(Succeed())
+			page, err := storage.GetQueryLogsPage(ctx, "", 10, "", "", "", "")
+			Expect(err).Should(Succeed())
+			Expect(page.Entries).Should(HaveLen(2))
+			for _, entry := range page.Entries {
+				Expect(entry.ClientName).Should(BeEmpty())
+			}
+			day := storage.DayBucket(time.Now())
+			entities, err := storage.GetTopEntities(storage.DimensionClient, storage.GranularityDay, startDay, day)
+			Expect(err).Should(Succeed())
+			Expect(entities).Should(HaveLen(2))
+			Expect([]string{entities[0].Entity, entities[1].Entity}).Should(ConsistOf("192.0.2.1", "192.0.2.2"))
+			for _, entity := range entities {
+				Expect(entity.Total).Should(Equal(uint64(1)))
+			}
+		})
+	})
+
 	Describe("Hostname function tests", func() {
 		It("should use the given file if it exists", func() {
 			expected := "TestName"
