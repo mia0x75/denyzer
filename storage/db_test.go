@@ -2,7 +2,10 @@ package storage
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +23,94 @@ type storageFixture struct {
 	hourBucket   int64
 	dayBucket    int64
 	entryCount   int
+}
+
+func TestInitDBSpecialPaths(t *testing.T) {
+	for _, name := range []string{"audit?name.db", "audit#name.db", "audit name.db", "审计.db", "audit%3Fname.db"} {
+		t.Run(name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && name == "audit?name.db" {
+				t.Skip("Windows filenames cannot contain question marks")
+			}
+			resetStorageState()
+			t.Cleanup(resetStorageState)
+			dir := t.TempDir()
+			path := filepath.Join(dir, name)
+			require.NoError(t, InitDB(path))
+			require.NoError(t, BatchInsertQueryLogs([]*QueryLogEntry{{Domain: "path.test"}}))
+			require.NoError(t, CloseDB())
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			require.Len(t, entries, 1)
+			require.Equal(t, name, entries[0].Name())
+			require.NoError(t, InitDB(path))
+			page, err := GetQueryLogsPage(t.Context(), "", 10, "", "", "", "")
+			require.NoError(t, err)
+			require.Len(t, page.Entries, 1)
+		})
+	}
+}
+
+func TestInitDBPrivateFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not supported on Windows")
+	}
+	for _, existing := range []bool{false, true} {
+		name := "new"
+		if existing {
+			name = "existing"
+		}
+		t.Run(name, func(t *testing.T) {
+			resetStorageState()
+			t.Cleanup(resetStorageState)
+			dir := t.TempDir()
+			require.NoError(t, os.Chmod(dir, 0o755))
+			path := filepath.Join(dir, dbFileName)
+			if existing {
+				for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+					require.NoError(t, os.WriteFile(path+suffix, nil, dbPerm))
+					require.NoError(t, os.Chmod(path+suffix, 0o644))
+				}
+			}
+			require.NoError(t, InitDB(dir))
+			require.NoError(t, BatchInsertQueryLogs([]*QueryLogEntry{{Domain: "private.test"}}))
+			for _, suffix := range []string{"", "-wal", "-shm"} {
+				info, err := os.Stat(path + suffix)
+				require.NoError(t, err)
+				require.Equal(t, os.FileMode(dbPerm), info.Mode().Perm())
+			}
+			info, err := os.Stat(dir)
+			require.NoError(t, err)
+			require.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+		})
+	}
+}
+
+func TestInitDBConcurrent(t *testing.T) {
+	resetStorageState()
+	t.Cleanup(resetStorageState)
+	path := filepath.Join(t.TempDir(), "concurrent.db")
+	var workers sync.WaitGroup
+	errors := make(chan error, 8)
+	for range cap(errors) {
+		workers.Go(func() { errors <- InitDB(path) })
+	}
+	workers.Wait()
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	require.NoError(t, BatchInsertQueryLogs([]*QueryLogEntry{{Domain: "concurrent.test"}}))
+}
+
+func TestInitDBRejectsDirectorySidecar(t *testing.T) {
+	resetStorageState()
+	t.Cleanup(resetStorageState)
+	path := filepath.Join(t.TempDir(), "invalid.db")
+	require.NoError(t, os.Mkdir(path+"-wal", dirPerm))
+	require.Error(t, InitDB(path))
+	info, err := os.Stat(path + "-wal")
+	require.NoError(t, err)
+	require.True(t, info.IsDir())
 }
 
 // TestStorage exercises the two-table store end to end: atomic query-log and

@@ -49,6 +49,19 @@ type closingResolver struct {
 
 func (r *closingResolver) Close() error { return r.closeFn() }
 
+type contextClosingResolver struct {
+	resolver.MockChainedResolver
+
+	closeFn        func() error
+	closeContextFn func(context.Context) error
+}
+
+func (r *contextClosingResolver) Close() error { return r.closeFn() }
+
+func (r *contextClosingResolver) CloseContext(ctx context.Context) error {
+	return r.closeContextFn(ctx)
+}
+
 var (
 	mockClientName                                               atomic.Value
 	sut                                                          *Server
@@ -1400,6 +1413,27 @@ var _ = Describe("Running DNS server", func() {
 			reboundPacket, listenErr := net.ListenPacket("udp", packetConn.LocalAddr().String())
 			Expect(listenErr).Should(Succeed())
 			DeferCleanup(func() { _ = reboundPacket.Close() })
+		})
+
+		It("passes the shutdown deadline to context-aware resolvers before using Close", func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			res := &contextClosingResolver{
+				closeFn: func() error {
+					Fail("Stop must prefer CloseContext")
+
+					return nil
+				},
+				closeContextFn: func(received context.Context) error {
+					Expect(received).Should(BeIdenticalTo(stopCtx))
+					<-received.Done()
+
+					return received.Err()
+				},
+			}
+			res.On("GetNext").Return(nil)
+			srv := &Server{queryResolver: res}
+			Expect(errors.Is(srv.Stop(stopCtx), context.DeadlineExceeded)).Should(BeTrue())
 		})
 
 		It("drains HTTP requests before closing the resolver", func() {

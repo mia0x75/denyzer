@@ -253,6 +253,11 @@ func BucketStart(t time.Time, granularity string) int64 {
 // Inputs that address the same metric bucket are merged first, because a batch
 // may only contain one delta per primary key.
 func UpsertMetrics(batch Batch, inputs []MetricInput) error {
+	return UpsertMetricsContext(context.Background(), batch, inputs)
+}
+
+// UpsertMetricsContext lets shutdown interrupt metric writes in the active batch.
+func UpsertMetricsContext(ctx context.Context, batch Batch, inputs []MetricInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}
@@ -266,7 +271,7 @@ func UpsertMetrics(batch Batch, inputs []MetricInput) error {
 		return err
 	}
 
-	stmt, err := batch.tx.PrepareContext(context.Background(), upsertMetricSQL)
+	stmt, err := batch.tx.PrepareContext(ctx, upsertMetricSQL)
 	if err != nil {
 		return fmt.Errorf("can't prepare %s upsert: %w", TableMetrics, err)
 	}
@@ -279,7 +284,7 @@ func UpsertMetrics(batch Batch, inputs []MetricInput) error {
 		input := merged[id]
 
 		_, err := stmt.ExecContext(
-			context.Background(),
+			ctx,
 			input.Granularity, input.Dimension, input.BucketStart, input.Entity, input.EntityLabel,
 			input.Delta.Total, input.Delta.Blocked, input.Delta.Cached, input.Delta.Forwarded,
 			input.Delta.Filtered, input.Delta.Local, input.Delta.Other, input.Delta.Dropped,
@@ -328,7 +333,11 @@ func mergeMetricInputs(inputs []MetricInput) (map[string]*MetricInput, []string,
 
 // putMetricRow writes one row with absolute values inside tx.
 func putMetricRow(tx *sql.Tx, row *MetricRow) error {
-	_, err := tx.ExecContext(context.Background(), putMetricSQL,
+	return putMetricRowContext(context.Background(), tx, row)
+}
+
+func putMetricRowContext(ctx context.Context, tx *sql.Tx, row *MetricRow) error {
+	_, err := tx.ExecContext(ctx, putMetricSQL,
 		row.Granularity, row.Dimension, row.BucketStart, row.Entity, row.EntityLabel,
 		row.Total, row.Blocked, row.Cached, row.Forwarded, row.Filtered, row.Local,
 		row.Other, row.Dropped, row.Errors, row.TotalLatency, row.UpdatedAt,

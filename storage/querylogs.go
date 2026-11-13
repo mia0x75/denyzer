@@ -64,12 +64,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 // committed (the caller commits); otherwise the insert is committed
 // immediately.
 func BatchInsertQueryLogs(entries []*QueryLogEntry, batchs ...Batch) error {
+	return BatchInsertQueryLogsContext(context.Background(), entries, batchs...)
+}
+
+// BatchInsertQueryLogsContext lets shutdown interrupt query log persistence.
+func BatchInsertQueryLogsContext(ctx context.Context, entries []*QueryLogEntry, batchs ...Batch) error {
 	if len(entries) == 0 {
 		return nil
 	}
 
 	insert := func(tx *sql.Tx) error {
-		stmt, err := tx.PrepareContext(context.Background(), insertQueryLogSQL)
+		stmt, err := tx.PrepareContext(ctx, insertQueryLogSQL)
 		if err != nil {
 			return fmt.Errorf("can't prepare %s insert: %w", TableQueryLogs, err)
 		}
@@ -78,7 +83,7 @@ func BatchInsertQueryLogs(entries []*QueryLogEntry, batchs ...Batch) error {
 
 		for _, entry := range entries {
 			_, err := stmt.ExecContext(
-				context.Background(),
+				ctx,
 				entry.Timestamp, entry.ClientIP, entry.ClientName, entry.Domain,
 				entry.QueryType, entry.ResponseType, entry.Reason, entry.DurationMs,
 			)
@@ -94,7 +99,7 @@ func BatchInsertQueryLogs(entries []*QueryLogEntry, batchs ...Batch) error {
 		return insert(batchs[0].tx)
 	}
 
-	return withTx(insert)
+	return withTxContext(ctx, insert)
 }
 
 // queryLogFilter holds the optional filters for GetQueryLogsPage.
@@ -264,25 +269,45 @@ func likePattern(value string) string {
 // number of months (1-12, default 1). Global daily metrics and all_time counters
 // are always preserved, so long-term totals survive cleanup.
 func CleanUp(months int) (CleanupResult, error) {
+	return CleanUpContext(context.Background(), months)
+}
+
+// CleanUpContext lets shutdown interrupt retention maintenance.
+func CleanUpContext(ctx context.Context, months int) (CleanupResult, error) {
 	var result CleanupResult
 
-	cutoff := time.Now().AddDate(0, -clampRetentionMonths(months), 0)
+	cutoff := retentionCutoff(time.Now(), months)
 
-	deleted, err := deleteExpiredQueryLogs(cutoff)
+	err := withTxContext(ctx, func(tx *sql.Tx) error {
+		deleted, err := deleteExpiredQueryLogs(ctx, tx, cutoff)
+		if err != nil {
+			return err
+		}
+		result.QueryLogsDeleted = deleted
+		deleted, err = deleteExpiredMetrics(ctx, tx, cutoff)
+		if err != nil {
+			return err
+		}
+		result.MetricsDeleted = deleted
+
+		return nil
+	})
 	if err != nil {
-		return result, err
+		return CleanupResult{}, err
 	}
-
-	result.QueryLogsDeleted = deleted
-
-	deleted, err = deleteExpiredMetrics(cutoff)
-	if err != nil {
-		return result, err
-	}
-
-	result.MetricsDeleted = deleted
 
 	return result, nil
+}
+
+func retentionCutoff(now time.Time, months int) time.Time {
+	year, month, day := now.Date()
+	// Anchor on day one so AddDate cannot normalize past the target month.
+	target := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC).
+		AddDate(0, -clampRetentionMonths(months), 0)
+	lastDay := target.AddDate(0, 1, -1).Day()
+
+	return time.Date(target.Year(), target.Month(), min(day, lastDay),
+		now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), now.Location())
 }
 
 // clampRetentionMonths limits the retention window to the supported range.
@@ -299,13 +324,8 @@ func clampRetentionMonths(months int) int {
 }
 
 // deleteExpiredQueryLogs deletes the query log rows older than the cutoff.
-func deleteExpiredQueryLogs(cutoff time.Time) (int, error) {
-	conn, err := getDB()
-	if err != nil {
-		return 0, err
-	}
-
-	result, err := conn.ExecContext(context.Background(), "DELETE FROM query_logs WHERE timestamp < ?", cutoff.UnixMilli())
+func deleteExpiredQueryLogs(ctx context.Context, conn *sql.Tx, cutoff time.Time) (int, error) {
+	result, err := conn.ExecContext(ctx, "DELETE FROM query_logs WHERE timestamp < ?", cutoff.UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("can't delete expired query_logs: %w", err)
 	}
@@ -320,12 +340,7 @@ func deleteExpiredQueryLogs(cutoff time.Time) (int, error) {
 
 // deleteExpiredMetrics deletes the short-lived metric buckets older than the
 // cutoff. The global daily metrics and the all_time counters are kept.
-func deleteExpiredMetrics(cutoff time.Time) (int, error) {
-	conn, err := getDB()
-	if err != nil {
-		return 0, err
-	}
-
+func deleteExpiredMetrics(ctx context.Context, conn *sql.Tx, cutoff time.Time) (int, error) {
 	cutoffSec := cutoff.Unix()
 	cutoffDay := DayBucket(cutoff)
 
@@ -345,7 +360,7 @@ func deleteExpiredMetrics(cutoff time.Time) (int, error) {
 	// primary-key range scan (granularity, dimension, bucket_start).
 	for _, granularity := range []string{GranularityMinute, GranularityHour} {
 		for _, dimension := range cleanupDimensions {
-			deleted, err := deleteMetricBuckets(conn, granularity, dimension, cutoffSec)
+			deleted, err := deleteMetricBuckets(ctx, conn, granularity, dimension, cutoffSec)
 			if err != nil {
 				return total, err
 			}
@@ -360,7 +375,7 @@ func deleteExpiredMetrics(cutoff time.Time) (int, error) {
 			continue
 		}
 
-		deleted, err := deleteMetricBuckets(conn, GranularityDay, dimension, cutoffDay)
+		deleted, err := deleteMetricBuckets(ctx, conn, GranularityDay, dimension, cutoffDay)
 		if err != nil {
 			return total, err
 		}
@@ -383,8 +398,8 @@ var cleanupDimensions = []string{
 }
 
 // deleteMetricBuckets removes every bucket of one dimension older than cutoff.
-func deleteMetricBuckets(conn *sql.DB, granularity, dimension string, cutoff int64) (int, error) {
-	result, err := conn.ExecContext(context.Background(), `
+func deleteMetricBuckets(ctx context.Context, conn *sql.Tx, granularity, dimension string, cutoff int64) (int, error) {
+	result, err := conn.ExecContext(ctx, `
 DELETE FROM metrics
 WHERE granularity = ? AND dimension = ? AND bucket_start < ?`,
 		granularity, dimension, cutoff)

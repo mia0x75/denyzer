@@ -270,11 +270,12 @@ var _ = Describe("AsyncLogWriter", func() {
 		BeforeEach(func() {
 			Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
 			child, cancel := context.WithCancel(ctx)
+			flushCtx, cancelFlush := context.WithCancel(context.Background())
 			w = &AsyncLogWriter{
 				ch: make(chan *storage.QueryLogEntry, 2), done: make(chan struct{}),
-				batchSize: 2, flushInterval: 50 * time.Millisecond, cancel: cancel,
+				batchSize: 2, flushInterval: 50 * time.Millisecond, cancel: cancel, cancelFlush: cancelFlush,
 			}
-			go w.consume(child)
+			go w.consume(child, flushCtx)
 			DeferCleanup(func() { _ = w.Close() })
 			DeferCleanup(func() { Expect(storage.InitDB(sharedDBPath)).Should(Succeed()) })
 		})
@@ -337,6 +338,55 @@ var _ = Describe("AsyncLogWriter", func() {
 	})
 
 	Describe("Window rollups", func() {
+		It("cancels a running flush waiting for the rollup lock before CloseContext returns", func() {
+			w, err := NewAsyncLogWriter(ctx, sharedDBPath, config.QueryLogRetention{}, time.Hour, 1)
+			Expect(err).ShouldNot(HaveOccurred())
+			DeferCleanup(func() { _ = w.Close() })
+			Expect(storage.WithWindowRollupUpdate(func() error {
+				w.Write(&LogEntry{Start: time.Now(), QuestionName: "deadline-rollup.test."})
+				Eventually(func() int { return len(w.ch) }).Should(BeZero())
+				stopCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				defer cancel()
+				started := time.Now()
+				Expect(w.CloseContext(stopCtx)).Should(MatchError(ContainSubstring(context.DeadlineExceeded.Error())))
+				Expect(time.Since(started)).Should(BeNumerically("<", 500*time.Millisecond))
+				Expect(w.done).Should(BeClosed())
+
+				return nil
+			})).Should(Succeed())
+			page, err := storage.GetQueryLogsPage(ctx, "", 10, "deadline-rollup.test", "", "", "")
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(page.Entries).Should(BeEmpty())
+		})
+
+		It("cancels native SQLite busy waits and joins workers before CloseContext returns", func() {
+			w, err := NewAsyncLogWriter(ctx, sharedDBPath, config.QueryLogRetention{}, time.Hour, 1)
+			Expect(err).ShouldNot(HaveOccurred())
+			DeferCleanup(func() { _ = w.Close() })
+			conn, err := sql.Open("sqlite3", sharedDBPath)
+			Expect(err).ShouldNot(HaveOccurred())
+			DeferCleanup(func() { _ = conn.Close() })
+			lock, err := conn.Conn(ctx)
+			Expect(err).ShouldNot(HaveOccurred())
+			DeferCleanup(func() { _ = lock.Close() })
+			_, err = lock.ExecContext(ctx, "BEGIN IMMEDIATE")
+			Expect(err).ShouldNot(HaveOccurred())
+			DeferCleanup(func() { _, _ = lock.ExecContext(ctx, "ROLLBACK") })
+			w.Write(&LogEntry{Start: time.Now(), QuestionName: "deadline-sqlite.test."})
+			Eventually(func() int { return len(w.ch) }).Should(BeZero())
+			stopCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			Expect(w.CloseContext(stopCtx)).Should(MatchError(ContainSubstring(context.DeadlineExceeded.Error())))
+			Expect(time.Since(started)).Should(BeNumerically("<", 500*time.Millisecond))
+			Expect(w.done).Should(BeClosed())
+			_, err = lock.ExecContext(ctx, "ROLLBACK")
+			Expect(err).ShouldNot(HaveOccurred())
+			page, err := storage.GetQueryLogsPage(ctx, "", 10, "deadline-sqlite.test", "", "", "")
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(page.Entries).Should(BeEmpty())
+		})
+
 		It("returns an error before starting workers when initialization fails", func() {
 			Expect(storage.InitDB(sharedDBPath)).Should(Succeed())
 			conn, err := sql.Open("sqlite3", sharedDBPath)

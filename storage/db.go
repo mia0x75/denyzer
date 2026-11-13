@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,7 @@ const (
 
 	// dirPerm is the mode of the directories the store creates.
 	dirPerm = 0o750
+	dbPerm  = 0o600
 )
 
 //nolint:gochecknoglobals // process-wide database handle, initialised once
@@ -123,6 +125,12 @@ func InitDB(dbPath string) error {
 	path, err := resolveDBPath(dbPath)
 	if err != nil {
 		return err
+	}
+
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if err := secureDBFile(path+suffix, suffix == ""); err != nil {
+			return err
+		}
 	}
 
 	sqliteDriverOnce.Do(func() {
@@ -211,11 +219,40 @@ func resolveDBPath(dbPath string) (string, error) {
 	return dbPath, nil
 }
 
+func secureDBFile(path string, create bool) error {
+	flags := os.O_RDWR
+	if create {
+		flags |= os.O_CREATE
+	}
+
+	file, err := os.OpenFile(path, flags, dbPerm)
+	if !create && errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("can't open SQLite file %s: %w", path, err)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("can't stat SQLite file %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("SQLite file %s is not a regular file", path)
+	}
+	if err := file.Chmod(dbPerm); err != nil {
+		return fmt.Errorf("can't secure SQLite file %s: %w", path, err)
+	}
+
+	return nil
+}
+
 // dsn builds the driver connection string. The pragmas are applied to every
 // pooled connection, which is what makes them effective.
 func dsn(path string) string {
 	params := []string{
-		"_busy_timeout=5000",
+		"_busy_timeout=25",
 		"_journal_mode=WAL",
 		"_synchronous=NORMAL",
 		"_txlock=immediate",
@@ -229,7 +266,13 @@ func dsn(path string) string {
 		abs = path
 	}
 
-	return abs + "?" + strings.Join(params, "&")
+	uriPath := filepath.ToSlash(abs)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	uri := url.URL{Scheme: "file", Path: uriPath, RawQuery: strings.Join(params, "&")}
+
+	return uri.String()
 }
 
 // ensureSchema creates the tables and validates the schema version.
@@ -271,17 +314,33 @@ type Batch struct {
 
 // NewBatch starts a write transaction.
 func NewBatch() (Batch, error) {
+	return NewBatchContext(context.Background())
+}
+
+// NewBatchContext retries short native busy waits so cancellation is observed promptly.
+func NewBatchContext(ctx context.Context) (Batch, error) {
 	conn, err := getDB()
 	if err != nil {
 		return Batch{}, err
 	}
 
-	tx, err := conn.BeginTx(context.Background(), nil)
-	if err != nil {
-		return Batch{}, fmt.Errorf("can't begin SQLite transaction: %w", err)
+	retryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err == nil {
+			return Batch{tx: tx}, nil
+		}
+		var sqliteErr sqlite3.Error
+		if !errors.As(err, &sqliteErr) || sqliteErr.Code != sqlite3.ErrBusy {
+			return Batch{}, fmt.Errorf("can't begin SQLite transaction: %w", err)
+		}
+		select {
+		case <-retryCtx.Done():
+			return Batch{}, fmt.Errorf("can't begin SQLite transaction: %w", retryCtx.Err())
+		case <-time.After(time.Millisecond):
+		}
 	}
-
-	return Batch{tx: tx}, nil
 }
 
 // CommitBatch atomically applies every operation staged in batch.
@@ -309,14 +368,17 @@ func RollbackBatch(batch Batch) {
 // withTx runs fn inside a write transaction, committing on success and rolling
 // back on failure.
 func withTx(fn func(*sql.Tx) error) error {
-	batch, err := NewBatch()
+	return withTxContext(context.Background(), fn)
+}
+
+func withTxContext(ctx context.Context, fn func(*sql.Tx) error) error {
+	batch, err := NewBatchContext(ctx)
 	if err != nil {
 		return err
 	}
 
+	defer RollbackBatch(batch)
 	if err := fn(batch.tx); err != nil {
-		RollbackBatch(batch)
-
 		return err
 	}
 

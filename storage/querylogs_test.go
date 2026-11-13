@@ -100,3 +100,41 @@ VALUES (?, 0, '', '', 'large-id.test', 'A', 'RESOLVED', '', 0)`, id)
 		cursor = page.NextCursor
 	}
 }
+
+func TestRetentionCutoff(t *testing.T) {
+	newYork, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	asuncion, err := time.LoadLocation("America/Asuncion")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name   string
+		now    time.Time
+		months int
+		want   time.Time
+	}{
+		{"midnight DST gap on first day", time.Date(2023, time.October, 15, 12, 34, 56, 789, asuncion), 1,
+			time.Date(2023, time.September, 15, 12, 34, 56, 789, asuncion)},
+		{"non-leap month end", time.Date(2025, time.March, 31, 12, 34, 56, 789, time.UTC), 1,
+			time.Date(2025, time.February, 28, 12, 34, 56, 789, time.UTC)},
+		{"leap month end", time.Date(2024, time.March, 31, 12, 34, 56, 789, time.UTC), 1,
+			time.Date(2024, time.February, 29, 12, 34, 56, 789, time.UTC)},
+		{"short month", time.Date(2025, time.May, 31, 12, 0, 0, 0, time.UTC), 1,
+			time.Date(2025, time.April, 30, 12, 0, 0, 0, time.UTC)},
+		{"year boundary", time.Date(2025, time.January, 31, 12, 0, 0, 0, time.UTC), 2,
+			time.Date(2024, time.November, 30, 12, 0, 0, 0, time.UTC)},
+		{"minimum retention", time.Date(2025, time.March, 31, 12, 0, 0, 0, time.UTC), 0,
+			time.Date(2025, time.February, 28, 12, 0, 0, 0, time.UTC)},
+		{"maximum retention", time.Date(2024, time.February, 29, 12, 0, 0, 0, time.UTC), 13,
+			time.Date(2023, time.February, 28, 12, 0, 0, 0, time.UTC)},
+		{"spring DST", time.Date(2025, time.March, 31, 12, 34, 56, 789, newYork), 1,
+			time.Date(2025, time.February, 28, 12, 34, 56, 789, newYork)},
+		{"autumn DST", time.Date(2025, time.November, 30, 12, 34, 56, 789, newYork), 1,
+			time.Date(2025, time.October, 30, 12, 34, 56, 789, newYork)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := retentionCutoff(tc.now, tc.months)
+			require.Equal(t, tc.want, got)
+			require.Same(t, tc.now.Location(), got.Location())
+		})
+	}
+}

@@ -5,9 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 // Trailing window rollup definitions.
@@ -57,16 +58,23 @@ func InWindow(ts, now time.Time, days int) bool {
 }
 
 //nolint:gochecknoglobals // process-wide readiness flag for the rollup tables
-var windowRollupsReady struct {
+var windowRollupsReady = struct {
 	atomic.Bool
 
-	mu sync.Mutex
-}
+	mu *semaphore.Weighted
+}{mu: semaphore.NewWeighted(1)}
 
 // WithWindowRollupUpdate keeps aggregation and its commit exclusive with maintenance.
 func WithWindowRollupUpdate(update func() error) error {
-	windowRollupsReady.mu.Lock()
-	defer windowRollupsReady.mu.Unlock()
+	return WithWindowRollupUpdateContext(context.Background(), update)
+}
+
+// WithWindowRollupUpdateContext bounds waiting for maintenance by the caller's deadline.
+func WithWindowRollupUpdateContext(ctx context.Context, update func() error) error {
+	if err := windowRollupsReady.mu.Acquire(ctx, 1); err != nil {
+		return err
+	}
+	defer windowRollupsReady.mu.Release(1)
 
 	return update()
 }
@@ -159,19 +167,24 @@ WHERE granularity = ?
 //
 // It is idempotent and cheap when no day boundary has been crossed.
 func MaintainWindowRollups(now time.Time) error {
-	return WithWindowRollupUpdate(func() error {
+	return MaintainWindowRollupsContext(context.Background(), now)
+}
+
+// MaintainWindowRollupsContext propagates cancellation through every maintenance statement.
+func MaintainWindowRollupsContext(ctx context.Context, now time.Time) error {
+	return WithWindowRollupUpdateContext(ctx, func() error {
 		rebuild := !WindowRollupsReady()
 		windowRollupsReady.Store(false)
-		err := withTx(func(tx *sql.Tx) error {
-			plan, err := planWindowRollups(tx, now, rebuild)
+		err := withTxContext(ctx, func(tx *sql.Tx) error {
+			plan, err := planWindowRollups(ctx, tx, now, rebuild)
 			if err != nil {
 				return err
 			}
-			if err := plan.apply(tx, now); err != nil {
+			if err := plan.apply(ctx, tx, now); err != nil {
 				return err
 			}
 			for _, spec := range plan.specs {
-				if err := deleteZeroRollupRows(tx, spec.Granularity); err != nil {
+				if err := deleteZeroRollupRows(ctx, tx, spec.Granularity); err != nil {
 					return err
 				}
 			}
@@ -195,7 +208,7 @@ type rollupPlan struct {
 
 // planWindowRollups reads the stored watermarks and computes the desired state
 // of every window.
-func planWindowRollups(tx *sql.Tx, now time.Time, rebuild bool) (*rollupPlan, error) {
+func planWindowRollups(ctx context.Context, tx *sql.Tx, now time.Time, rebuild bool) (*rollupPlan, error) {
 	specs := WindowSpecs()
 
 	plan := &rollupPlan{
@@ -208,7 +221,7 @@ func planWindowRollups(tx *sql.Tx, now time.Time, rebuild bool) (*rollupPlan, er
 	for i, spec := range specs {
 		start := WindowStart(now, spec.Days)
 
-		stored, found, err := readWindowStart(tx, spec.Granularity)
+		stored, found, err := readWindowStartContext(ctx, tx, spec.Granularity)
 		if err != nil {
 			return nil, err
 		}
@@ -224,10 +237,10 @@ func planWindowRollups(tx *sql.Tx, now time.Time, rebuild bool) (*rollupPlan, er
 }
 
 // apply rebuilds or trims each window and persists the new watermarks.
-func (p *rollupPlan) apply(tx *sql.Tx, now time.Time) error {
+func (p *rollupPlan) apply(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	for i, spec := range p.specs {
 		if p.rebuild[i] {
-			if err := rebuildWindowRollup(tx, spec, p.starts[i], DayBucket(now)); err != nil {
+			if err := rebuildWindowRollup(ctx, tx, spec, p.starts[i], DayBucket(now)); err != nil {
 				return err
 			}
 
@@ -235,7 +248,7 @@ func (p *rollupPlan) apply(tx *sql.Tx, now time.Time) error {
 		}
 
 		if p.storeds[i] < p.starts[i] {
-			if err := subtractRangeFromRollup(tx, spec, p.storeds[i], p.starts[i]); err != nil {
+			if err := subtractRangeFromRollup(ctx, tx, spec, p.storeds[i], p.starts[i]); err != nil {
 				return err
 			}
 		}
@@ -256,9 +269,13 @@ type rowQuerier interface {
 
 // readWindowStart reads the first day bucket the rollup currently covers.
 func readWindowStart(q rowQuerier, granularity string) (int64, bool, error) {
+	return readWindowStartContext(context.Background(), q, granularity)
+}
+
+func readWindowStartContext(ctx context.Context, q rowQuerier, granularity string) (int64, bool, error) {
 	var total int64
 
-	err := q.QueryRowContext(context.Background(), `
+	err := q.QueryRowContext(ctx, `
 SELECT total FROM metrics
 WHERE granularity = ? AND dimension = ? AND bucket_start = 0 AND entity = ?`,
 		granularityWindowState, dimensionMeta, granularity).Scan(&total)
@@ -276,13 +293,13 @@ WHERE granularity = ? AND dimension = ? AND bucket_start = 0 AND entity = ?`,
 // writeWindowStart persists the rollup watermark.
 func writeWindowStart(granularity string, start int64) error {
 	return withTx(func(tx *sql.Tx) error {
-		return writeWindowStartTx(tx, granularity, start)
+		return writeWindowStartTx(context.Background(), tx, granularity, start)
 	})
 }
 
 // writeWindowStartTx persists the rollup watermark inside tx.
-func writeWindowStartTx(tx *sql.Tx, granularity string, start int64) error {
-	return putMetricRow(tx, &MetricRow{
+func writeWindowStartTx(ctx context.Context, tx *sql.Tx, granularity string, start int64) error {
+	return putMetricRowContext(ctx, tx, &MetricRow{
 		ID:          windowStateID(granularity),
 		Dimension:   dimensionMeta,
 		Granularity: granularityWindowState,
@@ -295,25 +312,25 @@ func writeWindowStartTx(tx *sql.Tx, granularity string, start int64) error {
 // rebuildWindowRollup recomputes the rollup of one window from the day buckets
 // and replaces the stored rows. It is used on the first run and after the
 // watermark was lost.
-func rebuildWindowRollup(tx *sql.Tx, spec WindowSpec, start, end int64) error {
-	_, err := tx.ExecContext(context.Background(),
+func rebuildWindowRollup(ctx context.Context, tx *sql.Tx, spec WindowSpec, start, end int64) error {
+	_, err := tx.ExecContext(ctx,
 		`DELETE FROM metrics WHERE granularity = ?`, spec.Granularity)
 	if err != nil {
 		return fmt.Errorf("can't clear %s metrics: %w", spec.Granularity, err)
 	}
 
-	_, err = tx.ExecContext(context.Background(), rebuildRollupSQL,
+	_, err = tx.ExecContext(ctx, rebuildRollupSQL,
 		spec.Granularity, updatedAt(), start, end)
 	if err != nil {
 		return fmt.Errorf("can't rebuild %s metrics: %w", spec.Granularity, err)
 	}
 
-	return writeWindowStartTx(tx, spec.Granularity, start)
+	return writeWindowStartTx(ctx, tx, spec.Granularity, start)
 }
 
-func subtractRangeFromRollup(tx *sql.Tx, spec WindowSpec, start, end int64) error {
+func subtractRangeFromRollup(ctx context.Context, tx *sql.Tx, spec WindowSpec, start, end int64) error {
 	for _, dimension := range []string{DimensionDomain, DimensionClient} {
-		_, err := tx.ExecContext(context.Background(), subtractRollupSQL,
+		_, err := tx.ExecContext(ctx, subtractRollupSQL,
 			updatedAt(), dimension, start, end, spec.Granularity, dimension)
 		if err != nil {
 			return fmt.Errorf("can't expire %s range [%d, %d) from %s: %w",
@@ -321,12 +338,12 @@ func subtractRangeFromRollup(tx *sql.Tx, spec WindowSpec, start, end int64) erro
 		}
 	}
 
-	return writeWindowStartTx(tx, spec.Granularity, end)
+	return writeWindowStartTx(ctx, tx, spec.Granularity, end)
 }
 
 // deleteZeroRollupRows drops the rollup rows that no longer carry a counter.
-func deleteZeroRollupRows(tx *sql.Tx, granularity string) error {
-	if _, err := tx.ExecContext(context.Background(), deleteZeroRollupSQL, granularity); err != nil {
+func deleteZeroRollupRows(ctx context.Context, tx *sql.Tx, granularity string) error {
+	if _, err := tx.ExecContext(ctx, deleteZeroRollupSQL, granularity); err != nil {
 		return fmt.Errorf("can't prune %s metrics: %w", granularity, err)
 	}
 

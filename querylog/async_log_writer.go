@@ -2,6 +2,7 @@ package querylog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ type AsyncLogWriter struct {
 	mu            sync.RWMutex // protects admission while shutdown drains the queue
 	closed        bool
 	cancel        context.CancelFunc
+	cancelFlush   context.CancelFunc
 	workers       sync.WaitGroup
 	closeErr      error // published when done closes
 	dropped       atomic.Uint64
@@ -58,10 +60,11 @@ func NewAsyncLogWriter(ctx context.Context, dbPath string, retention config.Quer
 	if batchSize <= 0 {
 		batchSize = defaultBatchSize
 	}
-	if err := storage.MaintainWindowRollups(time.Now()); err != nil {
+	if err := storage.MaintainWindowRollupsContext(ctx, time.Now()); err != nil {
 		return nil, fmt.Errorf("initialize window rollups: %w", err)
 	}
 
+	flushCtx, cancelFlush := context.WithCancel(context.WithoutCancel(ctx))
 	ctx, cancel := context.WithCancel(ctx)
 	w := &AsyncLogWriter{
 		ch:            make(chan *storage.QueryLogEntry, defaultChanCap),
@@ -70,11 +73,12 @@ func NewAsyncLogWriter(ctx context.Context, dbPath string, retention config.Quer
 		retention:     retention,
 		done:          make(chan struct{}),
 		cancel:        cancel,
+		cancelFlush:   cancelFlush,
 	}
 
 	w.workers.Go(func() { w.ttlCleanup(ctx) })
 	w.workers.Go(func() { w.maintainWindows(ctx) })
-	go w.consume(ctx)
+	go w.consume(ctx, flushCtx)
 
 	return w, nil
 }
@@ -127,10 +131,20 @@ func (w *AsyncLogWriter) CleanUp() {}
 // Close stops admission and waits for the final flush and all workers.
 // Every caller receives the same final flush error, if any.
 func (w *AsyncLogWriter) Close() error {
+	return w.CloseContext(context.Background())
+}
+
+// CloseContext cancels storage work at the shutdown deadline and waits for it to exit.
+func (w *AsyncLogWriter) CloseContext(ctx context.Context) error {
+	stop := context.AfterFunc(ctx, w.cancelFlush)
+	defer stop()
+	if ctx.Err() != nil {
+		w.cancelFlush()
+	}
 	w.stop()
 	<-w.done
 
-	return w.closeErr
+	return errors.Join(w.closeErr, ctx.Err())
 }
 
 func (w *AsyncLogWriter) stop() {
@@ -143,8 +157,9 @@ func (w *AsyncLogWriter) stop() {
 // consume implements the dual-trigger flush loop: entries are buffered in a
 // slice and flushed when either batchSize is reached or the flushInterval
 // timer fires. On context cancellation it drains the channel.
-func (w *AsyncLogWriter) consume(ctx context.Context) {
+func (w *AsyncLogWriter) consume(ctx, flushCtx context.Context) {
 	defer close(w.done)
+	defer w.cancelFlush()
 	defer w.workers.Wait()
 
 	ticker := time.NewTicker(w.flushInterval)
@@ -153,7 +168,7 @@ func (w *AsyncLogWriter) consume(ctx context.Context) {
 	buf := make([]*storage.QueryLogEntry, 0, w.batchSize)
 	agg := newAggregationMaps()
 	flush := func() {
-		if err := w.flush(buf, agg); err != nil {
+		if err := w.flushContext(flushCtx, buf, agg); err != nil {
 			log.PrefixedLog(loggerPrefixAsyncLogWriter).ErrorContext(ctx, "query log flush failed; batch retained",
 				"error", err, "entries", len(buf))
 
@@ -183,7 +198,7 @@ func (w *AsyncLogWriter) consume(ctx context.Context) {
 
 		case <-ctx.Done():
 			w.stop()
-			w.closeErr = w.drain(buf, agg)
+			w.closeErr = w.drain(flushCtx, buf, agg)
 
 			return
 		}
@@ -191,13 +206,13 @@ func (w *AsyncLogWriter) consume(ctx context.Context) {
 }
 
 // drain flushes the bounded queue once; a persistent storage failure must not cause an endless shutdown retry.
-func (w *AsyncLogWriter) drain(buf []*storage.QueryLogEntry, agg *aggregationMaps) error {
+func (w *AsyncLogWriter) drain(ctx context.Context, buf []*storage.QueryLogEntry, agg *aggregationMaps) error {
 	for {
 		select {
 		case entry := <-w.ch:
 			buf = append(buf, entry)
 		default:
-			if err := w.flush(buf, agg); err != nil {
+			if err := w.flushContext(ctx, buf, agg); err != nil {
 				return fmt.Errorf("final flush failed with %d unwritten query log entries: %w", len(buf), err)
 			}
 
@@ -237,6 +252,12 @@ func (a *aggregationMaps) reset() {
 // atomic. Entries dropped because the channel was full and resolver failures
 // recorded since the last flush are folded into the current bucket.
 func (w *AsyncLogWriter) flush(buf []*storage.QueryLogEntry, agg *aggregationMaps) (err error) {
+	return w.flushContext(context.Background(), buf, agg)
+}
+
+func (w *AsyncLogWriter) flushContext(
+	ctx context.Context, buf []*storage.QueryLogEntry, agg *aggregationMaps,
+) (err error) {
 	agg.reset()
 	dropped := w.dropped.Swap(0)
 	failed := w.failed.Swap(0)
@@ -251,21 +272,21 @@ func (w *AsyncLogWriter) flush(buf []*storage.QueryLogEntry, agg *aggregationMap
 		}
 	}()
 
-	return storage.WithWindowRollupUpdate(func() error {
+	return storage.WithWindowRollupUpdateContext(ctx, func() error {
 		agg.aggregate(buf)
 		agg.addFailures(dropped, failed)
 
-		batch, err := storage.NewBatch()
+		batch, err := storage.NewBatchContext(ctx)
 		if err != nil {
 			return fmt.Errorf("create query log batch: %w", err)
 		}
 		defer storage.RollbackBatch(batch)
 
-		if err := storage.BatchInsertQueryLogs(buf, batch); err != nil {
+		if err := storage.BatchInsertQueryLogsContext(ctx, buf, batch); err != nil {
 			return fmt.Errorf("insert query logs: %w", err)
 		}
 
-		if err := agg.persist(batch); err != nil {
+		if err := agg.persist(ctx, batch); err != nil {
 			return fmt.Errorf("stage query log metrics: %w", err)
 		}
 
@@ -450,7 +471,7 @@ func (a *aggregationMaps) addFailures(dropped, failed uint64) {
 }
 
 // persist stages every metric upsert into batch.
-func (a *aggregationMaps) persist(batch storage.Batch) error {
+func (a *aggregationMaps) persist(ctx context.Context, batch storage.Batch) error {
 	if len(a.metrics) == 0 {
 		return nil
 	}
@@ -468,7 +489,7 @@ func (a *aggregationMaps) persist(batch storage.Batch) error {
 		})
 	}
 
-	if err := storage.UpsertMetrics(batch, inputs); err != nil {
+	if err := storage.UpsertMetricsContext(ctx, batch, inputs); err != nil {
 		return fmt.Errorf("persist metrics: %w", err)
 	}
 
@@ -482,7 +503,7 @@ func (w *AsyncLogWriter) ttlCleanup(ctx context.Context) {
 	cleanup := func() {
 		logger.DebugContext(ctx, "running history cleanup")
 
-		if _, err := storage.CleanUp(w.retention.EffectiveHistoryMonths()); err != nil {
+		if _, err := storage.CleanUpContext(ctx, w.retention.EffectiveHistoryMonths()); err != nil {
 			logger.ErrorContext(ctx, fmt.Sprintf("history cleanup failed: %v", err))
 		}
 	}
@@ -512,7 +533,7 @@ func (w *AsyncLogWriter) maintainWindows(ctx context.Context) {
 	logger := log.PrefixedLog(loggerPrefixAsyncLogWriter)
 
 	maintain := func() {
-		if err := storage.MaintainWindowRollups(time.Now()); err != nil {
+		if err := storage.MaintainWindowRollupsContext(ctx, time.Now()); err != nil {
 			logger.ErrorContext(ctx, fmt.Sprintf("window rollup maintenance failed: %v", err))
 		}
 	}

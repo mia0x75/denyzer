@@ -186,7 +186,7 @@ func (r *QueryLoggingResolver) periodicCleanUp(ctx context.Context) {
 		case <-ticker.C:
 			r.doCleanUp()
 		case <-ctx.Done():
-			if err := r.Close(); err != nil {
+			if err := r.CloseContext(ctx); err != nil {
 				log.PrefixedLog(queryLoggingResolverType).WarnContext(ctx,
 					"failed to close query log writer", slog.Any("error", err))
 			}
@@ -301,6 +301,16 @@ func (r *QueryLoggingResolver) createLogEntry(request *model.Request, response *
 
 // Close flushes and releases the writer after the server has drained its requests.
 func (r *QueryLoggingResolver) Close() error {
+	return r.CloseContext(context.Background())
+}
+
+// CloseContext passes the server shutdown deadline to writers that support cancellation.
+func (r *QueryLoggingResolver) CloseContext(ctx context.Context) error {
+	if c, ok := r.writer.(interface {
+		CloseContext(ctx context.Context) error
+	}); ok {
+		return c.CloseContext(ctx)
+	}
 	if c, ok := r.writer.(io.Closer); ok {
 		return c.Close()
 	}

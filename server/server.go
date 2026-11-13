@@ -910,7 +910,13 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 	closeDNSServers(s.dnsServers)
 	resolver.ForEach(s.queryResolver, func(res resolver.Resolver) {
-		if c, ok := res.(io.Closer); ok {
+		if c, ok := res.(interface {
+			CloseContext(ctx context.Context) error
+		}); ok {
+			if err := c.CloseContext(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("close %T: %w", res, err))
+			}
+		} else if c, ok := res.(io.Closer); ok {
 			if err := c.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("close %T: %w", res, err))
 			}
