@@ -2,8 +2,10 @@ package resolver
 
 import (
 	"context"
+	"crypto"
 	"fmt"
 	"net"
+	"net/netip"
 	"runtime"
 	"testing"
 	"time"
@@ -46,6 +48,63 @@ func TestCachingResolverEvictsExpiredAnswers(t *testing.T) {
 		return answer.Value() == nil
 	}, 10*time.Second, 20*time.Millisecond).Should(BeTrue())
 	runtime.KeepAlive(resolver)
+}
+
+func TestCachingResolverDNS64WithDNSSEC(t *testing.T) {
+	g := NewWithT(t)
+	ctx := t.Context()
+	const zone = "example."
+	key := &dns.DNSKEY{
+		Hdr:   dns.RR_Header{Name: zone, Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 300},
+		Flags: 257, Protocol: 3, Algorithm: dns.ECDSAP256SHA256,
+	}
+	private, err := key.Generate(256)
+	g.Expect(err).Should(Succeed())
+	for key.KeyTag() == 0 {
+		private, err = key.Generate(256)
+		g.Expect(err).Should(Succeed())
+	}
+	address := &dns.A{Hdr: dns.RR_Header{Name: "ipv4only.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300}, A: net.IPv4(192, 0, 2, 1)}
+	signature := &dns.RRSIG{
+		Hdr:       dns.RR_Header{Name: address.Hdr.Name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 300},
+		Algorithm: key.Algorithm, KeyTag: key.KeyTag(), SignerName: zone,
+		Inception: uint32(time.Now().Add(-time.Hour).Unix()), Expiration: uint32(time.Now().Add(time.Hour).Unix()),
+	}
+	g.Expect(signature.Sign(private.(crypto.Signer), []dns.RR{address})).Should(Succeed())
+	queries := 0
+	upstream := &mockResolver{ResolveFn: func(_ context.Context, req *Request) (*Response, error) {
+		queries++
+		msg := new(dns.Msg)
+		msg.SetReply(req.Req)
+		if req.Req.Question[0].Qtype == dns.TypeA {
+			msg.Answer = []dns.RR{dns.Copy(address), dns.Copy(signature)}
+		}
+
+		return &Response{Res: msg, RType: ResponseTypeRESOLVED}, nil
+	}}
+	upstream.On("Resolve", mock.Anything).Return(nil, nil)
+	dnssecCfg, err := config.WithDefaults[config.DNSSEC]()
+	g.Expect(err).Should(Succeed())
+	dnssecCfg.Validate = true
+	dnssecCfg.TrustAnchors = []string{key.String()}
+	validator, err := NewDNSSECResolver(ctx, dnssecCfg, upstream)
+	g.Expect(err).Should(Succeed())
+	cacheCfg, err := config.WithDefaults[config.Caching]()
+	g.Expect(err).Should(Succeed())
+	caching, err := NewCachingResolver(ctx, cacheCfg, dnssecCfg)
+	g.Expect(err).Should(Succeed())
+	chain := Chain(validator, caching, NewDNS64Resolver(config.DNS64{
+		Enable: true, Prefixes: []netip.Prefix{netip.MustParsePrefix("64:ff9b::/96")},
+	}), upstream)
+	for range 2 {
+		response, resolveErr := chain.Resolve(ctx, newRequest(address.Hdr.Name, AAAA))
+		g.Expect(resolveErr).Should(Succeed())
+		g.Expect(response).Should(SatisfyAll(HaveReturnCode(dns.RcodeSuccess), HaveResponseType(ResponseTypeSYNTHESIZED),
+			BeDNSRecord(address.Hdr.Name, AAAA, "64:ff9b::c000:201")))
+		g.Expect(response.Res.AuthenticatedData).Should(BeFalse())
+	}
+	g.Expect(queries).Should(Equal(4))
+	g.Expect(caching.EntryCount()).Should(BeZero())
 }
 
 var _ = Describe("CachingResolver", func() {
@@ -511,7 +570,7 @@ var _ = Describe("CachingResolver", func() {
 			Entry("special-use domain", ResponseTypeSPECIAL),
 		)
 
-		It("still caches DNS64-synthesized answers (upstream-derived)", func() {
+		It("does not cache DNS64-synthesized answers without their trusted origin", func() {
 			m = &mockResolver{}
 			m.On("Resolve", mock.Anything).Return(&Response{Res: mockAnswer, RType: ResponseTypeSYNTHESIZED}, nil)
 			sut.Next(m)
@@ -525,13 +584,56 @@ var _ = Describe("CachingResolver", func() {
 
 			By("second request", func() {
 				Expect(sut.Resolve(ctx, newRequest("router.home.lab.", A))).
-					Should(HaveResponseType(ResponseTypeCACHED))
+					Should(HaveResponseType(ResponseTypeSYNTHESIZED))
 
-				// still one call to the next resolver
-				Expect(m.Calls).Should(HaveLen(1))
+				Expect(m.Calls).Should(HaveLen(2))
 			})
 		})
+
+		It("does not prefetch DNS64-synthesized answers", func() {
+			m.ResolveFn = func(_ context.Context, _ *Request) (*Response, error) {
+				return &Response{Res: mockAnswer, RType: ResponseTypeSYNTHESIZED}, nil
+			}
+			packed, ttl := sut.reloadCacheEntry(ctx, util.GenerateCacheKey(AAAA, "example.com"))
+			Expect(packed).Should(BeNil())
+			Expect(ttl).Should(BeZero())
+		})
 	})
+
+	DescribeTable("rejects incomplete or checking-disabled cache entries",
+		func(rcode int, truncated, cd bool) {
+			calls := 0
+			m.ResolveFn = func(_ context.Context, req *Request) (*Response, error) {
+				calls++
+				msg := new(dns.Msg)
+				msg.SetReply(req.Req)
+				if calls == 1 {
+					msg.Rcode, msg.Truncated, msg.CheckingDisabled = rcode, truncated, cd
+				} else {
+					msg.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{
+						Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300,
+					}, A: net.IPv4(192, 0, 2, 1)}}
+				}
+
+				return &Response{Res: msg, RType: ResponseTypeRESOLVED}, nil
+			}
+			first, err := sut.Resolve(ctx, newRequest("example.com.", A))
+			Expect(err).Should(Succeed())
+			Expect(first.Res.Rcode).Should(Equal(rcode))
+			Expect(sut.EntryCount()).Should(BeZero())
+			second, err := sut.Resolve(ctx, newRequest("example.com.", A))
+			Expect(err).Should(Succeed())
+			Expect(second).Should(SatisfyAll(HaveResponseType(ResponseTypeRESOLVED), HaveReturnCode(dns.RcodeSuccess)))
+			Expect(calls).Should(Equal(2))
+			Expect(sut.EntryCount()).Should(Equal(1))
+		},
+		Entry("NOERROR with TC", dns.RcodeSuccess, true, false),
+		Entry("NOERROR with CD", dns.RcodeSuccess, false, true),
+		Entry("NOERROR with TC and CD", dns.RcodeSuccess, true, true),
+		Entry("NXDOMAIN with TC", dns.RcodeNameError, true, false),
+		Entry("NXDOMAIN with CD", dns.RcodeNameError, false, true),
+		Entry("NXDOMAIN with TC and CD", dns.RcodeNameError, true, true),
+	)
 
 	Describe("Negative cache (caching if upstream resolver returns NXDOMAIN)", func() {
 		Context("Caching if upstream resolver returns NXDOMAIN", func() {

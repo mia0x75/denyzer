@@ -351,14 +351,10 @@ func packForCache(ctx context.Context, logger *slog.Logger, msg *dns.Msg) ([]byt
 	return packed, err
 }
 
-// isCacheableResponseType reports whether the response originates from the general
-// upstreams, directly (RESOLVED) or via DNS64 synthesis (SYNTHESIZED). Only such
-// answers may be cached: the rebinding protection resolver sits above the cache and
-// inspects CACHED responses, so caching answers from trusted local sources
-// (conditional upstream, special-use domains) would re-label them as CACHED on hits
-// and subject them to inspection.
+// Cached wire bytes cannot preserve trusted-local or synthesized origins, which
+// DNSSEC and rebinding checks above the cache need to distinguish on every hit.
 func isCacheableResponseType(rType model.ResponseType) bool {
-	return rType == model.ResponseTypeRESOLVED || rType == model.ResponseTypeSYNTHESIZED
+	return rType == model.ResponseTypeRESOLVED
 }
 
 func (r *CachingResolver) putInCache(
@@ -368,7 +364,7 @@ func (r *CachingResolver) putInCache(
 	response *model.Response,
 	ttl time.Duration,
 ) {
-	if !isCacheableResponseType(response.RType) {
+	if !isCacheableResponseType(response.RType) || !isResponseCacheable(response.Res) {
 		return
 	}
 
@@ -377,10 +373,11 @@ func (r *CachingResolver) putInCache(
 		return
 	}
 
-	if response.Res.Rcode == dns.RcodeSuccess && isResponseCacheable(response.Res) {
+	switch response.Res.Rcode {
+	case dns.RcodeSuccess:
 		// put value into cache
 		r.resultCache.Put(cacheKey, &packed, ttl)
-	} else if response.Res.Rcode == dns.RcodeNameError {
+	case dns.RcodeNameError:
 		if r.cfg.CacheTimeNegative.IsAboveZero() {
 			// put negative cache if result code is NXDOMAIN
 			r.resultCache.Put(cacheKey, &packed, r.cfg.CacheTimeNegative.ToDuration())
