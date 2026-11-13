@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -149,7 +150,9 @@ func (s *Server) processDohMessage(rawMsg []byte, rw http.ResponseWriter, httpRe
 
 	ctx, dnsReq := newRequestFromHTTP(httpReq.Context(), httpReq, msg)
 
-	s.handleReq(ctx, dnsReq, httpMsgWriter{rw})
+	if err := s.handleReq(ctx, dnsReq, httpMsgWriter{rw}); errors.Is(err, resolver.ErrRateLimited) {
+		http.Error(rw, "too many requests", http.StatusTooManyRequests)
+	}
 }
 
 type httpMsgWriter struct {

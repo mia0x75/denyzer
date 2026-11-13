@@ -995,18 +995,19 @@ func newRequestFromHTTP(ctx context.Context, req *http.Request, msg *dns.Msg) (c
 func (s *Server) OnRequest(ctx context.Context, w dns.ResponseWriter, msg *dns.Msg) {
 	ctx, request := newRequestFromDNS(ctx, w, msg)
 
-	s.handleReq(ctx, request, w)
+	// Native DNS transports retain silent drops for rate-limited queries.
+	_ = s.handleReq(ctx, request, w)
 }
 
 type msgWriter interface {
 	WriteMsg(msg *dns.Msg) error
 }
 
-func (s *Server) handleReq(ctx context.Context, request *model.Request, w msgWriter) {
+func (s *Server) handleReq(ctx context.Context, request *model.Request, w msgWriter) error {
 	response, err := s.resolve(ctx, request)
 	switch {
 	case errors.Is(err, resolver.ErrRateLimited):
-		return
+		return err
 	case err != nil:
 		log.FromCtx(ctx).ErrorContext(ctx, fmt.Sprint("error on processing request:", err))
 		m := new(dns.Msg)
@@ -1017,6 +1018,8 @@ func (s *Server) handleReq(ctx context.Context, request *model.Request, w msgWri
 		err := w.WriteMsg(response.Res)
 		util.LogOnError(ctx, "can't write message: ", err)
 	}
+
+	return nil
 }
 
 func (s *Server) resolve(ctx context.Context, request *model.Request) (response *model.Response, rerr error) {

@@ -425,6 +425,55 @@ var _ = Describe("Running DNS server", func() {
 	})
 
 	Describe("DOH endpoint", func() {
+		DescribeTable("reports DoH rate limiting as HTTP 429",
+			func(method string, realLimiter bool) {
+				upstream := resolver.NewMockChainedResolver(GinkgoT())
+				var chain resolver.ChainedResolver = upstream
+				if realLimiter {
+					limiter := resolver.NewRateLimitingResolver(ctx, config.RateLimit{
+						Enable: true, Rate: 1, Burst: 1, IPv4Prefix: 32, IPv6Prefix: 64,
+					})
+					response, err := util.NewMsgWithAnswer("example.com.", 123, A, "192.0.2.1")
+					Expect(err).Should(Succeed())
+					upstream.EXPECT().Resolve(mock.Anything, mock.Anything).
+						Return(&model.Response{Res: response}, nil).Once()
+					chain = resolver.Chain(limiter, upstream)
+				} else {
+					upstream.EXPECT().Resolve(mock.Anything, mock.Anything).
+						Return(nil, fmt.Errorf("wrapped limit: %w", resolver.ErrRateLimited)).Once()
+				}
+				server := &Server{queryResolver: chain, cfg: &config.Config{
+					Upstreams: config.Upstreams{Timeout: config.Duration(time.Second)},
+				}}
+				raw, err := util.NewMsgWithQuestion("example.com.", A).Pack()
+				Expect(err).Should(Succeed())
+				target := "/dns-query"
+				if method == http.MethodGet {
+					target += "?dns=" + base64.RawURLEncoding.EncodeToString(raw)
+				}
+				request := httptest.NewRequestWithContext(ctx, method, target, bytes.NewReader(raw))
+				request.Header.Set(contentTypeHeader, dnsContentType)
+				response := httptest.NewRecorder()
+				if realLimiter {
+					first := httptest.NewRecorder()
+					server.processDohMessage(raw, first, request)
+					Expect(first.Code).Should(Equal(http.StatusOK))
+				}
+				if method == http.MethodGet {
+					server.dohGetRequestHandler(response, request)
+				} else {
+					server.dohPostRequestHandler(response, request)
+				}
+				Expect(response.Code).Should(Equal(http.StatusTooManyRequests))
+				Expect(response.Body.Len()).Should(BeNumerically(">", 0))
+				Expect(response.Header().Get(contentTypeHeader)).ShouldNot(Equal(dnsContentType))
+			},
+			Entry("GET wrapped error", http.MethodGet, false),
+			Entry("POST wrapped error", http.MethodPost, false),
+			Entry("GET exhausted bucket", http.MethodGet, true),
+			Entry("POST exhausted bucket", http.MethodPost, true),
+		)
+
 		DescribeTable("rejects invalid DoH bodies at the correct boundary",
 			func(method string, size, status int) {
 				raw := bytes.Repeat([]byte{'t'}, size)
@@ -2206,7 +2255,7 @@ var _ = Describe("Running DNS server", func() {
 				Protocol: model.RequestProtocolUDP,
 				ClientIP: net.ParseIP("1.2.3.4"),
 			}
-			s.handleReq(context.Background(), req, w)
+			Expect(s.handleReq(context.Background(), req, w)).Should(MatchError(resolver.ErrRateLimited))
 			Expect(w.writes).Should(BeZero())
 		})
 	})
