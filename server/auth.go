@@ -90,8 +90,7 @@ func newAuthService(cfg *config.Config) *authService {
 		sessions:         make(map[[sha256.Size]byte]time.Time),
 		loginLimit:       loginLimiters{buckets: make(map[string]*rate.Limiter)},
 		globalLoginLimit: rate.NewLimiter(rate.Every(time.Second), globalLoginBurst),
-		// A global cap bounds concurrent Argon2 hashes (64 MiB each); the per-client
-		// limiter above stops one host from holding every slot.
+		// A global cap bounds concurrent Argon2 hashes (64 MiB each).
 		loginSlots: make(chan struct{}, 2),
 	}
 }
@@ -290,15 +289,6 @@ func (a *authService) login(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	select {
-	case a.loginSlots <- struct{}{}:
-		defer func() { <-a.loginSlots }()
-	default:
-		http.Error(w, "too many login attempts", http.StatusTooManyRequests)
-
-		return
-	}
-
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || contentType != jsonContentType {
 		http.Error(w, "expected application/json", http.StatusUnsupportedMediaType)
@@ -326,6 +316,16 @@ func (a *authService) login(w http.ResponseWriter, r *http.Request) {
 	peerIP, _ := netip.ParseAddr(client)
 	// AsSlice omits the IPv6 zone; keep it in client for per-IP limits.
 	if !credentials.IsTrustedIP(net.IP(peerIP.AsSlice())) && !a.globalLoginLimit.Allow() {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many login attempts", http.StatusTooManyRequests)
+
+		return
+	}
+	// Slow request bodies must not occupy password verification slots.
+	select {
+	case a.loginSlots <- struct{}{}:
+		defer func() { <-a.loginSlots }()
+	default:
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many login attempts", http.StatusTooManyRequests)
 

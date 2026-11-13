@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +25,55 @@ import (
 )
 
 const authTestPassword = "test-only-login-secret"
+
+func authTestSlowLoginBodies(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	for _, tc := range []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{name: "incomplete JSON", body: `{"username":`, status: http.StatusBadRequest},
+		{name: "complete JSON awaiting EOF", body: `{}`, status: http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				service := newAuthService(cfg)
+				handler := authTestHandler(service)
+				var group sync.WaitGroup
+				recorders := make([]*httptest.ResponseRecorder, 0, cap(service.loginSlots))
+				defer func() {
+					group.Wait()
+					for _, recorder := range recorders {
+						assert.Equal(t, tc.status, recorder.Code)
+					}
+					assert.Empty(t, service.loginSlots)
+					response := authTestLoginAttempt(t, handler, "198.51.100.10:1234", authTestPassword)
+					assert.Equal(t, http.StatusOK, response.Code, response.Body.String())
+				}()
+				for i := range cap(service.loginSlots) {
+					reader, writer := io.Pipe()
+					defer func() {
+						assert.NoError(t, writer.Close())
+					}()
+					request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/login", reader)
+					request.RemoteAddr = fmt.Sprintf("192.0.2.1:%d", 4000+i)
+					request.Header.Set("Content-Type", jsonContentType)
+					recorder := httptest.NewRecorder()
+					recorders = append(recorders, recorder)
+					group.Go(func() { handler.ServeHTTP(recorder, request) })
+					_, err := io.WriteString(writer, tc.body)
+					require.NoError(t, err)
+				}
+				synctest.Wait()
+				assert.Empty(t, service.loginSlots)
+				assert.InDelta(t, float64(globalLoginBurst), service.globalLoginLimit.Tokens(), 0)
+				response := authTestLoginAttempt(t, handler, "198.51.100.10:1234", authTestPassword)
+				assert.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			})
+		})
+	}
+}
 
 type authTestLogin struct {
 	Token     string    `json:"token"`
@@ -469,6 +519,10 @@ func TestAuthService(t *testing.T) {
 		})
 	})
 
+	t.Run("slow bodies do not hold verification slots", func(t *testing.T) {
+		authTestSlowLoginBodies(t, &config.Config{Auth: credentials})
+	})
+
 	t.Run("only two concurrent login operations", func(t *testing.T) {
 		service := newAuthService(&config.Config{Auth: credentials})
 		handler := authTestHandler(service)
@@ -484,6 +538,7 @@ func TestAuthService(t *testing.T) {
 		rejected := httptest.NewRecorder()
 		handler.ServeHTTP(rejected, request)
 		assert.Equal(t, http.StatusTooManyRequests, rejected.Code)
+		assert.Equal(t, "1", rejected.Header().Get("Retry-After"))
 		<-service.loginSlots
 		<-service.loginSlots
 
@@ -637,6 +692,9 @@ func TestTrustedLoginIPs(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(data), 0o600))
 	cfg, err := config.LoadConfig(path, true)
 	require.NoError(t, err)
+	t.Run("slow bodies do not block trusted administrators", func(t *testing.T) {
+		authTestSlowLoginBodies(t, cfg)
+	})
 
 	newHandler := func(t *testing.T) (*authService, http.Handler) {
 		t.Helper()
@@ -731,6 +789,7 @@ func TestTrustedLoginIPs(t *testing.T) {
 			<-service.loginSlots
 			assert.Equal(t, http.StatusTooManyRequests, response.Code)
 			assert.Empty(t, response.Header().Get("Set-Cookie"))
+			assert.Equal(t, "1", response.Header().Get("Retry-After"))
 		})
 	})
 	t.Run("trusted IP changes are reloaded without revoking sessions", func(t *testing.T) {
