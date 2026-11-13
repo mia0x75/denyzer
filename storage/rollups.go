@@ -113,9 +113,7 @@ WHERE granularity = 'day'
   AND bucket_start >= ? AND bucket_start <= ?
 GROUP BY dimension, entity`
 
-// subtractRollupSQL removes one expired day from every rollup row of one
-// dimension. The scalar MAX clamps each counter at zero, matching the previous
-// in-memory subtraction.
+// Timestamp ranges avoid advancing through local midnights that may not exist during DST changes.
 const subtractRollupSQL = `
 UPDATE metrics AS w
 SET total            = MAX(w.total - d.total, 0),
@@ -136,7 +134,8 @@ FROM (
 	       SUM(other) AS other, SUM(dropped) AS dropped, SUM(errors) AS errors,
 	       SUM(total_latency_ms) AS total_latency_ms
 	FROM metrics
-	WHERE granularity = 'day' AND dimension = ? AND bucket_start = ? AND entity <> ''
+	WHERE granularity = 'day' AND dimension = ?
+	  AND bucket_start >= ? AND bucket_start < ? AND entity <> ''
 	GROUP BY entity
 ) AS d
 WHERE w.granularity = ? AND w.dimension = ? AND w.bucket_start = 0 AND w.entity = d.entity`
@@ -235,19 +234,14 @@ func (p *rollupPlan) apply(tx *sql.Tx, now time.Time) error {
 			continue
 		}
 
-		for day := p.storeds[i]; day < p.starts[i]; day = nextDayBucket(day) {
-			if err := subtractDayFromRollup(tx, spec, day); err != nil {
+		if p.storeds[i] < p.starts[i] {
+			if err := subtractRangeFromRollup(tx, spec, p.storeds[i], p.starts[i]); err != nil {
 				return err
 			}
 		}
 	}
 
 	return nil
-}
-
-// nextDayBucket returns the day bucket that follows day.
-func nextDayBucket(day int64) int64 {
-	return DayBucket(time.Unix(day, 0).AddDate(0, 0, 1))
 }
 
 // windowStateID is the metric identifier of one rollup watermark row.
@@ -317,18 +311,17 @@ func rebuildWindowRollup(tx *sql.Tx, spec WindowSpec, start, end int64) error {
 	return writeWindowStartTx(tx, spec.Granularity, start)
 }
 
-// subtractDayFromRollup removes an expired day and advances its watermark atomically.
-func subtractDayFromRollup(tx *sql.Tx, spec WindowSpec, day int64) error {
+func subtractRangeFromRollup(tx *sql.Tx, spec WindowSpec, start, end int64) error {
 	for _, dimension := range []string{DimensionDomain, DimensionClient} {
 		_, err := tx.ExecContext(context.Background(), subtractRollupSQL,
-			updatedAt(), dimension, day, spec.Granularity, dimension)
+			updatedAt(), dimension, start, end, spec.Granularity, dimension)
 		if err != nil {
-			return fmt.Errorf("can't expire %s day %d from %s: %w",
-				dimension, day, spec.Granularity, err)
+			return fmt.Errorf("can't expire %s range [%d, %d) from %s: %w",
+				dimension, start, end, spec.Granularity, err)
 		}
 	}
 
-	return writeWindowStartTx(tx, spec.Granularity, nextDayBucket(day))
+	return writeWindowStartTx(tx, spec.Granularity, end)
 }
 
 // deleteZeroRollupRows drops the rollup rows that no longer carry a counter.

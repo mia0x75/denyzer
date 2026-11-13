@@ -94,7 +94,6 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-/** @knipignore */
 export function DialogFooter({
   className,
   ...props
