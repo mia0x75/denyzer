@@ -425,6 +425,82 @@ var _ = Describe("Running DNS server", func() {
 	})
 
 	Describe("DOH endpoint", func() {
+		DescribeTable("rejects invalid DoH bodies at the correct boundary",
+			func(method string, size, status int) {
+				raw := bytes.Repeat([]byte{'t'}, size)
+				target := queryURL
+				if method == http.MethodGet {
+					target += "?dns=" + base64.RawURLEncoding.EncodeToString(raw)
+				}
+				request, err := http.NewRequestWithContext(ctx, method, target, nil)
+				Expect(err).Should(Succeed())
+				if method == http.MethodPost {
+					request.Body = io.NopCloser(bytes.NewReader(raw))
+					request.ContentLength = -1
+					request.Header.Set(contentTypeHeader, dnsContentType)
+				}
+				response, err := http.DefaultClient.Do(request)
+				Expect(err).Should(Succeed())
+				DeferCleanup(response.Body.Close)
+				Expect(response).Should(HaveHTTPStatus(status))
+			},
+			Entry("GET malformed 513 bytes", http.MethodGet, 513, http.StatusBadRequest),
+			Entry("POST malformed 513 bytes", http.MethodPost, 513, http.StatusBadRequest),
+			Entry("POST chunked oversized body", http.MethodPost, dns.MaxMsgSize+1, http.StatusRequestEntityTooLarge),
+		)
+
+		DescribeTable("accepts legal padded DoH queries",
+			func(method string, size int) {
+				name := fmt.Sprintf("padding-%s-%d.example.com.", strings.ToLower(method), size)
+				msg := util.NewMsgWithQuestion(name, A)
+				msg.SetEdns0(dns.MaxMsgSize, false)
+				padding := &dns.EDNS0_PADDING{}
+				msg.IsEdns0().Option = append(msg.IsEdns0().Option, padding)
+				raw, err := msg.Pack()
+				Expect(err).Should(Succeed())
+				padding.Padding = make([]byte, size-len(raw))
+				raw, err = msg.Pack()
+				Expect(err).Should(Succeed())
+				Expect(raw).Should(HaveLen(size))
+				response, err := util.NewMsgWithAnswer(name, 123, A, "123.124.122.122")
+				Expect(err).Should(Succeed())
+				upstream := resolver.NewMockChainedResolver(GinkgoT())
+				upstream.EXPECT().Resolve(mock.Anything, mock.MatchedBy(func(req *model.Request) bool {
+					return req.Req.Len() == size && req.Req.Question[0].Name == name
+				})).Return(&model.Response{Res: response}, nil).Once()
+				server := &Server{queryResolver: upstream, cfg: &config.Config{
+					Upstreams: config.Upstreams{Timeout: config.Duration(time.Second)},
+				}}
+				// Isolate HTTP ingress from the UDP fixture's independent datagram size limit.
+				httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet {
+						server.dohGetRequestHandler(w, r)
+					} else {
+						server.dohPostRequestHandler(w, r)
+					}
+				}))
+				DeferCleanup(httpServer.Close)
+				var resp *http.Response
+				if method == http.MethodGet {
+					resp, err = http.Get(httpServer.URL + "?dns=" + base64.RawURLEncoding.EncodeToString(raw))
+				} else {
+					resp, err = http.Post(httpServer.URL, dnsContentType, bytes.NewReader(raw))
+				}
+				Expect(err).Should(Succeed())
+				DeferCleanup(resp.Body.Close)
+				Expect(resp).Should(HaveHTTPStatus(http.StatusOK))
+				body, err := io.ReadAll(resp.Body)
+				Expect(err).Should(Succeed())
+				answer := new(dns.Msg)
+				Expect(answer.Unpack(body)).Should(Succeed())
+				Expect(answer.Answer).Should(BeDNSRecord(name, A, "123.124.122.122"))
+			},
+			Entry("GET 600 bytes", http.MethodGet, 600),
+			Entry("POST 600 bytes", http.MethodPost, 600),
+			Entry("GET maximum DNS message", http.MethodGet, dns.MaxMsgSize),
+			Entry("POST maximum DNS message", http.MethodPost, dns.MaxMsgSize),
+		)
+
 		Context("DOH over GET (RFC 8484)", func() {
 			When("DOH get request with 'example.com' is performed", func() {
 				It("should get a valid response", func() {
@@ -475,7 +551,7 @@ var _ = Describe("Running DNS server", func() {
 			})
 			When("Request's dns parameter is too long'", func() {
 				It("should return 'URI Too Long'", func() {
-					longBase64msg := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("t", 513)))
+					longBase64msg := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{'t'}, dns.MaxMsgSize+1))
 
 					resp, err := http.Get(queryURL + "?dns=" + longBase64msg)
 					Expect(err).Should(Succeed())
@@ -541,9 +617,9 @@ var _ = Describe("Running DNS server", func() {
 					Expect(msg.Answer).Should(BeDNSRecord("www.example.com.", A, "123.124.122.122"))
 				})
 			})
-			When("POST payload exceeds 512 bytes", func() {
+			When("POST payload exceeds the maximum DNS message size", func() {
 				It("should return 'Payload Too Large'", func() {
-					largeMessage := []byte(strings.Repeat("t", 513))
+					largeMessage := bytes.Repeat([]byte{'t'}, dns.MaxMsgSize+1)
 
 					resp, err = http.Post(queryURL, "application/dns-message", bytes.NewReader(largeMessage))
 					Expect(err).Should(Succeed())

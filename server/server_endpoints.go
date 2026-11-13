@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	dohMessageLimit    = 512
+	dohMessageLimit    = dns.MaxMsgSize
 	contentTypeHeader  = "Content-Type"
 	cacheControlHeader = "Cache-Control"
 	dnsContentType     = "application/dns-message"
