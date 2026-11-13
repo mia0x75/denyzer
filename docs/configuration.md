@@ -1275,6 +1275,9 @@ include the whole directory in any backup. The database uses WAL mode, so a cons
 `denyzer.db`, `denyzer.db-wal` and `denyzer.db-shm` (copy them while Denyzer is stopped, or use
 `VACUUM INTO 'backup.db'`).
 
+Keep the active database on a local filesystem, not on SAMBA/CIFS or NFS network shares. SQLite WAL
+requires shared memory and file locking on the same host. Completed backup files may be copied to a network share.
+
 Retention (`queryLog.retention.historyMonths`) keeps the query history for a number of months. The default is 1 month
 and the supported range is 1 to 12 months. The cleanup removes the query log rows and the short-lived metric buckets
 (minute, hour, and the per-entity daily buckets) that are older than the selected cutoff. The all-time counters and the

@@ -195,9 +195,16 @@ Default value is `/app/config.yml`.
 
 ## Advanced docker-compose setup
 
-Following example shows, how to run denyzer in a docker container and store query logs on a SAMBA share. Local black and
-allowlists directories are mounted as volume. You can create own black or allowlists in these directories and define the
-path like '/app/allowlists/allowlist.txt' in the config file.
+The following example stores SQLite query history in a local Docker volume and mounts local
+allowlist and denylist directories. Set `queryLog.target` to `/logs/denyzer.db` in the configuration;
+list paths can use `/app/allowlists/allowlist.txt`.
+
+!!! warning
+
+    Keep the active database on a local filesystem, not on SAMBA/CIFS, NFS or other network shares.
+    SQLite WAL requires shared memory and reliable file locking on the same host.
+    Use network shares only for completed backups made through SQLite's backup facilities or while
+    Denyzer is stopped. See [SQLite query log](configuration.md#sqlite-query-log).
 
 !!! example
 
@@ -218,7 +225,7 @@ path like '/app/allowlists/allowlist.txt' in the config file.
         volumes:
           # config directory, including administrator credentials
           - ./config:/config:ro
-          # write query logs in this volume
+          # Keep the active SQLite database on local storage.
           - queryLogs:/logs
           # put your custom allow/denylists in these directories
           - ./denylists:/app/denylists/
@@ -227,12 +234,6 @@ path like '/app/allowlists/allowlist.txt' in the config file.
     volumes:
       queryLogs:
         driver: local
-        driver_opts:
-          type: cifs
-          # uid=100 is required: the share is mounted root-owned by default and
-          # Denyzer runs as UID 100, which could then not write the query logs
-          o: username=USER,password=PASSWORD,uid=100,gid=100,rw
-          device: //NAS_HOSTNAME/denyzer
     ```
 
     !!! note
