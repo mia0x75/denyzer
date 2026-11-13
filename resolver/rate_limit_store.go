@@ -55,6 +55,8 @@ func (m *bucketSyncMap) Range(f func(key string, val *bucketEntry) bool) {
 }
 
 type bucketStore struct {
+	// Keep consumption atomic with eviction so an active limiter cannot be replaced.
+	mu          sync.RWMutex
 	limit       rate.Limit
 	burst       int
 	maxBuckets  int
@@ -72,6 +74,9 @@ func newBucketStore(limit rate.Limit, burst, maxBuckets int) *bucketStore {
 // callers can distinguish cap exhaustion from a rate-limit drop by checking
 // the entry for nil.
 func (s *bucketStore) allowAt(key string, now time.Time) (*bucketEntry, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	if e, ok := s.buckets.Load(key); ok {
 		return e, e.limiter.AllowN(now, 1)
 	}
@@ -99,6 +104,9 @@ func (s *bucketStore) allowAt(key string, now time.Time) (*bucketEntry, bool) {
 // sweep walks the map and evicts buckets whose limiter is fully refilled
 // (idle = no state worth keeping; reconstruction yields identical behavior).
 func (s *bucketStore) sweep() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.buckets.Range(func(key string, e *bucketEntry) bool {
 		if e.limiter.Tokens() >= float64(s.burst) {
 			s.buckets.Delete(key)

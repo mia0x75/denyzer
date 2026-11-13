@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -97,6 +98,38 @@ var _ = Describe("bucketStore", func() {
 		_, _ = s.allowAt("active", recent) // 4 tokens left, not full
 		s.sweep()
 		Expect(s.size.Load()).Should(BeNumerically("==", 1))
+	})
+
+	It("never restores consumed tokens when sweeping concurrently", func() {
+		const rounds = 1000
+		const callers = 8
+		for range rounds {
+			s := newBucketStore(0, 1, 1)
+			_, _ = s.buckets.LoadOrStore("shared", &bucketEntry{limiter: rate.NewLimiter(0, 1)})
+			s.size.Store(1)
+			start := make(chan struct{})
+			var admitted atomic.Int64
+			var wg sync.WaitGroup
+			for range callers {
+				wg.Go(func() {
+					<-start
+					s.sweep()
+				})
+				wg.Go(func() {
+					<-start
+					if _, allowed := s.allowAt("shared", now); allowed {
+						admitted.Add(1)
+					}
+				})
+			}
+			close(start)
+			wg.Wait()
+
+			Expect(admitted.Load()).Should(Equal(int64(1)))
+			Expect(s.size.Load()).Should(Equal(int64(1)))
+			_, allowed := s.allowAt("shared", now)
+			Expect(allowed).Should(BeFalse())
+		}
 	})
 
 	It("never exceeds cap under concurrent burst of distinct fresh keys", func() {
