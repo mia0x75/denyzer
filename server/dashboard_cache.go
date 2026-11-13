@@ -282,7 +282,7 @@ func sortTopEntities(items []topEntitySnapshot) {
 // never pruned by rank, the truncation only limits the returned list.
 func truncateTopEntities(items []topEntitySnapshot) []topEntitySnapshot {
 	if len(items) > topSnapshotCap {
-		return items[:topSnapshotCap]
+		return slices.Clone(items[:topSnapshotCap])
 	}
 
 	return items
