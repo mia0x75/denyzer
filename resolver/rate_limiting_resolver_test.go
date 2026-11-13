@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
 	. "github.com/mia0x75/denyzer/helpertest"
 	"github.com/mia0x75/denyzer/log"
 	. "github.com/mia0x75/denyzer/model"
+	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
 	. "github.com/onsi/ginkgo/v2"
@@ -117,6 +119,17 @@ var _ = Describe("RateLimitingResolver", func() {
 			_, err = sut.Resolve(ctx, req)
 			Expect(errors.Is(err, ErrRateLimited)).Should(BeTrue())
 			Expect(m.Calls).Should(HaveLen(1)) // second never reached next
+		})
+
+		It("limits scoped IPv6 HTTP clients using their connection address", func() {
+			req := newRequest("example.com.", A)
+			req.ClientIP = util.HTTPClientIP(&http.Request{RemoteAddr: "[fe80::1%eth0]:12345"})
+			_, err := sut.Resolve(ctx, req)
+			Expect(err).Should(Succeed())
+			req.ClientIP = util.HTTPClientIP(&http.Request{RemoteAddr: "[fe80::1%eth1]:54321"})
+			_, err = sut.Resolve(ctx, req)
+			Expect(err).Should(MatchError(ErrRateLimited))
+			Expect(m.Calls).Should(HaveLen(1))
 		})
 
 		It("allows again after enough time has elapsed", func() {

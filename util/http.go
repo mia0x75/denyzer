@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 )
 
 //nolint:gochecknoglobals
@@ -29,10 +30,14 @@ func DefaultHTTPTransport() *http.Transport {
 
 // HTTPClientIP uses the connection address (including configured PROXY protocol), never spoofable HTTP headers.
 func HTTPClientIP(r *http.Request) net.IP {
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return net.ParseIP(r.RemoteAddr)
+		host = r.RemoteAddr
 	}
-
-	return net.ParseIP(ip)
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil
+	}
+	// Address bytes omit the zone while To16 preserves the existing IPv4 representation.
+	return net.IP(addr.AsSlice()).To16()
 }

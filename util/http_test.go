@@ -66,6 +66,10 @@ var _ = Describe("HTTP Util", func() {
 		Entry("IPv4 without port", "192.0.2.1", "192.0.2.1"),
 		Entry("IPv6 with port", "[2001:db8::1]:12345", "2001:db8::1"),
 		Entry("IPv6 without port", "2001:db8::1", "2001:db8::1"),
+		Entry("scoped IPv6 with port", "[fe80::1%eth0]:12345", "fe80::1"),
+		Entry("scoped IPv6 without port", "fe80::1%eth0", "fe80::1"),
+		Entry("numeric IPv6 zone", "[fe80::1%2]:12345", "fe80::1"),
+		Entry("IPv4-mapped IPv6", "[::ffff:192.0.2.1]:12345", "192.0.2.1"),
 		Entry("invalid peer", "not-an-ip:12345", ""),
 		Entry("missing peer", "", ""),
 	)
