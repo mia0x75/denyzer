@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	. "github.com/mia0x75/denyzer/helpertest"
 	"github.com/mia0x75/denyzer/log"
 	"github.com/mia0x75/denyzer/querylog"
+	"github.com/mia0x75/denyzer/storage"
 	"github.com/stretchr/testify/mock"
 
 	"github.com/mia0x75/denyzer/cache/stringcache"
@@ -234,8 +236,25 @@ var _ = Describe("QueryLoggingResolver", func() {
 	})
 
 	Describe("GetQueryLoggingWriter", func() {
+		var directory string
+		BeforeEach(func() {
+			Expect(storage.CloseDB()).Should(Succeed())
+			directory, err = os.MkdirTemp(GinkgoT().TempDir(), "writer-")
+			Expect(err).Should(Succeed())
+			DeferCleanup(func() {
+				closeErr := storage.CloseDB()
+				removeErr := os.RemoveAll(directory)
+				Expect(closeErr).Should(Succeed())
+				Expect(removeErr).Should(Succeed())
+			})
+		})
+		AfterEach(func() {
+			page, err := storage.GetQueryLogsPage(ctx, "", 10, "", "", "", "")
+			Expect(err).Should(Succeed())
+			Expect(page.Entries).Should(HaveLen(1))
+		})
 		It("creates an async log writer when the type is omitted", func() {
-			dbPath := filepath.Join(GinkgoT().TempDir(), "querylog.db")
+			dbPath := filepath.Join(directory, "querylog.db")
 
 			writer, err := GetQueryLoggingWriter(ctx, config.QueryLog{
 				Target:        config.Secret(dbPath),
@@ -243,11 +262,16 @@ var _ = Describe("QueryLoggingResolver", func() {
 			}, "test-instance")
 
 			Expect(err).Should(Succeed())
+			closer, ok := writer.(io.Closer)
+			Expect(ok).Should(BeTrue())
+			DeferCleanup(func() { Expect(closer.Close()).Should(Succeed()) })
 			Expect(writer).Should(BeAssignableToTypeOf(&querylog.AsyncLogWriter{}))
+			writer.Write(&querylog.LogEntry{Start: time.Now(), ClientIP: "192.0.2.1"})
+			Expect(closer.Close()).Should(Succeed())
 		})
 
 		It("creates an async log writer for sqlite type", func() {
-			dbPath := filepath.Join(GinkgoT().TempDir(), "querylog.db")
+			dbPath := filepath.Join(directory, "querylog.db")
 
 			writer, err := GetQueryLoggingWriter(ctx, config.QueryLog{
 				Type:          config.QueryLogTypeSqlite,
@@ -256,8 +280,13 @@ var _ = Describe("QueryLoggingResolver", func() {
 			}, "test-instance")
 
 			Expect(err).Should(Succeed())
+			closer, ok := writer.(io.Closer)
+			Expect(ok).Should(BeTrue())
+			DeferCleanup(func() { Expect(closer.Close()).Should(Succeed()) })
 			Expect(writer).ShouldNot(BeNil())
 			Expect(writer).Should(BeAssignableToTypeOf(&querylog.AsyncLogWriter{}))
+			writer.Write(&querylog.LogEntry{Start: time.Now(), ClientIP: "192.0.2.2"})
+			Expect(closer.Close()).Should(Succeed())
 		})
 	})
 
