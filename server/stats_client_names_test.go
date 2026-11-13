@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net"
+	"path/filepath"
 	"time"
 
 	"github.com/mia0x75/denyzer/api"
@@ -10,6 +11,7 @@ import (
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/resolver"
 	"github.com/mia0x75/denyzer/stats"
+	"github.com/mia0x75/denyzer/storage"
 	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
@@ -65,6 +67,7 @@ var _ = Describe("Client identity for queries answered at the head of the chain"
 			expectedRType model.ResponseType,
 		) {
 			srv := newServer(ctx, adapt)
+			DeferCleanup(func() { Expect(srv.Stop(context.Background())).Should(Succeed()) })
 
 			resp, err := srv.queryResolver.Resolve(ctx, &model.Request{
 				ClientIP:  clientIP,
@@ -87,6 +90,49 @@ var _ = Describe("Client identity for queries answered at the head of the chain"
 				cfg.FQDNOnly = config.FQDNOnly{Enable: true}
 			},
 			"example.", dns.Type(dns.TypeA), model.ResponseTypeNOTFQDN),
+	)
+
+	DescribeTable("persists queries answered by early filters",
+		func(ctx context.Context, fqdnOnly bool) {
+			Expect(storage.CloseDB()).Should(Succeed())
+			srv := newServer(ctx, func(cfg *config.Config) {
+				cfg.QueryLog = config.QueryLog{
+					Type: config.QueryLogTypeSqlite, Target: config.Secret(filepath.Join(GinkgoT().TempDir(), "queries.db")),
+					Fields: config.QueryLogFieldValues(), BatchSize: 1, FlushInterval: config.Duration(time.Hour),
+				}
+				if fqdnOnly {
+					cfg.FQDNOnly = config.FQDNOnly{Enable: true}
+				} else {
+					cfg.Filtering = config.Filtering{QueryTypes: config.NewQTypeSet(dns.Type(dns.TypeAAAA))}
+				}
+			})
+			DeferCleanup(func() { Expect(storage.CloseDB()).Should(Succeed()) })
+			DeferCleanup(func() { Expect(srv.Stop(context.Background())).Should(Succeed()) })
+			name, qtype, rtype := "filtered.example.", dns.Type(dns.TypeAAAA), model.ResponseTypeFILTERED
+			if fqdnOnly {
+				name, qtype, rtype = "singlelabel.", dns.Type(dns.TypeA), model.ResponseTypeNOTFQDN
+			}
+			response, err := srv.queryResolver.Resolve(ctx, &model.Request{
+				ClientIP: clientIP, Req: util.NewMsgWithQuestion(name, qtype), RequestTS: time.Now(),
+			})
+			Expect(err).Should(Succeed())
+			Expect(response.RType).Should(Equal(rtype))
+			logging, err := resolver.GetFromChainWithType[*resolver.QueryLoggingResolver](srv.queryResolver)
+			Expect(err).Should(Succeed())
+			Expect(logging.Close()).Should(Succeed())
+			page, err := storage.GetQueryLogsPage(ctx, "", 10, "", "", "", "")
+			Expect(err).Should(Succeed())
+			Expect(page.Entries).Should(HaveLen(1))
+			Expect(page.Entries[0].ResponseType).Should(Equal(rtype.String()))
+			Expect(page.Entries[0].ClientIP).Should(Equal(clientIP.String()))
+			Expect(page.Entries[0].ClientName).Should(Equal(clientName))
+			metrics, err := storage.GetGlobalStats(storage.GranularityAllTime, 0)
+			Expect(err).Should(Succeed())
+			Expect(metrics.Total).Should(Equal(uint64(1)))
+			Expect(metrics.Filtered).Should(Equal(uint64(1)))
+		},
+		Entry("query type filtering", false),
+		Entry("fqdnOnly filtering", true),
 	)
 
 	// The rate limiter deliberately stays above the client-name lookup so that its bucket

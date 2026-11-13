@@ -608,10 +608,10 @@ func createQueryResolver(
 		// and the statistics would attribute those to the raw client IP while the same
 		// client's other queries are attributed to its name
 		parts.clientNames,
+		parts.queryLogging,
 		resolver.NewFilteringResolver(cfg.Filtering),
 		resolver.NewFQDNOnlyResolver(cfg.FQDNOnly),
 		resolver.NewEDEResolver(cfg.EDE),
-		parts.queryLogging,
 		parts.customDNS,
 		parts.hostsFile,
 		// above blocking and the cache: it inspects only RESOLVED/CACHED answers
