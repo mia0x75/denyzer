@@ -451,6 +451,20 @@ var _ = Describe("ListCache", func() {
 			})
 		})
 	})
+	Describe("Counts", func() {
+		BeforeEach(func() {
+			lists = map[string][]config.BytesSource{
+				"mixed": {config.TextBytesSource("exact.example", "*.wild.example", "/^regex[.]example$/")},
+				"regex": {config.TextBytesSource("/^other[.]example$/")},
+				"empty": {config.TextBytesSource("# empty")},
+			}
+		})
+
+		It("counts exact, wildcard and regex entries once per group", func() {
+			Expect(sut.Counts()).Should(Equal(map[string]int{"mixed": 3, "regex": 1, "empty": 0}))
+		})
+	})
+
 	Describe("LogConfig", func() {
 		var (
 			logger *slog.Logger

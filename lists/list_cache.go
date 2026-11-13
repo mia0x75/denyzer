@@ -133,7 +133,7 @@ func (b *ListCache) Counts() map[string]int {
 	counts := make(map[string]int, len(b.groupSources))
 
 	for group := range b.groupSources {
-		counts[group] = b.groupedCache.ElementCount(group) + b.regexCache.ElementCount(group)
+		counts[group] = b.groupedCache.ElementCount(group)
 	}
 
 	return counts
