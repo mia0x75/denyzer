@@ -172,7 +172,7 @@ func (c *Collector) Record(s Sample) {
 
 	// Only answered queries contribute to the response-time average; drops and
 	// errors have no meaningful "response" latency.
-	if s.Disposition == DispositionAnswered {
+	if s.Disposition == DispositionAnswered && categorize(s.RType) != categoryError {
 		b.durationSumMs += s.DurationMs
 		c.lifetime.durationSumMs += s.DurationMs
 	}
@@ -455,7 +455,7 @@ func isBlockedRType(rtype string) bool {
 // Queries counts every answered response (even one whose type maps to no named
 // category) plus drops and errors, so a future model.ResponseType can never
 // silently vanish from the total. answeredDurationSum already excludes
-// drop/error latency, so the average is over answered responses only.
+// drop/error latency, including BOGUS, so the average excludes those outcomes.
 func curatedSummary(rt map[string]int, dropped, errs int, answeredDurationSum int64) Summary {
 	s := Summary{Dropped: dropped, Errors: errs}
 
@@ -490,8 +490,8 @@ func curatedSummary(rt map[string]int, dropped, errs int, answeredDurationSum in
 		s.CacheHitRate = float64(s.Cached) / float64(lookups)
 	}
 
-	if answered > 0 {
-		s.AvgResponseMs = int(answeredDurationSum / int64(answered))
+	if eligible := s.Queries - s.Dropped - s.Errors; eligible > 0 {
+		s.AvgResponseMs = int(answeredDurationSum / int64(eligible))
 	}
 
 	return s

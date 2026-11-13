@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
+	"github.com/mia0x75/denyzer/stats"
 	"github.com/mia0x75/denyzer/storage"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -121,6 +122,13 @@ var _ = Describe("AsyncLogWriter", func() {
 				{Timestamp: time.Now().UnixMilli(), Domain: "bogus-latency.test", QueryType: "A",
 					ResponseType: "BOGUS", DurationMs: 100},
 			}
+			collector := stats.NewCollector()
+			for _, entry := range entries {
+				collector.Record(stats.Sample{
+					Disposition: stats.DispositionAnswered, RType: entry.ResponseType,
+					DurationMs: int64(entry.DurationMs),
+				})
+			}
 			Expect(w.flush(entries, newAggregationMaps())).Should(Succeed())
 			after, err := allTimeStats()
 			Expect(err).ShouldNot(HaveOccurred())
@@ -132,6 +140,10 @@ var _ = Describe("AsyncLogWriter", func() {
 			Expect(stats.Errors).Should(Equal(uint64(1)))
 			Expect(stats.TotalLatencyMs).Should(Equal(uint64(10)))
 			Expect(stats.AverageResponseMs()).Should(Equal(uint64(10)))
+			summary := collector.Snapshot().Summary
+			Expect(summary.Queries).Should(Equal(int(stats.Total)))
+			Expect(summary.Errors).Should(Equal(int(stats.Errors)))
+			Expect(summary.AvgResponseMs).Should(Equal(int(stats.AverageResponseMs())))
 			page, err := storage.GetQueryLogsPage(context.Background(), "", 10, "bogus-latency.test", "BOGUS", "", "")
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(page.Entries).Should(HaveLen(1))

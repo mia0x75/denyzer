@@ -24,6 +24,32 @@ var _ = Describe("Collector", func() {
 	}
 
 	Describe("summary", func() {
+		DescribeTable("excludes failures from average latency without losing counts",
+			func(success bool) {
+				if success {
+					sut.Record(answered("RESOLVED", "A", "NOERROR", "success.example", "client"))
+				}
+				failure := answered("BOGUS", "A", "SERVFAIL", "failure.example", "client")
+				failure.DurationMs = 100
+				sut.Record(failure)
+				sut.Record(Sample{Disposition: DispositionErrored, DurationMs: 200})
+				sut.Record(Sample{Disposition: DispositionDropped, DurationMs: 300})
+				res := sut.Snapshot()
+				wantTotal, wantAverage := 3, 0
+				if success {
+					wantTotal, wantAverage = 4, 10
+				}
+				Expect(res.Summary.Queries).Should(Equal(wantTotal))
+				Expect(res.Summary.Errors).Should(Equal(2))
+				Expect(res.Summary.Dropped).Should(Equal(1))
+				Expect(res.Summary.AvgResponseMs).Should(Equal(wantAverage))
+				Expect(res.ByResponseType["BOGUS"]).Should(Equal(1))
+				Expect(res.ByResponseCode["SERVFAIL"]).Should(Equal(1))
+			},
+			Entry("mixed success and failures", true),
+			Entry("only failures", false),
+		)
+
 		It("classifies response types into curated categories", func() {
 			sut.Record(answered("CACHED", "A", "NOERROR", "a.com", "c1"))
 			sut.Record(answered("RESOLVED", "A", "NOERROR", "b.com", "c1"))
