@@ -67,6 +67,19 @@ var _ = Describe("Ports.PrivilegedPorts", func() {
 		Expect(ports.PrivilegedPorts()).Should(ConsistOf(":53", "127.0.0.1:80", "127.0.0.1:443", "[::1]:853"))
 	})
 
+	It("returns listen entries below a custom boundary", func() {
+		ports := Ports{
+			DNS:   ListenConfig{":53"},
+			Admin: ListenConfig{"127.0.0.1:1024"},
+			HTTP:  ListenConfig{":4000"},
+			HTTPS: ListenConfig{"127.0.0.1:443"},
+			TLS:   ListenConfig{"[::1]:853"},
+		}
+
+		Expect(ports.PortsBelow(53)).Should(BeEmpty())
+		Expect(ports.PortsBelow(54)).Should(ConsistOf(":53"))
+	})
+
 	It("returns empty when every configured port is unprivileged", func() {
 		ports := Ports{DNS: ListenConfig{":1053"}, HTTP: ListenConfig{":4000"}}
 

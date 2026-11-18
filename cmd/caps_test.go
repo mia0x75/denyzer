@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/log"
@@ -14,10 +16,12 @@ var _ = Describe("warnMissingPrivilegedPortCapability", func() {
 	var (
 		loggerHook *log.Recorder
 		origRaise  func() (bool, error)
+		origFile   string
 	)
 
 	BeforeEach(func() {
 		origRaise = raiseNetBindService
+		origFile = unprivilegedPortStartFile
 		var cleanup func()
 		loggerHook, cleanup = log.Capture(log.Log())
 		DeferCleanup(cleanup)
@@ -25,7 +29,20 @@ var _ = Describe("warnMissingPrivilegedPortCapability", func() {
 
 	AfterEach(func() {
 		raiseNetBindService = origRaise
+		unprivilegedPortStartFile = origFile
 		loggerHook.Reset()
+	})
+
+	It("treats a port below the kernel boundary as privileged", func() {
+		tmp := GinkgoT().TempDir()
+		file := filepath.Join(tmp, "ip_unprivileged_port_start")
+		Expect(os.WriteFile(file, []byte("80"), 0o600)).To(Succeed())
+		DeferCleanup(func() { unprivilegedPortStartFile = origFile })
+		unprivilegedPortStartFile = file
+
+		raiseNetBindService = func() (bool, error) { return false, nil }
+		warnMissingPrivilegedPortCapability(config.Ports{DNS: config.ListenConfig{":53"}})
+		Expect(loggerHook.LastRecord().Message).Should(ContainSubstring("port >= 80"))
 	})
 
 	When("the capability is effective", func() {
