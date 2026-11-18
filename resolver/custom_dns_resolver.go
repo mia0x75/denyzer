@@ -218,12 +218,16 @@ func (r *CustomDNSResolver) processDNSEntry(
 		return r.processTXT(v.Txt, question, v.Header().Ttl)
 	case *dns.SRV:
 		return r.processSRV(*v, question, v.Header().Ttl)
+	case *dns.HTTPS:
+		return processServiceBinding(v, dns.TypeHTTPS, question), nil
+	case *dns.SVCB:
+		return processServiceBinding(v, dns.TypeSVCB, question), nil
 	case *dns.CNAME:
 		return r.processCNAME(ctx, logger, request, *v, resolvedCnames, question, v.Header().Ttl)
 	}
 
 	// A zone can legitimately contain record types denyzer does not serve (SOA, NS,
-	// MX, HTTPS, RRSIG, ...). They are simply not answered here: failing the whole
+	// MX, CAA, RRSIG, ...). They are simply not answered here: failing the whole
 	// query would also break the supported records defined for the same name.
 	if logger.Enabled(ctx, slog.LevelDebug) {
 		logger.LogAttrs(
@@ -327,6 +331,22 @@ func (r *CustomDNSResolver) processSRV(
 	}
 
 	return result, nil
+}
+
+// processServiceBinding answers HTTPS or SVCB queries from a zone entry of that type.
+func processServiceBinding(entry dns.RR, rrType uint16, question dns.Question) []dns.RR {
+	if question.Qtype != rrType {
+		return nil
+	}
+
+	rr := dns.Copy(entry)
+
+	hdr := rr.Header()
+	hdr.Name = question.Name
+	hdr.Rrtype = rrType
+	hdr.Class = dns.ClassINET
+
+	return []dns.RR{rr}
 }
 
 func (r *CustomDNSResolver) processCNAME(
