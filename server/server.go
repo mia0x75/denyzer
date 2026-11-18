@@ -989,7 +989,8 @@ func newRequestFromHTTP(ctx context.Context, req *http.Request, msg *dns.Msg) (c
 	protocol := model.RequestProtocolTCP
 	clientIP := util.HTTPClientIP(req)
 
-	clientID := chi.URLParam(req, "clientID")
+	// Sanitize untrusted URL input before it can become a metrics or log label.
+	clientID := strings.ToValidUTF8(chi.URLParam(req, "clientID"), "")
 	if clientID == "" {
 		clientID = extractClientIDFromHost(req.Host)
 	}
