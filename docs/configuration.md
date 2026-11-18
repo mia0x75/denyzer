@@ -1329,6 +1329,7 @@ Configuration parameters:
 | queryLog.batchSize        | int                                                                                  | no        | 100           | Max entries buffered before a flush is triggered                                              |
 | queryLog.ignore.sudn      | bool                                                                                 | no        | false         | if true, queries answered as Special Use Domain Names (SUDN) are not logged                   |
 | queryLog.ignore.domains   | list of string                                                                       | no        |               | domains excluded from the query log; each entry is matched against the query name as an exact domain, a `*.wildcard`, or a `/regex/` (exact domains and wildcards are stored as hashes, see [Storage of entries](#storage-of-entries)) |
+| queryLog.ignore.clients   | list of string                                                                       | no        |               | clients excluded from the query log; each entry is a client IP, a CIDR, or a client name, which can use `*` and `?` wildcards. Their queries are still resolved and filtered |
 
 !!! hint
 
@@ -1364,6 +1365,22 @@ Configuration parameters:
           - "db._dns-sd._udp.home"
           - "/\\.in-addr\\.arpa$/"
           - "apple.com"
+    ```
+
+!!! example
+    **Ignore noisy clients**
+
+    A router or access point that checks its internet connection every few seconds can fill the log.
+    Its queries are still answered and filtered as usual; they just aren't written to the log.
+
+    ```yaml
+    queryLog:
+      target: /var/lib/denyzer/querylog.db
+      ignore:
+        clients:
+          - 192.168.178.1
+          - 192.168.178.64/28
+          - "*-ap"
     ```
 
 ## Hosts file

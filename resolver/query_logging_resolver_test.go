@@ -216,6 +216,52 @@ var _ = Describe("QueryLoggingResolver", func() {
 					Expect(ignored.Records()).Should(BeEmpty())
 				})
 			})
+
+			Describe("Clients", func() {
+				BeforeEach(func() {
+					sutConfig.Ignore.Clients = []string{"192.168.178.1", "10.0.0.0/24", "printer", "*-ap"}
+				})
+
+				It("should not log a matching client IP", func() {
+					_, err := sut.Resolve(ctx,
+						newRequestWithClient("example.com.", A, "192.168.178.1", "client1"))
+					Expect(err).Should(Succeed())
+
+					Expect(ignored.Messages()).Should(ContainElement(ContainSubstring("ignored querylog entry")))
+				})
+
+				It("should not log a matching client CIDR", func() {
+					_, err := sut.Resolve(ctx,
+						newRequestWithClient("example.com.", A, "10.0.0.42", "client1"))
+					Expect(err).Should(Succeed())
+
+					Expect(ignored.Messages()).Should(ContainElement(ContainSubstring("ignored querylog entry")))
+				})
+
+				It("should not log a matching exact client name", func() {
+					_, err := sut.Resolve(ctx,
+						newRequestWithClient("example.com.", A, "192.0.2.1", "printer"))
+					Expect(err).Should(Succeed())
+
+					Expect(ignored.Messages()).Should(ContainElement(ContainSubstring("ignored querylog entry")))
+				})
+
+				It("should not log a matching client name wildcard", func() {
+					_, err := sut.Resolve(ctx,
+						newRequestWithClient("example.com.", A, "192.0.2.1", "printer-ap"))
+					Expect(err).Should(Succeed())
+
+					Expect(ignored.Messages()).Should(ContainElement(ContainSubstring("ignored querylog entry")))
+				})
+
+				It("should log a non-matching client", func() {
+					_, err := sut.Resolve(ctx,
+						newRequestWithClient("example.com.", A, "192.0.2.1", "client1"))
+					Expect(err).Should(Succeed())
+
+					Expect(ignored.Records()).Should(BeEmpty())
+				})
+			})
 		})
 	})
 

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -41,6 +43,87 @@ type QueryLoggingResolver struct {
 	writer        querylog.Writer
 	instanceID    string
 	ignoreDomains stringcache.GroupedStringCache
+	ignoreClients *ignoredClients
+}
+
+// ignoredClients matches queryLog.ignore.clients entries against a request's client.
+type ignoredClients struct {
+	exact map[string]struct{}
+	cidrs []*net.IPNet
+	globs []string
+}
+
+func newIgnoredClients(clients []string, logger *slog.Logger) *ignoredClients {
+	if len(clients) == 0 {
+		return nil
+	}
+
+	m := &ignoredClients{exact: make(map[string]struct{}, len(clients))}
+
+	for _, c := range clients {
+		id := strings.ToLower(strings.TrimSpace(c))
+		if id == "" {
+			logger.Warn(fmt.Sprintf("ignoring invalid queryLog.ignore.clients entry: %q", c))
+
+			continue
+		}
+
+		if isClientNameGlob(id) {
+			if _, err := filepath.Match(id, ""); err != nil {
+				logger.Warn(fmt.Sprintf("ignoring invalid queryLog.ignore.clients entry: %q", c))
+
+				continue
+			}
+
+			m.globs = append(m.globs, id)
+
+			continue
+		}
+
+		if _, ipNet, err := net.ParseCIDR(id); err == nil {
+			m.cidrs = append(m.cidrs, ipNet)
+
+			continue
+		}
+
+		// Normalize IPs so IPv4-mapped IPv6 addresses match IPv4 entries.
+		if ip := net.ParseIP(id); ip != nil {
+			id = ip.String()
+		}
+
+		m.exact[id] = struct{}{}
+	}
+
+	return m
+}
+
+func (m *ignoredClients) matches(request *model.Request) bool {
+	if request.ClientIP != nil {
+		if _, ok := m.exact[request.ClientIP.String()]; ok {
+			return true
+		}
+
+		for _, ipNet := range m.cidrs {
+			if ipNet.Contains(request.ClientIP) {
+				return true
+			}
+		}
+	}
+
+	for _, name := range request.ClientNames {
+		name = strings.ToLower(name)
+		if _, ok := m.exact[name]; ok {
+			return true
+		}
+
+		for _, pattern := range m.globs {
+			if matched, _ := filepath.Match(pattern, name); matched {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func GetQueryLoggingWriter(ctx context.Context, cfg config.QueryLog, instanceID string) (querylog.Writer, error) {
@@ -157,6 +240,7 @@ func NewQueryLoggingResolver(ctx context.Context, cfg config.QueryLog) (*QueryLo
 	}
 
 	ignoreDomains := newIgnoreDomainsMatcher(cfg.Ignore.Domains, logger)
+	ignoreClients := newIgnoredClients(cfg.Ignore.Clients, logger)
 
 	resolver := QueryLoggingResolver{
 		configurable: withConfig(&cfg),
@@ -165,6 +249,7 @@ func NewQueryLoggingResolver(ctx context.Context, cfg config.QueryLog) (*QueryLo
 		writer:        writer,
 		instanceID:    instanceID,
 		ignoreDomains: ignoreDomains,
+		ignoreClients: ignoreClients,
 	}
 
 	// TTL cleanup is handled by AsyncLogWriter internally, but for non-sqlite
@@ -246,6 +331,10 @@ func (r *QueryLoggingResolver) ignore(request *model.Request, response *model.Re
 	cfg := r.cfg.Ignore
 
 	if cfg.SUDN && response.RType == model.ResponseTypeSPECIAL {
+		return true
+	}
+
+	if r.ignoreClients != nil && r.ignoreClients.matches(request) {
 		return true
 	}
 

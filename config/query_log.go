@@ -62,6 +62,9 @@ type QueryLogIgnore struct {
 	// Domains whose queries are not logged. Each entry is matched against the
 	// query name as an exact domain, a *.wildcard, or a /regex/.
 	Domains []string `yaml:"domains"`
+	// Clients whose queries are not logged. Each entry is a client IP, a CIDR, or
+	// a client name, which can use * and ? wildcards.
+	Clients []string `yaml:"clients"`
 }
 
 // SetDefaults implements `defaults.Setter`.
@@ -105,6 +108,17 @@ func (c *QueryLog) LogConfig(logger *slog.Logger) {
 				for _, d := range c.Ignore.Domains {
 					if e.Enabled(context.TODO(), slog.LevelDebug) {
 						e.Debug("- " + d)
+					}
+				}
+			})
+		}
+
+		if len(c.Ignore.Clients) > 0 {
+			e.Info(fmt.Sprintf("clients (%d):", len(c.Ignore.Clients)))
+			log.WithIndent(e, "  ", func(e *slog.Logger) {
+				for _, cl := range c.Ignore.Clients {
+					if e.Enabled(context.TODO(), slog.LevelDebug) {
+						e.Debug("- " + cl)
 					}
 				}
 			})
