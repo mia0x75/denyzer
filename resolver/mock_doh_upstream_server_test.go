@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 
 	"github.com/mia0x75/denyzer/config"
-	"github.com/mia0x75/denyzer/util"
 	"github.com/miekg/dns"
 	"github.com/onsi/ginkgo/v2"
 )
@@ -145,26 +144,25 @@ func (m *MockDoHUpstreamServer) trackConn(conn net.Conn, state http.ConnState) {
 	}
 }
 
-//nolint:contextcheck // fatal mock failures terminate the process, not the HTTP request
 func (m *MockDoHUpstreamServer) handle(w http.ResponseWriter, r *http.Request) {
 	// Read the request fully before deciding what to do, so a killed connection
 	// fails while the client waits for the response - as it does in the wild -
 	// rather than while it is still writing.
 	body, err := io.ReadAll(r.Body)
-	util.FatalOnError("can't read request: ", err)
+	panicOnError("can't read request: ", err)
 
 	// The mock is HTTP/1.1-only by construction (see Start). Both the kill path
 	// below, which needs Hijacker, and the one-request-per-connection assumption
 	// the specs rely on would break silently under HTTP/2 multiplexing, so say so
 	// loudly rather than failing in confusing ways.
 	if r.ProtoMajor != 1 {
-		util.FatalOnError("mock DoH upstream: ", fmt.Errorf("expected HTTP/1.1, got %s", r.Proto))
+		panicOnError("mock DoH upstream: ", fmt.Errorf("expected HTTP/1.1, got %s", r.Proto))
 	}
 
 	conn, _ := r.Context().Value(dohConnKey{}).(net.Conn)
 	if m.poisoned(conn) {
 		hijacked, _, hErr := w.(http.Hijacker).Hijack()
-		util.FatalOnError("can't hijack connection: ", hErr)
+		panicOnError("can't hijack connection: ", hErr)
 		_ = hijacked.Close()
 
 		return
@@ -175,18 +173,18 @@ func (m *MockDoHUpstreamServer) handle(w http.ResponseWriter, r *http.Request) {
 
 	msg := new(dns.Msg)
 	err = msg.Unpack(body)
-	util.FatalOnError("can't deserialize message: ", err)
+	panicOnError("can't deserialize message: ", err)
 
 	response := m.answerFn(msg)
 	response.SetReply(msg)
 
 	raw, err := response.Pack()
-	util.FatalOnError("can't serialize message: ", err)
+	panicOnError("can't serialize message: ", err)
 
 	w.Header().Set("Content-Type", dnsContentType)
 
 	_, err = w.Write(raw)
-	util.FatalOnError("can't write response: ", err)
+	panicOnError("can't write response: ", err)
 }
 
 // Start starts the server and returns its upstream config.
@@ -206,7 +204,7 @@ func (m *MockDoHUpstreamServer) Start() config.Upstream {
 	m.server.StartTLS()
 
 	upstream, err := config.ParseUpstream(m.server.URL)
-	util.FatalOnError("can't parse upstream: ", err)
+	panicOnError("can't parse upstream: ", err)
 
 	return upstream
 }
@@ -237,7 +235,6 @@ type stalePooledConnTransport struct {
 	answerFn func(request *dns.Msg) (response *dns.Msg)
 }
 
-//nolint:contextcheck // fatal mock failures terminate the process, not the HTTP request
 func (t *stalePooledConnTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.calls.Add(1)
 
@@ -252,13 +249,13 @@ func (t *stalePooledConnTransport) RoundTrip(req *http.Request) (*http.Response,
 	}
 
 	body, err := io.ReadAll(req.Body)
-	util.FatalOnError("can't read request: ", err)
+	panicOnError("can't read request: ", err)
 
 	msg := new(dns.Msg)
-	util.FatalOnError("can't deserialize message: ", msg.Unpack(body))
+	panicOnError("can't deserialize message: ", msg.Unpack(body))
 
 	raw, err := mockReply(msg, t.answerFn(msg)).Pack()
-	util.FatalOnError("can't serialize message: ", err)
+	panicOnError("can't serialize message: ", err)
 
 	return &http.Response{
 		StatusCode: http.StatusOK,

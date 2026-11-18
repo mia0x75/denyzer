@@ -1,13 +1,26 @@
 package resolver
 
 import (
-	"github.com/mia0x75/denyzer/util"
+	"fmt"
+	"strings"
+
 	"github.com/miekg/dns"
 )
 
 // Helpers shared by the mock upstream servers (UDP/TCP, DoT, DoQ) to build
 // answer functions and finalize replies, so the identical logic isn't copied
 // per protocol.
+
+// panicOnError panics with message and err when err is not nil. The mock servers
+// use it instead of util.FatalOnError: FatalOnError calls os.Exit, which skips
+// Go's coverage-profile flush and leaves ginkgo's recursive coverage merge with
+// a missing <package>/coverage.txt. Panicking turns the failure into a normal
+// spec failure while still letting the binary flush its coverage.
+func panicOnError(message string, err error) {
+	if err != nil {
+		panic(fmt.Errorf("%s: %w", strings.TrimRight(strings.TrimSpace(message), ":"), err))
+	}
+}
 
 // rrAnswerFn returns a mock answer function that replies with the given resource
 // records (in dns.NewRR text form).
@@ -17,7 +30,7 @@ func rrAnswerFn(answers ...string) func(request *dns.Msg) *dns.Msg {
 
 		for _, a := range answers {
 			rr, err := dns.NewRR(a)
-			util.FatalOnError("can't create RR", err)
+			panicOnError("can't create RR", err)
 
 			msg.Answer = append(msg.Answer, rr)
 		}

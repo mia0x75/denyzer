@@ -11,10 +11,9 @@ import (
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
+	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/util"
 	"gopkg.in/yaml.v2"
-
-	"github.com/mia0x75/denyzer/model"
 
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/mock"
@@ -101,7 +100,6 @@ var (
 )
 
 // autoAnswer provides a valid fake answer.
-//
 // To be used as a value for `mockResolver.AnswerFn`.
 func autoAnswer(qType dns.Type, qName string) (*dns.Msg, error) {
 	var ip net.IP
@@ -119,8 +117,6 @@ func autoAnswer(qType dns.Type, qName string) (*dns.Msg, error) {
 }
 
 // newTestBootstrap creates a test Bootstrap
-//
-//nolint:contextcheck // fatal fixture failures terminate the process, not the bootstrap context
 func newTestBootstrap(ctx context.Context, response *dns.Msg) *Bootstrap {
 	const cfgTxt = `
 upstream: https://mock
@@ -132,10 +128,10 @@ ips:
 
 	var bCfg config.BootstrapDNS
 	err := yaml.UnmarshalStrict([]byte(cfgTxt), &bCfg)
-	util.FatalOnError("test bootstrap config is broken, did you change the struct?", err)
+	panicOnError("test bootstrap config is broken, did you change the struct?", err)
 
 	b, err := NewBootstrap(ctx, &config.Config{BootstrapDNS: bCfg})
-	util.FatalOnError("can't create bootstrap", err)
+	panicOnError("can't create bootstrap", err)
 
 	b.resolver = bootstrapUpstream
 
@@ -149,26 +145,24 @@ ips:
 }
 
 // newTestDOHUpstream creates a test DoH Upstream
-//
-//nolint:contextcheck // fatal fixture failures terminate the process, not the HTTP request
 func newTestDOHUpstream(fn func(request *dns.Msg) (response *dns.Msg),
 	reqFn ...func(w http.ResponseWriter),
 ) config.Upstream {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 
-		util.FatalOnError("can't read request: ", err)
+		panicOnError("can't read request: ", err)
 
 		msg := new(dns.Msg)
 		err = msg.Unpack(body)
-		util.FatalOnError("can't deserialize message: ", err)
+		panicOnError("can't deserialize message: ", err)
 
 		response := fn(msg)
 		response.SetReply(msg)
 
 		b, err := response.Pack()
 
-		util.FatalOnError("can't serialize message: ", err)
+		panicOnError("can't serialize message: ", err)
 
 		w.Header().Set("Content-Type", "application/dns-message")
 
@@ -180,12 +174,12 @@ func newTestDOHUpstream(fn func(request *dns.Msg) (response *dns.Msg),
 
 		_, err = w.Write(b)
 
-		util.FatalOnError("can't write response: ", err)
+		panicOnError("can't write response: ", err)
 	}))
 
 	upstream, err := config.ParseUpstream(server.URL)
 
-	util.FatalOnError("can't resolve address: ", err)
+	panicOnError("can't resolve address: ", err)
 
 	return upstream
 }
