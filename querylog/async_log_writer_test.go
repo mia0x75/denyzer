@@ -117,10 +117,14 @@ var _ = Describe("AsyncLogWriter", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 			w := &AsyncLogWriter{}
 			entries := []*storage.QueryLogEntry{
-				{Timestamp: time.Now().UnixMilli(), Domain: "bogus-latency.test", QueryType: "A",
-					ResponseType: "RESOLVED", DurationMs: 10},
-				{Timestamp: time.Now().UnixMilli(), Domain: "bogus-latency.test", QueryType: "A",
-					ResponseType: "BOGUS", DurationMs: 100},
+				{
+					Timestamp: time.Now().UnixMilli(), Domain: "bogus-latency.test", QueryType: "A",
+					ResponseType: "RESOLVED", DurationMs: 10,
+				},
+				{
+					Timestamp: time.Now().UnixMilli(), Domain: "bogus-latency.test", QueryType: "A",
+					ResponseType: "BOGUS", DurationMs: 100,
+				},
 			}
 			collector := stats.NewCollector()
 			for _, entry := range entries {

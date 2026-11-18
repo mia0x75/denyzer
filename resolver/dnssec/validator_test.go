@@ -4147,8 +4147,10 @@ var _ = Describe("Additional Validator Coverage", func() {
 					Hdr:    dns.RR_Header{Name: "target.signed.example.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
 					Target: "missing.signed.example.",
 				}
-				response.Answer = append([]dns.RR{next,
-					signRRset([]dns.RR{next}, dns.TypeCNAME, chain.childKey, chain.childPriv, chain.child)}, response.Answer...)
+				response.Answer = append([]dns.RR{
+					next,
+					signRRset([]dns.RR{next}, dns.TypeCNAME, chain.childKey, chain.childPriv, chain.child),
+				}, response.Answer...)
 				hash := dns.HashName(chain.child, dns.SHA1, 0, "")
 				nsec := &dns.NSEC3{
 					Hdr:  dns.RR_Header{Name: hash + "." + chain.child, Rrtype: dns.TypeNSEC3, Class: dns.ClassINET, Ttl: 300},
