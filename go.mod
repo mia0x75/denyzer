@@ -6,7 +6,7 @@ require (
 	github.com/ThinkChaos/parcour v0.0.0-20230710171753-fbf917c9eaef
 	github.com/asaskevich/EventBus v0.0.0-20200907212545-49d423059eef
 	github.com/avast/retry-go/v4 v4.7.0
-	github.com/breml/rootcerts v0.3.8
+	github.com/breml/rootcerts v0.3.9
 	github.com/creasty/defaults v1.11.0
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/hako/durafmt v0.0.0-20210608085754-5c1018a4e16b
