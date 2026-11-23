@@ -142,6 +142,11 @@ func (d *denialSet) nsecNoData() ValidationResult {
 	}
 
 	switch rr := found.record; {
+	case rr != nil && d.qtype == dns.TypeANY:
+		// An NSEC RRset is data at its owner name, so it cannot prove ANY NODATA there.
+		d.logger.Warn(fmt.Sprintf("NSEC at %s cannot prove ANY NODATA", rr.Hdr.Name))
+
+		return ValidationResultBogus
 	case rr != nil && !d.lacksType(rr.Hdr.Name, rr.TypeBitMap):
 		d.logger.Warn(
 			fmt.Sprintf("NSEC at %s does not deny type %d: it lists the type or CNAME, or it is from the side of a "+

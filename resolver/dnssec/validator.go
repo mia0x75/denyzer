@@ -48,7 +48,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"slices"
 	"time"
 
@@ -384,7 +383,7 @@ func (v *Validator) responseStatus(ctx context.Context, response *dns.Msg, quest
 	var authority []rrsetResult
 
 	keys := chainKeys{v: v, parentSide: chain.parentSide}
-	results := validateSection(ctx, response.Answer, keys)
+	results := keys.validateAnswer(ctx, response.Answer, chain.synthesized)
 
 	// An RRset that is Bogus for good makes the reply Bogus, so nothing after it is verified
 	if !anyRefused(results) {
@@ -430,14 +429,13 @@ func (v *Validator) responseStatus(ctx context.Context, response *dns.Msg, quest
 
 // answerChain is the answer that a reply gives to a question (see followAnswer)
 type answerChain struct {
-	rrsets map[rrsetKey]bool // The RRsets of the chain
-	end    string            // The name at which the chain ends, in canonical form
-	found  bool              // The chain ends with the RRsets asked for, and else at a name without them
-	stray  bool              // The answer section holds an RRset that the chain does not lead to
-
-	// The CNAME RRset that answers a DS question, if the chain is that RRset: like the DS RRset
-	// asked for, an RRset of the zone above its owner name (see holder)
-	parentSide rrsetKey
+	// Unsigned CNAMEs made from DNAMEs, mapped to the DNAME RRsets that supply them.
+	synthesized map[rrsetKey]rrsetKey
+	rrsets      map[rrsetKey]bool
+	end         string
+	found       bool
+	stray       bool
+	parentSide  rrsetKey
 }
 
 // followAnswer follows the answer that reply gives to question (RFC 1034 §4.3.2): the chain from
@@ -460,12 +458,15 @@ type answerChain struct {
 // its answer: it is validated as one that goes on.
 //
 // A CNAME made from a DNAME comes with the DNAME RRset of a name above it (RFC 6672 §3.1). That
-// RRset is no part of the chain and gives the CNAME nothing: the CNAME has its own status, like
-// any RRset. Every other RRset that the chain does not lead to is a stray: such a section
-// answers another question, or none.
+// RRset supplies the unsigned CNAME when the substitution is exact. Every other RRset that the
+// chain does not lead to is a stray: such a section answers another question, or none.
 func followAnswer(reply *dns.Msg, question dns.Question) answerChain {
 	rest := groupRRsetsByNameAndType(reply.Answer)
 	chain := answerChain{rrsets: make(map[rrsetKey]bool), end: dns.CanonicalName(question.Name)}
+	dnames := indexDNAMEs(rest)
+	if len(dnames) != 0 {
+		chain.synthesized = make(map[rrsetKey]rrsetKey)
+	}
 
 	// take moves the RRset of the name at the end of the chain with the type rrType into the
 	// chain. An RRset is taken once, so the chain ends where its CNAMEs loop.
@@ -478,10 +479,8 @@ func followAnswer(reply *dns.Msg, question dns.Question) answerChain {
 			chain.rrsets[key] = true
 		}
 
-		if held && rrType == dns.TypeCNAME {
-			maps.DeleteFunc(rest, func(above rrsetKey, _ []dns.RR) bool {
-				return above.rrType == dns.TypeDNAME && above.name != key.name && dns.IsSubDomain(above.name, key.name)
-			})
+		if held && rrType == dns.TypeCNAME && len(dnames) != 0 {
+			chain.takeCoveringDNAME(key, rrset, dnames, rest)
 		}
 
 		return rrset
@@ -520,9 +519,73 @@ func followAnswer(reply *dns.Msg, question dns.Question) answerChain {
 		chain.end = target
 	}
 
-	chain.stray = len(rest) > 0
+	chain.stray = chain.stray || len(rest) > 0
 
 	return chain
+}
+
+// indexDNAMEs keeps DNAME RRsets available for later CNAME substitutions after the CNAME chain
+// has already consumed them.
+func indexDNAMEs(rrsets map[rrsetKey][]dns.RR) map[rrsetKey][]dns.RR {
+	var dnames map[rrsetKey][]dns.RR
+	for key, rrset := range rrsets {
+		if key.rrType == dns.TypeDNAME {
+			if dnames == nil {
+				dnames = make(map[rrsetKey][]dns.RR)
+			}
+			dnames[key] = rrset
+		}
+	}
+
+	return dnames
+}
+
+// takeCoveringDNAME records the DNAME that exactly supplies key's CNAME. The closest DNAME above
+// the name decides; a mismatch marks the section as answering another question.
+func (chain *answerChain) takeCoveringDNAME(
+	key rrsetKey,
+	rrset []dns.RR,
+	dnames, rest map[rrsetKey][]dns.RR,
+) {
+	for off, end := dns.NextLabel(key.name, 0); !end; off, end = dns.NextLabel(key.name, off) {
+		above := rrsetKey{name: key.name[off:], rrType: dns.TypeDNAME}
+		ds, ok := dnames[above]
+		if !ok {
+			continue
+		}
+
+		if matchesDNAME(key.name[:off], ds, rrset) {
+			chain.synthesized[key] = above
+			delete(rest, above)
+		} else {
+			chain.stray = true
+		}
+
+		return
+	}
+}
+
+// matchesDNAME checks the exact substitution of RFC 6672 §3.1: preserve every label below the
+// DNAME owner and replace only that owner with the DNAME target.
+func matchesDNAME(prefix string, ds, cs []dns.RR) bool {
+	if len(ds) != 1 || len(cs) != 1 {
+		return false
+	}
+	dname, okD := ds[0].(*dns.DNAME)
+	cname, okC := cs[0].(*dns.CNAME)
+	if !okD || !okC || dname.Hdr.Class != cname.Hdr.Class {
+		return false
+	}
+
+	target := prefix
+	if dname.Target != "." {
+		target += dns.CanonicalName(dname.Target)
+	}
+	if _, valid := dns.IsDomainName(target); !valid {
+		return false
+	}
+
+	return target == dns.CanonicalName(cname.Target)
 }
 
 // endsWithAnswer reports whether reply says nothing beyond its answer section about the name

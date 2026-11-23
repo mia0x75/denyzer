@@ -291,6 +291,9 @@ func hidesNamesBelow(typeBitMap []uint16) bool {
 // only the root has none above it.
 func (d *denialSet) lacksType(owner string, typeBitMap []uint16) bool {
 	switch {
+	case d.qtype == dns.TypeANY:
+		// ANY asks for any RRset, so only an empty NSEC3 bitmap proves NODATA at the name.
+		return len(typeBitMap) == 0
 	case slices.Contains(typeBitMap, d.qtype), slices.Contains(typeBitMap, dns.TypeCNAME):
 		return false
 	case d.qtype == dns.TypeDS:

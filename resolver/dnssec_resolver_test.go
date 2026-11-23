@@ -718,13 +718,15 @@ var _ = Describe("DNSSECResolver", func() {
 				}
 			})
 
-			It("caps client TTLs even when caching.minTime holds authenticated data longer", func() {
+			It("bounds both delivery and cache reuse by the signed TTL despite a higher cache minimum", func() {
 				cache := withCache(config.Caching{MinCachingTime: config.Duration(time.Hour)})
 				for range 2 {
 					resp := resolve()
 					Expect(resp.Res.AuthenticatedData).Should(BeTrue())
+					Expect(resp.Res.Answer).Should(HaveLen(2))
 					for _, rr := range resp.Res.Answer {
-						Expect(rr.Header().Ttl).Should(Equal(uint32(300)))
+						Expect(rr.Header().Ttl).Should(BeNumerically("~", 300, 1))
+						Expect(rr.Header().Ttl).Should(BeNumerically("<=", 300))
 					}
 				}
 				Expect(asked[dns.TypeA]).Should(Equal(1))
@@ -732,7 +734,8 @@ var _ = Describe("DNSSECResolver", func() {
 				Expect(err).Should(Succeed())
 				Expect(held.RType).Should(Equal(model.ResponseTypeCACHED))
 				for _, rr := range held.Res.Answer {
-					Expect(rr.Header().Ttl).Should(BeNumerically(">", 3500))
+					Expect(rr.Header().Ttl).Should(BeNumerically(">", 0))
+					Expect(rr.Header().Ttl).Should(BeNumerically("<=", 300))
 				}
 			})
 
