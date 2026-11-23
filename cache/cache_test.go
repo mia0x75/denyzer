@@ -347,6 +347,211 @@ func testPrefetchReloadTTL(
 	}
 }
 
+func TestNewCache_NilValueNotStored(t *testing.T) {
+	c := NewCache[string](Options{})
+	c.Start(t.Context())
+	defer c.Stop()
+
+	c.Put("k", nil, time.Hour)
+
+	assert.Equal(t, 0, c.TotalCount())
+}
+
+func TestNewCache_MaxSizeOption(t *testing.T) {
+	c := NewCache[string](Options{CleanupInterval: time.Hour, MaxSize: 2})
+	c.Start(t.Context())
+	defer c.Stop()
+
+	for _, key := range []string{"a", "b", "c"} {
+		val := key
+		c.Put(key, &val, time.Hour)
+	}
+
+	assert.LessOrEqual(t, c.TotalCount(), 2, "capacity-bounded cache must not grow past MaxSize")
+}
+
+func TestNewCache_StartIsIdempotent(t *testing.T) {
+	c := NewCache[string](Options{})
+	c.Start(t.Context())
+	c.Start(t.Context())
+
+	c.Stop()
+	c.Stop() // stopping twice is safe
+}
+
+func TestNewCache_StopWithoutStart(t *testing.T) {
+	c := NewCache[string](Options{})
+	c.Stop()
+
+	assert.Equal(t, 0, c.TotalCount())
+}
+
+func TestPrefetchingCache_ClearForgetsEntriesAndCounters(t *testing.T) {
+	var reloads atomic.Int32
+
+	c := NewPrefetchingCache[string](t.Context(), Options{CleanupInterval: time.Hour}, PrefetchingOptions[string]{
+		PrefetchExpires:   time.Minute,
+		PrefetchThreshold: 0,
+		ReloadFn: func(_ context.Context, _ string) (*string, time.Duration) {
+			reloads.Add(1)
+			fresh := "reloaded"
+
+			return &fresh, time.Minute
+		},
+	})
+	defer c.Stop()
+
+	val := "initial"
+	c.Put("k", &val, time.Hour)
+	_, _ = c.Get("k") // make the key hot
+	c.Clear()
+
+	require.Zero(t, c.TotalCount())
+
+	got, _ := c.Get("k")
+	assert.Nil(t, got)
+	assert.Zero(t, reloads.Load(), "a cleared query counter must not trigger a reload")
+}
+
+func TestPrefetchingCache_PutGuards(t *testing.T) {
+	c := NewPrefetchingCache[string](t.Context(), Options{CleanupInterval: time.Hour}, PrefetchingOptions[string]{})
+	defer c.Stop()
+
+	c.Put("k", nil, time.Hour)
+	assert.Equal(t, 0, c.TotalCount())
+
+	val := "v"
+	c.Put("k", &val, 0)
+	assert.Equal(t, 0, c.TotalCount())
+}
+
+func TestPrefetchingCache_ThresholdKeepsColdKeysCold(t *testing.T) {
+	var reloads atomic.Int32
+
+	c := NewPrefetchingCache[string](t.Context(), Options{CleanupInterval: time.Hour}, PrefetchingOptions[string]{
+		PrefetchExpires:   time.Minute,
+		PrefetchThreshold: 5,
+		ReloadFn: func(_ context.Context, _ string) (*string, time.Duration) {
+			reloads.Add(1)
+			fresh := "reloaded"
+
+			return &fresh, time.Minute
+		},
+	})
+	defer c.Stop()
+
+	val := "initial"
+	c.Put("k", &val, time.Hour)
+	for range 3 {
+		_, _ = c.Get("k")
+	}
+	c.Del("k")
+
+	// Four queries observed so far: below the threshold, so no reload happens.
+	got, _ := c.Get("k")
+	assert.Nil(t, got)
+	assert.Zero(t, reloads.Load())
+}
+
+func TestPrefetchingCache_ThresholdPassesHotKey(t *testing.T) {
+	var reloads atomic.Int32
+
+	c := NewPrefetchingCache[string](t.Context(), Options{CleanupInterval: time.Millisecond}, PrefetchingOptions[string]{
+		PrefetchExpires:   time.Minute,
+		PrefetchThreshold: 2,
+		ReloadFn: func(_ context.Context, _ string) (*string, time.Duration) {
+			reloads.Add(1)
+			fresh := "reloaded"
+
+			return &fresh, 10 * time.Millisecond
+		},
+	})
+	defer c.Stop()
+
+	val := "initial"
+	c.Put("k", &val, 5*time.Millisecond)
+	_, _ = c.Get("k")
+	_, _ = c.Get("k") // third observed query crosses the threshold
+
+	require.Eventually(t, func() bool {
+		got, _ := c.Get("k")
+
+		return got != nil && *got == "reloaded"
+	}, time.Second, time.Millisecond)
+
+	assert.Positive(t, reloads.Load())
+}
+
+func TestPrefetchingCache_ReloadWithoutValue(t *testing.T) {
+	var reloads atomic.Int32
+
+	c := NewPrefetchingCache[string](t.Context(), Options{CleanupInterval: time.Millisecond}, PrefetchingOptions[string]{
+		PrefetchExpires:   time.Minute,
+		PrefetchThreshold: 0,
+		ReloadFn: func(_ context.Context, _ string) (*string, time.Duration) {
+			reloads.Add(1)
+
+			return nil, 0
+		},
+	})
+	defer c.Stop()
+
+	val := "initial"
+	c.Put("k", &val, 5*time.Millisecond)
+	_, _ = c.Get("k") // make the key eligible
+
+	// The loader ran but produced no value: Get reports a miss without an error.
+	require.Eventually(t, func() bool {
+		got, _ := c.Get("k")
+
+		return got == nil && reloads.Load() > 0
+	}, time.Second, time.Millisecond)
+}
+
+func TestPrefetchingCache_CacheHitCallback(t *testing.T) {
+	var hits atomic.Int32
+
+	c := NewPrefetchingCache[string](t.Context(), Options{CleanupInterval: time.Hour}, PrefetchingOptions[string]{
+		OnPrefetchCacheHit: func(string) { hits.Add(1) },
+	})
+	defer c.Stop()
+
+	val := "v"
+	c.Put("k", &val, time.Hour)
+	_, _ = c.Get("k")
+
+	assert.Positive(t, hits.Load())
+}
+
+func TestPrefetchingCache_MaxItemsCountOption(t *testing.T) {
+	c := NewPrefetchingCache[string](t.Context(), Options{CleanupInterval: time.Hour}, PrefetchingOptions[string]{
+		PrefetchExpires: time.Hour,
+		MaxItemsCount:   1,
+	})
+	defer c.Stop()
+
+	_, _ = c.Get("a")
+	_, _ = c.Get("b")
+
+	assert.LessOrEqual(t, c.counts.Len(), 1, "counter cache must honor MaxItemsCount")
+}
+
+func TestMockExpiringCacheCoversInterface(t *testing.T) {
+	m := NewMockExpiringCache[string](t)
+
+	val := "v"
+	m.EXPECT().Put("k", &val, time.Hour)
+	m.Put("k", &val, time.Hour)
+	m.EXPECT().Get("k").Return(&val, time.Minute)
+	got, ttl := m.Get("k")
+	require.NotNil(t, got)
+	assert.Equal(t, time.Minute, ttl)
+	m.EXPECT().Clear()
+	m.Clear()
+	m.EXPECT().TotalCount().Return(1)
+	assert.Equal(t, 1, m.TotalCount())
+}
+
 func TestNewPrefetchingCache_CleanupStopsWithLifecycle(t *testing.T) {
 	for _, stopExplicitly := range []bool{false, true} {
 		name := "context cancellation"
