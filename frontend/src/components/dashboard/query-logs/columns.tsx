@@ -79,10 +79,12 @@ export const columns: ColumnDef<typeof logTableFeatures, LogEntry>[] = [
       const responseType = row.original.responseType;
       let tooltipContent = tooltipText;
 
-      if (responseType === "RESOLVED") {
-        tooltipContent = `Resolved by: ${tooltipText}`;
-      } else if (responseType === "BLOCKED") {
-        tooltipContent = `Group: ${tooltipText}`;
+      if (tooltipText) {
+        if (responseType === "RESOLVED") {
+          tooltipContent = `Resolved by: ${tooltipText}`;
+        } else if (responseType === "BLOCKED") {
+          tooltipContent = `Group: ${tooltipText}`;
+        }
       }
 
       let badgeVariant: BadgeVariants = "outline";

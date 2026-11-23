@@ -1,7 +1,7 @@
 "use client";
 
 import { Check } from "lucide-react";
-import { cn } from "~/lib/utils";
+import { cn, formatCount } from "~/lib/utils";
 import {
   CommandEmpty,
   CommandGroup,
@@ -10,7 +10,6 @@ import {
 } from "~/components/ui/command";
 import {
   type FilterSuggestions,
-  formatCount,
   type FilterValue,
 } from "~/hooks/use-filter-suggestions";
 

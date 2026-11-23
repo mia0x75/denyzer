@@ -85,13 +85,3 @@ export function useFilterSuggestions(
 
   return { domains, clients };
 }
-
-export function formatCount(count: number | undefined): string {
-  if (typeof count !== "number" || !Number.isFinite(count)) {
-    return "0";
-  }
-  if (count >= 1000) {
-    return `${(count / 1000).toFixed(1)}K`;
-  }
-  return count.toString();
-}

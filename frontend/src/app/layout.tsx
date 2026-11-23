@@ -19,6 +19,10 @@ export const metadata = {
   },
 };
 
+export const viewport = {
+  colorScheme: "dark",
+};
+
 const geist = Geist({
   subsets: ["latin"],
   display: "swap",

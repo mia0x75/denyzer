@@ -22,10 +22,8 @@ import { useMutation } from "@tanstack/react-query";
 import { executeQuery } from "~/lib/api";
 import type { QueryResult } from "~/lib/api-types";
 import { useState } from "react";
-import { DENYZER_DNS_RECORD_TYPES } from "~/lib/constants";
+import { DENYZER_DNS_RECORD_TYPES, type DnsRecordType } from "~/lib/constants";
 import { cn } from "~/lib/utils";
-
-type DNS_RECORD_TYPE = (typeof DENYZER_DNS_RECORD_TYPES)[number];
 
 function QueryResultPane({
   responseType,
@@ -99,12 +97,10 @@ function QueryResultPane({
 
 export function QueryTool() {
   const [query, setQuery] = useState("");
-  const [type, setType] = useState<DNS_RECORD_TYPE>(
-    DENYZER_DNS_RECORD_TYPES[0],
-  );
+  const [type, setType] = useState<DnsRecordType>(DENYZER_DNS_RECORD_TYPES[0]);
 
   const queryMutation = useMutation({
-    mutationFn: ({ query, type }: { query: string; type: DNS_RECORD_TYPE }) =>
+    mutationFn: ({ query, type }: { query: string; type: DnsRecordType }) =>
       executeQuery(query, type),
     onError: (error: Error) => {
       toast.error("Query failed", {
@@ -147,7 +143,7 @@ export function QueryTool() {
             <Select
               name="query-type"
               value={type}
-              onValueChange={(value: DNS_RECORD_TYPE) => setType(value)}
+              onValueChange={(value: DnsRecordType) => setType(value)}
             >
               <SelectTrigger
                 id="query-type"

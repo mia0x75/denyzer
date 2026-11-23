@@ -3,8 +3,6 @@ import { AuthGuard } from "~/components/auth-guard";
 import { LogoutButton } from "~/components/logout-button";
 
 export default function HomePage() {
-  const showLogs = true;
-
   return (
     <AuthGuard>
       <main className="container mx-auto max-w-5xl px-4 py-6 sm:py-8">
@@ -20,7 +18,7 @@ export default function HomePage() {
           <LogoutButton />
         </header>
 
-        <Dashboard showLogs={showLogs} />
+        <Dashboard />
       </main>
     </AuthGuard>
   );

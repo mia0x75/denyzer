@@ -93,7 +93,6 @@ interface TopListCardProps {
   isLoading: boolean;
   isEmpty: boolean;
   skeletonRows: number;
-  footer?: ReactNode;
   children: ReactNode;
 }
 
@@ -105,7 +104,6 @@ export function TopListCard({
   isLoading,
   isEmpty,
   skeletonRows,
-  footer,
   children,
 }: TopListCardProps) {
   let content = children;
@@ -141,7 +139,6 @@ export function TopListCard({
         </div>
       </CardHeader>
       <CardContent className="flex-1">{content}</CardContent>
-      {footer}
     </Card>
   );
 }
