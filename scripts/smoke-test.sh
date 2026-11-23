@@ -155,7 +155,10 @@ if [ "$READY" != 1 ]; then
   fail "the HTTPS management API did not become available on port $ADMIN_PORT"
 fi
 
-LOGIN=$(curl -kfsS --max-time 5 "$ADMIN/api/login" -H 'content-type: application/json' \
+# POST /api/login is the only call that runs the Argon2id password check,
+# which is deliberately slow and can exceed five seconds on the weaker
+# shared CI runners, so the login gets its own, longer budget.
+LOGIN=$(curl -kfsS --max-time 15 "$ADMIN/api/login" -H 'content-type: application/json' \
   --data "{\"username\":\"admin\",\"password\":\"$SMOKE_PASSWORD\"}") || fail "management login failed"
 TOKEN=$(printf '%s' "$LOGIN" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 if [[ ! "$TOKEN" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
