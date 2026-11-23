@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"testing"
 	"time"
 
 	. "github.com/mia0x75/denyzer/helpertest"
@@ -12,6 +13,17 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/testcontainers/testcontainers-go"
 )
+
+func TestDNSSECFixtures(t *testing.T) {
+	g := NewWithT(t)
+	signed, wrong, err := GenerateMismatchedDNSSEC("example.", "www.example.", "192.0.2.10")
+	g.Expect(err).Should(Succeed())
+	for _, fixture := range []*DNSSECTestData{signed, wrong} {
+		g.Expect(fixture.DNSKEYRRSIG.Verify(fixture.DNSKEY, []dns.RR{fixture.DNSKEY})).Should(Succeed())
+		g.Expect(fixture.RRSIG.Verify(fixture.DNSKEY, []dns.RR{fixture.ARecord})).Should(Succeed())
+	}
+	g.Expect(signed.RRSIG.Verify(wrong.DNSKEY, []dns.RR{signed.ARecord})).ShouldNot(Succeed())
+}
 
 var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 	var (
@@ -87,14 +99,15 @@ var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 					aRecordStr := FormatRecordForMokka(validData.ARecord)
 					rrsigStr := FormatRecordForMokka(validData.RRSIG)
 					dnskeyStr := FormatRecordForMokka(validData.DNSKEY)
+					dnskeyRRSIGStr := FormatRecordForMokka(validData.DNSKEYRRSIG)
 
 					// Create mokka with properly signed DNSSEC records
 					// Mokka needs to handle two query types:
 					// 1. A query for www.example -> return A + RRSIG
-					// 2. DNSKEY query for example -> return DNSKEY
+					// The trust anchor's published key RRset needs its self-signature.
 					mokka, err = createDNSMokkaContainer(ctx, "moka-dnssec-valid", e2eNet,
 						fmt.Sprintf(`A www.example/NOERROR("%s", "%s")`, aRecordStr, rrsigStr),
-						fmt.Sprintf(`DNSKEY example/NOERROR("%s")`, dnskeyStr),
+						fmt.Sprintf(`DNSKEY example/NOERROR("%s", "%s")`, dnskeyStr, dnskeyRRSIGStr),
 					)
 					Expect(err).Should(Succeed())
 
@@ -199,13 +212,14 @@ var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 					// Format records for mokka
 					aRecordStr := FormatRecordForMokka(validData.ARecord)
 					rrsigStr := FormatRecordForMokka(validData.RRSIG) // Signed with keyA
-					wrongKeyStr := FormatRecordForMokka(wrongKey)     // Different keyB
+					wrongKeyStr := FormatRecordForMokka(wrongKey.DNSKEY)
+					wrongKeyRRSIGStr := FormatRecordForMokka(wrongKey.DNSKEYRRSIG)
 
 					// Create mokka that returns RRSIG signed with one key, but DNSKEY is different
 					// This should cause validation to fail
 					_, err = createDNSMokkaContainer(ctx, "moka-dnssec-mismatch", e2eNet,
 						fmt.Sprintf(`A www.mismatch/NOERROR("%s", "%s")`, aRecordStr, rrsigStr),
-						fmt.Sprintf(`DNSKEY mismatch/NOERROR("%s")`, wrongKeyStr),
+						fmt.Sprintf(`DNSKEY mismatch/NOERROR("%s", "%s")`, wrongKeyStr, wrongKeyRRSIGStr),
 					)
 					Expect(err).Should(Succeed())
 
@@ -221,7 +235,7 @@ var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 						dnssec:
 						  validate: true
 						  trustAnchors:
-						    - "`+wrongKey.String()+`"
+						    - "`+wrongKey.DNSKEY.String()+`"
 						log:
 						  level: debug
 						`))
@@ -382,9 +396,11 @@ var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 					signed, genErr = GenerateValidDNSSEC("example.", "www.example.", "192.0.2.10")
 					Expect(genErr).Should(Succeed())
 
-					// Upstream returns a forged A record with no RRSIG.
+					// Query the apex so the missing answer signature is reached without a DS denial fixture.
 					_, err = createDNSMokkaContainer(ctx, "moka-unsigned", e2eNet,
-						`A www.example/NOERROR("A 203.0.113.77 300")`)
+						`A example/NOERROR("A 203.0.113.77 300")`,
+						fmt.Sprintf(`DNSKEY example/NOERROR("%s", "%s")`,
+							FormatRecordForMokka(signed.DNSKEY), FormatRecordForMokka(signed.DNSKEYRRSIG)))
 					Expect(err).Should(Succeed())
 
 					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
@@ -403,7 +419,7 @@ var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 				})
 
 				It("should reject the unsigned answer and return SERVFAIL", func(ctx context.Context) {
-					msg := util.NewMsgWithQuestion("www.example.", A)
+					msg := util.NewMsgWithQuestion("example.", A)
 					msg.SetEdns0(4096, true) // DO bit
 
 					resp, err := doDNSRequest(ctx, denyzer, msg)
@@ -413,12 +429,15 @@ var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 						"unsigned answer accepted for a DNSSEC-signed zone")
 					Expect(resp.AuthenticatedData).Should(BeFalse())
 					Expect(resp.Answer).ShouldNot(ContainElement(
-						BeDNSRecord("www.example.", A, "203.0.113.77")))
+						BeDNSRecord("example.", A, "203.0.113.77")))
+					ede := util.GetEdns0Option[*dns.EDNS0_EDE](resp)
+					Expect(ede).ShouldNot(BeNil())
+					Expect(ede.InfoCode).Should(Equal(dns.ExtendedErrorCodeRRSIGsMissing))
 				})
 
 				It("should return the answer unvalidated to a client that sets CD",
 					func(ctx context.Context) {
-						msg := util.NewMsgWithQuestion("www.example.", A)
+						msg := util.NewMsgWithQuestion("example.", A)
 						msg.CheckingDisabled = true // +cd: the client validates itself
 						msg.SetEdns0(4096, true)    // DO bit
 
@@ -427,7 +446,7 @@ var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 
 						Expect(resp.Rcode).Should(Equal(dns.RcodeSuccess))
 						Expect(resp.Answer).Should(ContainElement(
-							BeDNSRecord("www.example.", A, "203.0.113.77")))
+							BeDNSRecord("example.", A, "203.0.113.77")))
 						Expect(resp.AuthenticatedData).Should(BeFalse())
 					})
 			})
@@ -444,7 +463,9 @@ var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 					Expect(genErr).Should(Succeed())
 
 					mokka, err = createDNSMokkaContainer(ctx, "moka-cache", e2eNet,
-						`A www.example/NOERROR("A 203.0.113.77 300")`)
+						`A example/NOERROR("A 203.0.113.77 300")`,
+						fmt.Sprintf(`DNSKEY example/NOERROR("%s", "%s")`,
+							FormatRecordForMokka(signed.DNSKEY), FormatRecordForMokka(signed.DNSKEYRRSIG)))
 					Expect(err).Should(Succeed())
 
 					denyzer, err = createDenyzerContainerFromString(ctx, e2eNet, dedent(`
@@ -466,46 +487,50 @@ var _ = Describe("DNSSEC validation", Label("dnssec"), func() {
 
 				It("should not serve the unsigned answer from cache after the upstream is gone",
 					func(ctx context.Context) {
-						msg := util.NewMsgWithQuestion("www.example.", A)
+						msg := util.NewMsgWithQuestion("example.", A)
 						msg.SetEdns0(4096, true) // DO bit
 
-						// First query populates the cache.
-						_, err := doDNSRequest(ctx, denyzer, msg)
+						// Ensure the rejection reaches the unsigned answer rather than an incomplete trust chain.
+						resp, err := doDNSRequest(ctx, denyzer, msg)
 						Expect(err).Should(Succeed())
+						Expect(resp.Rcode).Should(Equal(dns.RcodeServerFailure))
+						ede := util.GetEdns0Option[*dns.EDNS0_EDE](resp)
+						Expect(ede).ShouldNot(BeNil())
+						Expect(ede.InfoCode).Should(Equal(dns.ExtendedErrorCodeRRSIGsMissing))
 
 						// The upstream disappears; any later answer comes from the cache.
 						Expect(mokka.Terminate(ctx)).Should(Succeed())
 
-						resp, err := doDNSRequest(ctx, denyzer, msg)
+						resp, err = doDNSRequest(ctx, denyzer, msg)
 						Expect(err).Should(Succeed())
 
 						Expect(resp.Answer).ShouldNot(ContainElement(
-							BeDNSRecord("www.example.", A, "203.0.113.77")),
+							BeDNSRecord("example.", A, "203.0.113.77")),
 							"forged unsigned answer replayed from cache after upstream shutdown")
 					})
 
 				It("should not serve an answer fetched with CD from cache to a client without CD",
 					func(ctx context.Context) {
-						msg := util.NewMsgWithQuestion("www.example.", A)
+						msg := util.NewMsgWithQuestion("example.", A)
 						msg.CheckingDisabled = true
 						msg.SetEdns0(4096, true)
 
 						resp, err := doDNSRequest(ctx, denyzer, msg)
 						Expect(err).Should(Succeed())
 						Expect(resp.Answer).Should(ContainElement(
-							BeDNSRecord("www.example.", A, "203.0.113.77")))
+							BeDNSRecord("example.", A, "203.0.113.77")))
 
 						// The upstream disappears; any later answer comes from the cache.
 						Expect(mokka.Terminate(ctx)).Should(Succeed())
 
-						msg = util.NewMsgWithQuestion("www.example.", A)
+						msg = util.NewMsgWithQuestion("example.", A)
 						msg.SetEdns0(4096, true)
 
 						resp, err = doDNSRequest(ctx, denyzer, msg)
 						Expect(err).Should(Succeed())
 						Expect(resp.Rcode).Should(Equal(dns.RcodeServerFailure))
 						Expect(resp.Answer).ShouldNot(ContainElement(
-							BeDNSRecord("www.example.", A, "203.0.113.77")),
+							BeDNSRecord("example.", A, "203.0.113.77")),
 							"answer fetched with CD served to a client without CD")
 					})
 			})

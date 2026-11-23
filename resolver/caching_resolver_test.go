@@ -854,6 +854,31 @@ var _ = Describe("CachingResolver", func() {
 		})
 	})
 
+	Describe("A request that is asked again bypasses the cache", func() {
+		BeforeEach(func() {
+			mockAnswer, _ = util.NewMsgWithAnswer("google.de.", 180, A, "1.1.1.1")
+		})
+
+		It("replaces the failed cached response with the new upstream response", func() {
+			Expect(sut.Resolve(ctx, newRequest("google.de.", A))).Should(SatisfyAll(
+				HaveResponseType(ResponseTypeRESOLVED), BeDNSRecord("google.de.", A, "1.1.1.1")))
+			Expect(m.Calls).Should(HaveLen(1))
+
+			nextAnswer, err := util.NewMsgWithAnswer("google.de.", 180, A, "2.2.2.2")
+			Expect(err).Should(Succeed())
+			*mockAnswer = *nextAnswer
+			again := newRequest("google.de.", A)
+			again.AskedAgain = true
+			Expect(sut.Resolve(ctx, again)).Should(SatisfyAll(
+				HaveResponseType(ResponseTypeRESOLVED), BeDNSRecord("google.de.", A, "2.2.2.2")))
+			Expect(m.Calls).Should(HaveLen(2))
+
+			Expect(sut.Resolve(ctx, newRequest("google.de.", A))).Should(SatisfyAll(
+				HaveResponseType(ResponseTypeCACHED), BeDNSRecord("google.de.", A, "2.2.2.2")))
+			Expect(m.Calls).Should(HaveLen(2))
+		})
+	})
+
 	Describe("EDNS pseudo records should not be cached", func() {
 		When("Some query returns EDNS OPT RRs", func() {
 			BeforeEach(func() {

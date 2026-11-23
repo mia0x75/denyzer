@@ -1,9 +1,10 @@
 package dnssec
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"encoding/base64"
+	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -15,15 +16,12 @@ import (
 
 var _ = Describe("RRset validation functions", func() {
 	var (
-		ctx          context.Context
 		sut          *Validator
 		trustStore   *TrustAnchorStore
 		mockUpstream *mockResolver
 	)
 
 	BeforeEach(func(specCtx SpecContext) {
-		ctx = specCtx
-
 		var err error
 		trustStore, err = NewTrustAnchorStore(nil)
 		Expect(err).Should(Succeed())
@@ -31,7 +29,7 @@ var _ = Describe("RRset validation functions", func() {
 		mockUpstream = &mockResolver{}
 		logger, _ := log.NewMockLogger()
 
-		sut = NewValidator(ctx, trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
+		sut = NewValidator(specCtx, trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
 	})
 
 	Describe("getAlgorithmStrength", func() {
@@ -132,39 +130,6 @@ var _ = Describe("RRset validation functions", func() {
 		})
 	})
 
-	Describe("findMatchingRRSIGsForType", func() {
-		It("should find matching RRSIG for type", func() {
-			rrsigA := &dns.RRSIG{TypeCovered: dns.TypeA}
-			rrsigAAAA := &dns.RRSIG{TypeCovered: dns.TypeAAAA}
-			rrsigDNSKEY := &dns.RRSIG{TypeCovered: dns.TypeDNSKEY}
-
-			sigs := []*dns.RRSIG{rrsigA, rrsigAAAA, rrsigDNSKEY}
-
-			result := findMatchingRRSIGsForType(sigs, dns.TypeA)
-			Expect(result).Should(HaveLen(1))
-			Expect(result[0]).Should(Equal(rrsigA))
-		})
-
-		It("should return empty slice when no match", func() {
-			rrsigAAAA := &dns.RRSIG{TypeCovered: dns.TypeAAAA}
-			result := findMatchingRRSIGsForType([]*dns.RRSIG{rrsigAAAA}, dns.TypeA)
-			Expect(result).Should(BeEmpty())
-		})
-
-		It("should return multiple matching RRSIGs", func() {
-			rrsig1 := &dns.RRSIG{TypeCovered: dns.TypeA, Algorithm: dns.RSASHA256}
-			rrsig2 := &dns.RRSIG{TypeCovered: dns.TypeA, Algorithm: dns.ED25519}
-
-			result := findMatchingRRSIGsForType([]*dns.RRSIG{rrsig1, rrsig2}, dns.TypeA)
-			Expect(result).Should(HaveLen(2))
-		})
-
-		It("should handle empty input", func() {
-			result := findMatchingRRSIGsForType([]*dns.RRSIG{}, dns.TypeA)
-			Expect(result).Should(BeEmpty())
-		})
-	})
-
 	Describe("validateSignerName", func() {
 		It("should accept signer equal to RRset name", func() {
 			result := validateSignerName("example.com.", "example.com.")
@@ -194,18 +159,6 @@ var _ = Describe("RRset validation functions", func() {
 		It("should handle case insensitivity", func() {
 			result := validateSignerName("EXAMPLE.COM.", "example.com.")
 			Expect(result).Should(BeTrue())
-		})
-	})
-
-	Describe("findMatchingRRSIGs", func() {
-		It("matches owner names without regard to case", func() {
-			sig := &dns.RRSIG{
-				Hdr:         dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeRRSIG},
-				TypeCovered: dns.TypeDNSKEY,
-			}
-
-			Expect(findMatchingRRSIGs([]*dns.RRSIG{sig}, "EXAMPLE.COM.", dns.TypeDNSKEY)).
-				Should(Equal([]*dns.RRSIG{sig}))
 		})
 	})
 
@@ -329,7 +282,7 @@ var _ = Describe("RRset validation functions", func() {
 				PublicKey: "test-key",
 			}
 
-			err := sut.verifyRRSIG(ctx, rrset, rrsig, key, nil, "example.com.")
+			err := sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("unsupported"))
 		})
@@ -365,7 +318,7 @@ var _ = Describe("RRset validation functions", func() {
 				PublicKey: "test-key",
 			}
 
-			err := sut.verifyRRSIG(ctx, rrset, rrsig, key, nil, "example.com.")
+			err := sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("algorithm mismatch"))
 		})
@@ -383,25 +336,12 @@ var _ = Describe("RRset validation functions", func() {
 				},
 			}
 
-			rrsig := &dns.RRSIG{
-				Hdr:         dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeRRSIG},
-				TypeCovered: dns.TypeA,
-				Algorithm:   dns.RSASHA256,
-				Labels:      2,
-				SignerName:  "example.com.",
-				Inception:   uint32(time.Now().Add(2 * time.Hour).Unix()), // Future
-				Expiration:  uint32(time.Now().Add(3 * time.Hour).Unix()),
-			}
+			// The key made the signature, for a validity period in the future: only a signature that
+			// verifies is refused for its dates
+			key, priv, _ := newSignedZoneKey("example.com.")
+			rrsig := signRRsetDuring(rrset, dns.TypeA, key, priv, "example.com.", 2*time.Hour, 3*time.Hour)
 
-			key := &dns.DNSKEY{
-				Hdr:       dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeDNSKEY},
-				Flags:     257,
-				Protocol:  3,
-				Algorithm: dns.RSASHA256,
-				PublicKey: "test-key",
-			}
-
-			err := sut.verifyRRSIG(ctx, rrset, rrsig, key, nil, "example.com.")
+			err := sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("not yet valid"))
 		})
@@ -419,27 +359,20 @@ var _ = Describe("RRset validation functions", func() {
 				},
 			}
 
-			rrsig := &dns.RRSIG{
-				Hdr:         dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeRRSIG},
-				TypeCovered: dns.TypeA,
-				Algorithm:   dns.RSASHA256,
-				Labels:      2,
-				SignerName:  "example.com.",
-				Inception:   uint32(time.Now().Add(-3 * time.Hour).Unix()),
-				Expiration:  uint32(time.Now().Add(-2 * time.Hour).Unix()), // Past
-			}
+			// The key made the signature, for a validity period in the past
+			key, priv, _ := newSignedZoneKey("example.com.")
+			rrsig := signRRsetDuring(rrset, dns.TypeA, key, priv, "example.com.", -3*time.Hour, -2*time.Hour)
 
-			key := &dns.DNSKEY{
-				Hdr:       dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeDNSKEY},
-				Flags:     257,
-				Protocol:  3,
-				Algorithm: dns.RSASHA256,
-				PublicKey: "test-key",
-			}
-
-			err := sut.verifyRRSIG(ctx, rrset, rrsig, key, nil, "example.com.")
+			err := sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("expired"))
+
+			// A signature that the key did not make is a failed signature, whatever its dates
+			rrsig.Signature = base64.StdEncoding.EncodeToString(make([]byte, 64))
+
+			err = sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
+			Expect(err).Should(MatchError(errRRSIGVerificationFailed))
+			Expect(err.Error()).ShouldNot(ContainSubstring("expired"))
 		})
 
 		It("should apply clock skew tolerance", func() {
@@ -474,7 +407,7 @@ var _ = Describe("RRset validation functions", func() {
 				PublicKey: "test-key",
 			}
 
-			err := sut.verifyRRSIG(ctx, rrset, rrsig, key, nil, "example.com.")
+			err := sut.verifyRRSIG(rrset, rrsig, key, nil, "example.com.")
 			// Will fail on crypto but not on timing
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).ShouldNot(ContainSubstring("not yet valid"))
@@ -502,7 +435,7 @@ var _ = Describe("RRset validation functions", func() {
 			otherKey, _, _ := newSignedZoneKey("example.com.")
 			sig := signRRset(rrset, dns.TypeA, key, priv, "example.com.")
 
-			Expect(sut.verifyWithZoneKeys(ctx, rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{otherKey, key}, &budget)).
+			Expect(sut.verifyWithZoneKeys(rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{otherKey, key}, &budget)).
 				Should(Succeed())
 		})
 
@@ -513,7 +446,7 @@ var _ = Describe("RRset validation functions", func() {
 			}
 			sig := signRRset(rrset, dns.TypeA, key, priv, "example.com.")
 
-			Expect(sut.verifyWithZoneKeys(ctx, rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{otherKey}, &budget)).
+			Expect(sut.verifyWithZoneKeys(rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{otherKey}, &budget)).
 				Should(MatchError(ContainSubstring("no RRSIG made by a validated key")))
 		})
 
@@ -532,7 +465,7 @@ var _ = Describe("RRset validation functions", func() {
 			Expect(sameTag.KeyTag()).Should(Equal(key.KeyTag()))
 			sig := signRRset(rrset, dns.TypeA, key, priv, "example.com.")
 
-			Expect(sut.verifyWithZoneKeys(ctx, rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{&sameTag, key}, &budget)).
+			Expect(sut.verifyWithZoneKeys(rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{&sameTag, key}, &budget)).
 				Should(Succeed())
 			Expect(budget).Should(Equal(maxZoneKeyVerifications-2), "both keys were tried")
 		})
@@ -546,9 +479,180 @@ var _ = Describe("RRset validation functions", func() {
 				sigs[i] = sig
 			}
 
-			err := sut.verifyWithZoneKeys(ctx, rrset, sigs, []*dns.DNSKEY{key}, &budget)
+			err := sut.verifyWithZoneKeys(rrset, sigs, []*dns.DNSKEY{key}, &budget)
 			Expect(err).Should(MatchError(ContainSubstring("signature verification failed")))
 			Expect(strings.Count(err.Error(), "signature verification failed")).Should(Equal(maxZoneKeyVerifications))
+		})
+	})
+
+	Describe("verifyWithKeys", func() {
+		It("should not try a key that the signer of the RRSIG does not own", func(ctx SpecContext) {
+			budget := maxZoneKeyVerifications
+
+			// A 2^32+1 key verifies through math/big, which checks the signature and nothing else
+			key, _, n, d := generateBigExponentRSAKey("example.com.")
+			rrset := []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   []byte{192, 0, 2, 1},
+			}}
+			sig := signRRsetWithBigExponent(rrset, dns.TypeA, key, n, d)
+
+			// The same key as a key of another zone
+			other := *key
+			other.Hdr.Name = "example.org."
+
+			Expect(sut.verifyWithKeys(ctx, rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{key}, &budget)).Should(BeIdenticalTo(sig))
+
+			verified, err := sut.verifyWithKeys(ctx, rrset, []*dns.RRSIG{sig}, []*dns.DNSKEY{&other}, &budget)
+			Expect(err).Should(HaveOccurred())
+			Expect(verified).Should(BeNil())
+		})
+	})
+
+	Describe("verifyRRset", func() {
+		It("should verify no more signatures than the budget of the validation holds", func(ctx SpecContext) {
+			key, priv, _ := newSignedZoneKey("example.com.")
+			keys := []*dns.DNSKEY{key}
+			rrset := []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   []byte{192, 0, 2, 1},
+			}}
+			sigs := []*dns.RRSIG{signRRset(rrset, dns.TypeA, key, priv, "example.com.")}
+
+			// Every RRset has its own tries, and all of them share the budget of their validation
+			validation := withQueryBudget(ctx, 1)
+
+			for range maxVerifications {
+				r := newRRsetResult(rrset)
+				Expect(sut.verifyRRset(validation, &r, sigs, newKeySet(validation, keys))).Should(BeIdenticalTo(sigs[0]))
+			}
+
+			r := newRRsetResult(rrset)
+			_, err := sut.verifyRRset(validation, &r, sigs, newKeySet(validation, keys))
+			Expect(err).Should(MatchError(errBudgetExhausted))
+			Expect(budgetFrom(validation).verifications.Load()).Should(BeEquivalentTo(maxVerifications))
+
+			// A validation that has run out asks for nothing more either
+			Expect(sut.consumeQueryBudget(validation)).Should(MatchError(errBudgetExhausted))
+		})
+
+		It("should verify nothing once the validation has run out of NSEC3 hashes", func(ctx SpecContext) {
+			key, priv, _ := newSignedZoneKey("example.com.")
+			rrset := []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   []byte{192, 0, 2, 1},
+			}}
+			sigs := []*dns.RRSIG{signRRset(rrset, dns.TypeA, key, priv, "example.com.")}
+			validation := withQueryBudget(ctx, 0)
+
+			for i := range maxNSEC3Hashes + 1 {
+				budgetFrom(validation).nsec3Hash(fmt.Sprintf("n%d.example.", i), "", 0)
+			}
+
+			r := newRRsetResult(rrset)
+			_, err := sut.verifyRRset(validation, &r, sigs, newKeySet(validation, []*dns.DNSKEY{key}))
+			Expect(err).Should(MatchError(errBudgetExhausted))
+			Expect(budgetFrom(validation).verifications.Load()).Should(BeZero())
+		})
+
+		It("should verify a signature outside its validity period, on the budget like any other", func(ctx SpecContext) {
+			key, priv, _ := newSignedZoneKey("example.com.")
+			rrset := []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   []byte{192, 0, 2, 1},
+			}}
+			expired := signRRsetDuring(rrset, dns.TypeA, key, priv, "example.com.", -3*time.Hour, -2*time.Hour)
+			validation := withQueryBudget(ctx, 0)
+
+			r := newRRsetResult(rrset)
+			_, err := sut.verifyRRset(validation, &r, []*dns.RRSIG{expired}, newKeySet(validation, []*dns.DNSKEY{key}))
+			Expect(err).Should(MatchError(ContainSubstring("signature expired")))
+			Expect(r.tries).Should(Equal(1))
+			Expect(budgetFrom(validation).verifications.Load()).Should(BeEquivalentTo(1))
+		})
+
+		It("should verify nothing in a context that has no budget", func(ctx SpecContext) {
+			key, priv, _ := newSignedZoneKey("example.com.")
+			rrset := []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   []byte{192, 0, 2, 1},
+			}}
+			sigs := []*dns.RRSIG{signRRset(rrset, dns.TypeA, key, priv, "example.com.")}
+
+			// Only withQueryBudget makes the context of a validation
+			Expect(budgetFrom(ctx)).Should(BeNil())
+
+			r := newRRsetResult(rrset)
+			_, err := sut.verifyRRset(ctx, &r, sigs, newKeySet(ctx, []*dns.DNSKEY{key}))
+			Expect(err).Should(MatchError(errNoBudget))
+			Expect(budgetFrom(ctx).nsec3Hash("example.com.", "", 0)).Should(BeEmpty())
+		})
+	})
+
+	Describe("checkRRSIG", func() {
+		DescribeTable("verifies with an RSA key whose exponent is at most 2^32+1",
+			func(ctx SpecContext, e *big.Int, verifies bool) {
+				// The time that a verification takes grows with the length of the exponent. BIND 9 takes
+				// exponents up to 2^32+1 too.
+				key, _, n, d := generateRSAKeyWithExponent("example.com.", e)
+				rrset := []dns.RR{&dns.A{
+					Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+					A:   []byte{192, 0, 2, 1},
+				}}
+				sig := signRRsetWithBigExponent(rrset, dns.TypeA, key, n, d)
+
+				Expect(canVerifyWith(key)).Should(Equal(verifies))
+
+				if verifies {
+					Expect(sut.checkRRSIG(ctx, rrset, sig, key)).Should(Succeed())
+				} else {
+					Expect(sut.checkRRSIG(ctx, rrset, sig, key)).
+						Should(MatchError(ContainSubstring("no support for the RSA exponent")))
+				}
+			},
+			Entry("2^32+1", new(big.Int).SetUint64(1<<32+1), true),
+			Entry("2^32+3", new(big.Int).SetUint64(1<<32+3), false),
+			Entry("an exponent of 4096 bits", new(big.Int).SetBit(new(big.Int).Lsh(big.NewInt(1), 4095), 0, 1), false),
+		)
+
+		It("refuses an RRSIG that counts more labels than its owner name has (RFC 4035 §5.3.1)", func(ctx SpecContext) {
+			rrset := []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   []byte{192, 0, 2, 1},
+			}}
+
+			// With either of the two verifications: that of miekg/dns, and that for an RSA exponent
+			// which Go's crypto/rsa cannot load. The signature is one over the Labels field as it is.
+			bigKey, _, n, d := generateBigExponentRSAKey("example.com.")
+			bigSig := signRRsetWithBigExponent(rrset, dns.TypeA, bigKey, n, d)
+			Expect(sut.checkRRSIG(ctx, rrset, bigSig, bigKey)).Should(Succeed())
+
+			bigSig.Labels++
+			signWithBigExponent(rrset, bigSig, n, d)
+			Expect(sut.checkRRSIG(ctx, rrset, bigSig, bigKey)).Should(MatchError(ContainSubstring("more than its owner name")))
+
+			key, priv, _ := newSignedZoneKey("example.com.")
+			sig := signRRset(rrset, dns.TypeA, key, priv, "example.com.")
+			Expect(sut.checkRRSIG(ctx, rrset, sig, key)).Should(Succeed())
+
+			sig.Labels++
+			Expect(sut.checkRRSIG(ctx, rrset, sig, key)).Should(MatchError(ContainSubstring("more than its owner name")))
+		})
+
+		It("does not count a leading \"*\" label of the owner name (RFC 4034 §3.1.3)", func(ctx SpecContext) {
+			// The RRSIG of the records that a wildcard owns counts the labels below the "*"
+			rrset := []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{Name: "*.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   []byte{192, 0, 2, 1},
+			}}
+
+			key, priv, _ := newSignedZoneKey("example.com.")
+			sig := signRRset(rrset, dns.TypeA, key, priv, "example.com.")
+			Expect(sig.Labels).Should(BeEquivalentTo(2))
+			Expect(sut.checkRRSIG(ctx, rrset, sig, key)).Should(Succeed())
+
+			sig.Labels++
+			Expect(sut.checkRRSIG(ctx, rrset, sig, key)).Should(MatchError(ContainSubstring("more than its owner name")))
 		})
 	})
 })

@@ -77,7 +77,7 @@ var _ = Describe("DNSSEC config", func() {
 			Expect(output).Should(ContainSubstring("Max chain depth = 10"))
 			Expect(output).Should(ContainSubstring("Cache expiration = 1 hour(s)"))
 			Expect(output).Should(ContainSubstring("Max NSEC3 iterations = 150"))
-			Expect(output).Should(ContainSubstring("Max upstream queries per validation = 30"))
+			Expect(output).Should(ContainSubstring("Max upstream queries per client query = 30"))
 			Expect(output).Should(ContainSubstring("Clock skew tolerance = 3600 second(s)"))
 		})
 
@@ -173,7 +173,7 @@ var _ = Describe("DNSSEC config", func() {
 			cfg.LogConfig(logger)
 
 			output := buf.String()
-			Expect(output).Should(ContainSubstring("Max upstream queries per validation = 50"))
+			Expect(output).Should(ContainSubstring("Max upstream queries per client query = 50"))
 		})
 
 		It("should log different clock skew tolerance values", func() {
@@ -204,7 +204,7 @@ var _ = Describe("DNSSEC config", func() {
 			Expect(output).Should(ContainSubstring("Max chain depth = 0"))
 			Expect(output).Should(ContainSubstring("Cache expiration = 0 hour(s)"))
 			Expect(output).Should(ContainSubstring("Max NSEC3 iterations = 0"))
-			Expect(output).Should(ContainSubstring("Max upstream queries per validation = 0"))
+			Expect(output).Should(ContainSubstring("Max upstream queries per client query = 0"))
 			Expect(output).Should(ContainSubstring("Clock skew tolerance = 0 second(s)"))
 		})
 

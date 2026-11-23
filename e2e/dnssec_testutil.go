@@ -12,10 +12,11 @@ import (
 
 // DNSSECTestData holds generated DNSSEC test data for e2e tests
 type DNSSECTestData struct {
-	ARecord    *dns.A
-	RRSIG      *dns.RRSIG
-	DNSKEY     *dns.DNSKEY
-	PrivateKey *ecdsa.PrivateKey
+	ARecord     *dns.A
+	RRSIG       *dns.RRSIG
+	DNSKEY      *dns.DNSKEY
+	PrivateKey  *ecdsa.PrivateKey
+	DNSKEYRRSIG *dns.RRSIG
 }
 
 // DNSSECChainData holds a complete DNSSEC chain with parent and child zones
@@ -106,39 +107,32 @@ func GenerateValidDNSSEC(zone, hostname, ipAddr string) (*DNSSECTestData, error)
 		return nil, fmt.Errorf("failed to sign A record: %w", err)
 	}
 
+	// Trust anchors authenticate the published key RRset only with its own signature.
+	dnskeySig := *sig
+	dnskeySig.Hdr.Ttl = key.Hdr.Ttl
+	if err := dnskeySig.Sign(privkey, []dns.RR{key}); err != nil {
+		return nil, fmt.Errorf("failed to sign DNSKEY: %w", err)
+	}
+
 	return &DNSSECTestData{
-		ARecord:    aRecord,
-		RRSIG:      sig,
-		DNSKEY:     key,
-		PrivateKey: privkey,
+		ARecord:     aRecord,
+		RRSIG:       sig,
+		DNSKEY:      key,
+		PrivateKey:  privkey,
+		DNSKEYRRSIG: &dnskeySig,
 	}, nil
 }
 
 // GenerateMismatchedDNSSEC generates DNSSEC data where RRSIG and DNSKEY don't match
-// The A record is signed with keyA, but a different keyB is returned for DNSKEY queries
-//
-//nolint:mnd // Test helper function with DNS TTL and key size constants
-func GenerateMismatchedDNSSEC(zone, hostname, ipAddr string) (*DNSSECTestData, *dns.DNSKEY, error) {
+// The DNSKEY reply must authenticate before the mismatched answer signature is checked.
+func GenerateMismatchedDNSSEC(zone, hostname, ipAddr string) (*DNSSECTestData, *DNSSECTestData, error) {
 	// Generate the first key and sign with it
 	validData, err := GenerateValidDNSSEC(zone, hostname, ipAddr)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Generate a second, different DNSKEY
-	wrongKey := new(dns.DNSKEY)
-	wrongKey.Hdr = dns.RR_Header{
-		Name:   zone,
-		Rrtype: dns.TypeDNSKEY,
-		Class:  dns.ClassINET,
-		Ttl:    3600,
-	}
-	wrongKey.Flags = 257
-	wrongKey.Protocol = 3
-	wrongKey.Algorithm = dns.ECDSAP256SHA256
-
-	// Generate different keypair
-	_, err = wrongKey.Generate(256)
+	wrongKey, err := GenerateValidDNSSEC(zone, hostname, ipAddr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate wrong DNSKEY: %w", err)
 	}

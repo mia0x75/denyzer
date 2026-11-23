@@ -59,6 +59,10 @@ func (r *EDEResolver) addExtraReasoning(res *model.Response) {
 		// dns.ExtendedErrorCodeOther seams broken in some clients
 		return
 	}
+	// Validation knows the precise failure; the generic response type does not.
+	if res.RType == model.ResponseTypeBOGUS && util.GetEdns0Option[*dns.EDNS0_EDE](res.Res) != nil {
+		return
+	}
 
 	edeOption := new(dns.EDNS0_EDE)
 	edeOption.InfoCode = infocode

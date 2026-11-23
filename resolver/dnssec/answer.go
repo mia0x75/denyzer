@@ -39,26 +39,3 @@ func answerTerminal(records []dns.RR, question dns.Question) (name string, compl
 
 	return name, false, false
 }
-
-func hasDenialRecords(records []dns.RR) bool {
-	for _, rr := range records {
-		switch rr.(type) {
-		case *dns.SOA, *dns.NSEC, *dns.NSEC3:
-			return true
-		}
-	}
-
-	return false
-}
-
-func mergeValidationResults(a, b ValidationResult) ValidationResult {
-	for _, result := range [...]ValidationResult{
-		ValidationResultBogus, ValidationResultIndeterminate, ValidationResultInsecure,
-	} {
-		if a == result || b == result {
-			return result
-		}
-	}
-
-	return ValidationResultSecure
-}

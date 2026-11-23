@@ -2,214 +2,159 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
+	"github.com/mia0x75/denyzer/cache"
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/resolver/dnssec"
+	"github.com/mia0x75/denyzer/util"
 	"github.com/miekg/dns"
 )
 
-const (
-	// ednsUDPSize is the EDNS0 UDP buffer size
-	ednsUDPSize = 4096
-)
+const ednsUDPSize = 4096
 
-// DNSSECResolver is responsible for DNSSEC validation of DNS responses
 type DNSSECResolver struct {
 	configurable[*config.DNSSEC]
 	NextResolver
 	typed
 
-	validator *dnssec.Validator
-	// upstreams picks the upstream group of a client when there are several; validation
-	// results are cached per group
-	upstreams *UpstreamTreeResolver
+	validator    *dnssec.Validator
+	upstreams    *UpstreamTreeResolver
+	failureCache interface {
+		cache.ExpiringCache[validationFailure]
+		Del(key string)
+	}
 }
 
-// NewDNSSECResolver creates a new DNSSEC resolver instance
 func NewDNSSECResolver(ctx context.Context, cfg config.DNSSEC, upstream Resolver) (ChainedResolver, error) {
-	// Create resolver with config
-	r := &DNSSECResolver{
-		configurable: withConfig(&cfg),
-		typed:        withType("dnssec"),
-	}
-	// NewUpstreamTreeResolver returns the group resolver itself when only one group exists, so
-	// any other upstream means a single view
+	r := &DNSSECResolver{configurable: withConfig(&cfg), typed: withType("dnssec")}
 	r.upstreams, _ = upstream.(*UpstreamTreeResolver)
-
-	// Only initialize validator if DNSSEC is enabled
 	if cfg.IsEnabled() {
-		// Load trust anchors
-		trustAnchors, err := dnssec.NewTrustAnchorStore(cfg.TrustAnchors)
+		anchors, err := dnssec.NewTrustAnchorStore(cfg.TrustAnchors)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load trust anchors: %w", err)
+			return nil, fmt.Errorf("load DNSSEC trust anchors: %w", err)
 		}
-
-		// Create logger
 		_, logger := r.log(ctx)
-
-		// Create validator with upstream resolver and config values
-		r.validator = dnssec.NewValidator(
-			ctx,
-			trustAnchors,
-			logger,
-			upstream,
-			cfg.CacheExpirationHours,
-			cfg.MaxChainDepth,
-			cfg.MaxNSEC3Iterations,
-			cfg.MaxUpstreamQueries,
-			cfg.ClockSkewToleranceSec,
-		)
-
-		logger.InfoContext(ctx, fmt.Sprintf(
-			"DNSSEC resolver initialized with %d root trust anchor(s)",
-			len(trustAnchors.GetRootTrustAnchors()),
-		))
+		r.validator = dnssec.NewValidator(ctx, anchors, logger, upstream, cfg.CacheExpirationHours,
+			cfg.MaxChainDepth, cfg.MaxNSEC3Iterations, cfg.MaxUpstreamQueries, cfg.ClockSkewToleranceSec)
+		failures := cache.NewCache[validationFailure](cache.Options{
+			CleanupInterval: dnssec.BogusTTL, MaxSize: failureCacheSize,
+		})
+		failures.Start(ctx)
+		r.failureCache = failures
+		logger.InfoContext(ctx, "DNSSEC resolver initialized", "trustAnchors", len(anchors.GetRootTrustAnchors()))
 	}
 
 	return r, nil
 }
 
-// Resolve validates DNSSEC signatures if validation is enabled
-//
-//nolint:funlen,gocognit,nestif // Enabled guards avoid formatting disabled logs without splitting DNSSEC/AD handling
 func (r *DNSSECResolver) Resolve(ctx context.Context, request *model.Request) (*model.Response, error) {
+	if !r.cfg.Validate || len(request.Req.Question) == 0 {
+		return r.next.Resolve(ctx, request)
+	}
 	ctx, logger := r.log(ctx)
-
-	// If DNSSEC validation is enabled, set the DO (DNSSEC OK) bit. This overwrites what the client
-	// asked for, as RFC 4035 §3.2.1 requires of the resolver side; the server undoes it towards the
-	// client afterwards (see clientQuery.normalizeResponse in server/client_query.go), so don't
-	// make this conditional on the client's DO bit without adapting that.
-	if r.cfg.Validate {
-		// Check if EDNS0 is already present in the request
-		if opt := request.Req.IsEdns0(); opt != nil {
-			// EDNS0 already exists - just set the DO bit
-			opt.SetDo(true)
-			// Ensure buffer size is adequate for DNSSEC responses
-			if opt.UDPSize() < ednsUDPSize {
-				opt.SetUDPSize(ednsUDPSize)
-			}
-			if logger.Enabled(ctx, slog.LevelDebug) {
-				logger.DebugContext(ctx, "DNSSEC DO bit set for query (existing EDNS0): "+request.Req.Question[0].Name)
-			}
-		} else {
-			// No EDNS0 present - add it with DO bit
-			request.Req.SetEdns0(ednsUDPSize, true)
-			if logger.Enabled(ctx, slog.LevelDebug) {
-				logger.DebugContext(ctx, "DNSSEC DO bit set for query (new EDNS0): "+request.Req.Question[0].Name)
-			}
-		}
+	// The server restores the client's DO preference after local validation.
+	if opt := request.Req.IsEdns0(); opt != nil {
+		opt.SetDo(true)
+		opt.SetUDPSize(max(opt.UDPSize(), ednsUDPSize))
+	} else {
+		request.Req.SetEdns0(ednsUDPSize, true)
+	}
+	q := &askedQuery{
+		view:   r.upstreamGroup(ctx, logger, request),
+		subnet: util.GetEdns0Option[*dns.EDNS0_SUBNET](request.Req),
 	}
 
-	// Get response from next resolver (upstream)
+	return r.answer(ctx, logger, request, q)
+}
+
+func (r *DNSSECResolver) answer(
+	ctx context.Context, logger *slog.Logger, request *model.Request, q *askedQuery,
+) (*model.Response, error) {
+	if r.validator != nil {
+		if failure := r.refused(request, q); failure != nil {
+			return failure.response(request), nil
+		}
+	}
 	response, err := r.next.Resolve(ctx, request)
 	if err != nil {
 		return nil, err
 	}
+	if response == nil || response.Res == nil {
+		return nil, errors.New("DNSSEC: resolver returned no response")
+	}
+	if r.validator == nil {
+		return response, nil
+	}
+	// Upstream coalescing may share the response with concurrent clients.
+	owned := *response
+	owned.Res = response.Res.Copy()
+	response = &owned
+	if reason := skipValidationReason(request, response); reason != "" {
+		response.Res.AuthenticatedData = false
+		logger.DebugContext(ctx, "skipping DNSSEC validation", "reason", reason)
 
-	// Validate DNSSEC if enabled and validator is available
-	if r.cfg.Validate && r.validator != nil && len(request.Req.Question) > 0 {
-		if reason := skipValidationReason(request, response); reason != "" {
-			response.Res.AuthenticatedData = false
-			if logger.Enabled(ctx, slog.LevelDebug) {
-				logger.DebugContext(ctx, fmt.Sprintf(
-					"skipping DNSSEC validation for %s: %s",
-					reason,
-					request.Req.Question[0].Name,
-				))
-			}
-
-			return response, nil
-		}
-
-		// Preserve the originating client's identity so DS/DNSKEY sub-queries issued
-		// during validation resolve from the same upstream view as the answer.
-		validationCtx := dnssec.WithClientContext(ctx, request.ClientIP, request.ClientNames,
-			request.RequestClientID, r.upstreamGroup(ctx, logger, request))
-		result := r.validator.ValidateResponse(validationCtx, response.Res, request.Req.Question[0])
-
-		if logger.Enabled(ctx, slog.LevelDebug) {
-			logger.DebugContext(ctx, fmt.Sprintf(
-				"DNSSEC validation result for %s: %s",
-				request.Req.Question[0].Name,
-				result.String(),
-			))
-		}
-
-		switch result {
-		case dnssec.ValidationResultBogus:
-			// Invalid DNSSEC - return SERVFAIL
-			logger.WarnContext(ctx, fmt.Sprintf(
-				"DNSSEC validation failed for %s - returning SERVFAIL",
-				request.Req.Question[0].Name,
-			))
-
-			return createServFailResponseDNSSEC(request, "DNSSEC validation failed: bogus signatures"), nil
-
-		case dnssec.ValidationResultSecure:
-			// Valid DNSSEC - set AD flag. The server clears it again for clients that asked for
-			// neither DO nor AD, per RFC 6840 §5.8 (see clientQuery.normalizeResponse).
-			response.Res.AuthenticatedData = true
-			if logger.Enabled(ctx, slog.LevelDebug) {
-				logger.DebugContext(ctx, "DNSSEC validation succeeded for "+request.Req.Question[0].Name+" - AD flag set")
-			}
-
-		case dnssec.ValidationResultInsecure, dnssec.ValidationResultIndeterminate:
-			// No DNSSEC or cannot validate - clear AD flag
-			response.Res.AuthenticatedData = false
-			if logger.Enabled(ctx, slog.LevelDebug) {
-				logger.DebugContext(ctx, fmt.Sprintf(
-					"DNSSEC validation result %s for %s - AD flag cleared",
-					result.String(),
-					request.Req.Question[0].Name,
-				))
-			}
-		}
+		return response, nil
+	}
+	validationCtx := dnssec.WithClientContext(ctx, request.ClientIP, request.ClientNames, request.RequestClientID, q.view)
+	if !request.AskedAgain {
+		validationCtx = dnssec.FirstAsk(validationCtx)
+	}
+	verdict := r.validator.Validate(validationCtx, response.Res, request.Req.Question[0])
+	logger.DebugContext(ctx, "DNSSEC validation result", "domain", request.Req.Question[0].Name,
+		"result", verdict.Result.String())
+	switch verdict.Result {
+	case dnssec.ValidationResultBogus:
+		return r.failed(validationCtx, logger, request, q, verdict)
+	case dnssec.ValidationResultSecure:
+		r.validated(q)
+		markAuthentic(response.Res, verdict.Lifetimes)
+	case dnssec.ValidationResultInsecure, dnssec.ValidationResultIndeterminate:
+		r.validated(q)
+		response.Res.AuthenticatedData = false
 	}
 
 	return response, nil
 }
 
-// skipValidationReason returns why a response is passed on without validation (with AD cleared,
-// since it wasn't authenticated), or "" if it must be validated.
+func markAuthentic(msg *dns.Msg, lifetimes dnssec.Lifetimes) {
+	msg.AuthenticatedData = true
+	msg.Answer = slices.DeleteFunc(slices.Clone(msg.Answer), dnssec.CoversNoRRset(msg.Answer))
+	msg.Ns = slices.DeleteFunc(slices.Clone(msg.Ns), dnssec.CoversNoRRset(msg.Ns))
+	msg.Ns = dnssec.ValidatedAuthority(msg)
+	msg.Answer, msg.Ns = lifetimes.Bound(msg.Answer), lifetimes.Bound(msg.Ns)
+	// AD covers only authenticated Answer and Authority data; OPT carries protocol metadata.
+	msg.Extra = slices.DeleteFunc(slices.Clone(msg.Extra), func(rr dns.RR) bool {
+		return rr.Header().Rrtype != dns.TypeOPT
+	})
+}
+
 func skipValidationReason(request *model.Request, response *model.Response) string {
 	if response == nil || response.Res == nil {
 		return ""
 	}
-
-	// Only public-upstream answers carry a chain of trust in the public DNS hierarchy and
-	// form the GHSA attack surface, so validate exactly those: RESOLVED, plus cached
-	// upstream answers re-served as CACHED (re-validated on every hit). Every other
-	// response type that can reach this resolver from below is trusted-local or
-	// synthesized - conditional-upstream private/split-horizon zones (CONDITIONAL),
-	// special-use names like localhost (SPECIAL), DNS64-synthesized AAAA
-	// (SYNTHESIZED). Those are inherently unsigned with no public chain of trust, so
-	// the default root trust anchor would classify them bogus - the whole namespace
-	// sits under the default root trust anchor - and turn every such lookup into
-	// SERVFAIL. Mirror the rebinding resolver's response-type whitelist and skip
-	// validation for them, clearing AD since we have not authenticated them. The
-	// RType is assigned by denyzer's own resolvers, never by the (attacker-controlled)
-	// upstream answer, so a poisoned public answer cannot mislabel itself out of validation.
+	// Locally assigned response types distinguish private or synthesized data from public answers.
 	if response.RType != model.ResponseTypeRESOLVED && response.RType != model.ResponseTypeCACHED {
 		return fmt.Sprintf("trusted-local/synthesized response (%s)", response.RType)
 	}
-
-	// A client that sets CD (Checking Disabled) does its own validation and asks for the data as
-	// is, so it gets the data even if Denyzer's validation would reject it (RFC 4035 §3.2.2,
-	// RFC 6840 §5.9) - otherwise a validating stub couldn't even fetch the records it needs to
-	// validate. The CD bit is forwarded upstream with the request. Clients without CD still
-	// never get such data: the cache below doesn't store positive answers with CD set, and
-	// whatever it does serve them (e.g. a negative answer) is re-validated as CACHED.
 	if request.Req.CheckingDisabled {
 		return "query with CD bit set"
+	}
+	if answersRRSIGQuestion(request.Req.Question[0], response.Res) {
+		return "answer to a query for RRSIG records"
 	}
 
 	return ""
 }
 
-// upstreamGroup returns the upstream group that answers the DNSSEC sub-queries of a request
+func answersRRSIGQuestion(question dns.Question, response *dns.Msg) bool {
+	return question.Qtype == dns.TypeRRSIG && response.Rcode == dns.RcodeSuccess && len(response.Answer) > 0
+}
+
 func (r *DNSSECResolver) upstreamGroup(ctx context.Context, logger *slog.Logger, request *model.Request) string {
 	if r.upstreams == nil {
 		return ""
@@ -218,30 +163,12 @@ func (r *DNSSECResolver) upstreamGroup(ctx context.Context, logger *slog.Logger,
 	return r.upstreams.upstreamGroupByClient(ctx, logger, request)
 }
 
-// createServFailResponseDNSSEC creates a SERVFAIL response for a DNSSEC validation failure.
-//
-// The response type is BOGUS, not BLOCKED: a validation failure is a resolution error,
-// not a query blocked to protect the client, so it must not be counted as a block in the
-// statistics or listed among the top blocked domains. It also keeps EdeResolver — which
-// sits above this resolver and rewrites the EDE option from the response type — from
-// overwriting the Bogus code set below with "Blocked".
-func createServFailResponseDNSSEC(request *model.Request, reason string) *model.Response {
-	modelResp := model.NewResponseWithRcode(request, dns.RcodeServerFailure, model.ResponseTypeBOGUS, reason)
+func createServFailResponseDNSSEC(request *model.Request, code uint16, reason string) *model.Response {
+	response := model.NewResponseWithRcode(request, dns.RcodeServerFailure, model.ResponseTypeBOGUS, reason)
+	response.Res.SetEdns0(ednsUDPSize, false)
+	util.SetEdns0Option(response.Res, &dns.EDNS0_EDE{
+		InfoCode: code, ExtraText: truncateText(reason, maxEDETextLength),
+	})
 
-	// Add EDE (Extended DNS Error) code for DNSSEC Bogus
-	// RFC 8914: https://www.rfc-editor.org/rfc/rfc8914.html#section-5.2
-	edeOption := &dns.EDNS0_EDE{
-		InfoCode:  dns.ExtendedErrorCodeDNSBogus,
-		ExtraText: reason,
-	}
-
-	// Add EDNS0 OPT record with EDE option
-	opt := new(dns.OPT)
-	opt.Hdr.Name = "."
-	opt.Hdr.Rrtype = dns.TypeOPT
-	opt.SetUDPSize(ednsUDPSize)
-	opt.Option = append(opt.Option, edeOption)
-	modelResp.Res.Extra = append(modelResp.Res.Extra, opt)
-
-	return modelResp
+	return response
 }

@@ -179,7 +179,12 @@ func (r *CachingResolver) Resolve(ctx context.Context, request *model.Request) (
 		domain := util.ExtractDomain(question)
 		cacheKey := util.GenerateCacheKey(dns.Type(question.Qtype), domain)
 
-		val, ttl := r.getFromCache(ctx, logger, cacheKey, domain)
+		var val *dns.Msg
+		var ttl time.Duration
+		// The held response failed validation; a fresh upstream reply must replace it.
+		if !request.AskedAgain {
+			val, ttl = r.getFromCache(ctx, logger, cacheKey, domain)
+		}
 
 		if val != nil {
 			if logger.Enabled(ctx, slog.LevelDebug) {
@@ -193,7 +198,6 @@ func (r *CachingResolver) Resolve(ctx context.Context, request *model.Request) (
 
 			val.SetRcode(request.Req, val.Rcode)
 
-			// Adjust TTL
 			r.setTTLInCachedResponse(val, ttl)
 
 			if val.Rcode == dns.RcodeSuccess {

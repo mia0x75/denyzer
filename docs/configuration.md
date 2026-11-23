@@ -1483,22 +1483,21 @@ Configuration parameters:
 
 ## DNSSEC validation
 
-DNSSEC (Domain Name System Security Extensions) provides cryptographic authentication of DNS data to protect against cache poisoning, man-in-the-middle attacks, and DNS spoofing. When enabled, Denyzer validates DNSSEC signatures on DNS responses and ensures the chain of trust from the root zone to the queried domain.
+DNSSEC authenticates DNS data using signatures to protect against cache poisoning, tampering, and forged answers. When enabled, Denyzer uses DNSKEY, DS, and RRSIG records to validate the chain of trust from a trust anchor to the answering zone.
 
 ### Overview
 
 When DNSSEC validation is enabled, Denyzer will:
 
-- Set the DNSSEC OK (DO) bit on all upstream queries to request DNSSEC records
-- Validate cryptographic signatures (RRSIG records) in DNS responses
-- Verify the chain of trust from root to the queried domain using DNSKEY and DS records
-- Validate authenticated denial of existence using NSEC/NSEC3 records for NXDOMAIN and NODATA responses
-- Validate wildcard expansions according to RFC 4035 §5.3.4
-- Return SERVFAIL for responses with invalid DNSSEC signatures (Bogus)
-- Return the data without validating it, and without the AD flag, to a client that set the Checking
-  Disabled (CD) bit, since that client validates itself (RFC 4035 §3.2.2)
-- Set the Authenticated Data (AD) flag only after successful validation
-- Add Extended DNS Error (EDE) codes per RFC 8914 when validation fails
+- Set the DO bit on upstream queries to obtain the DNSSEC records needed for validation.
+- Validate the RRsets or CNAME chain answering the question. Unrelated records or response codes that contradict the answer make it Bogus. A DS query may be answered by a CNAME at the queried name alone, since that name cannot also be a delegation point; if the answer continues to the CNAME target, it must include that target's DS records or denial proof.
+- Use NSEC/NSEC3 records signed by their owning zone to prove NXDOMAIN, NODATA, and wildcard expansion. A NODATA bitmap must exclude both the queried type and CNAME; wildcard proofs must establish that the queried name does not exist and no closer match applies.
+- Validate RRsets in the answer and authority sections. Other RRsets in a Secure reply must also be trustworthy; unsigned authority NS records are excluded from validation and removed before setting AD.
+- Return nonempty answers to RRSIG queries without validation and clear AD, since RRSIG records have no signatures of their own. Empty answers still require denial validation.
+- Return SERVFAIL with a specific EDE for Bogus replies. Validation that cannot complete below a trust anchor is also Bogus; eligible failures trigger one more upstream request, as described in [Validation Results](#validation-results).
+- Preserve the original data and clear AD for clients setting CD, so those clients can validate for themselves (RFC 4035 §3.2.2).
+- Set AD only after successful validation, remove unvalidated additional records except EDNS OPT, and remove orphan RRSIGs whose covered RRset is absent from their section.
+- Bound each RRset's TTL in an AD reply by its record TTL, validating signature TTL, Original TTL, remaining signature validity, and wildcard proof lifetime where applicable (RFC 4035 §5.3.3, RFC 9077). Cached zone status is also bounded by its DS/DNSKEY or denial proof lifetime. `caching.minTime` may extend local storage, but cannot increase the TTL sent to clients; cache hits are revalidated.
 
 Independently of this setting, Denyzer normalizes every response against the DNSSEC-related bits of the query it answers, because the client's DO bit is not necessarily the one used towards the upstream:
 
@@ -1530,21 +1529,22 @@ DNSSEC validation protects against:
 | Parameter                 | Type          | Mandatory | Default value | Description                                                                                       |
 | ------------------------- | ------------- | --------- | ------------- | ------------------------------------------------------------------------------------------------- |
 | dnssec.validate           | bool          | no        | false         | Enable DNSSEC validation                                                                          |
-| dnssec.maxChainDepth      | uint          | no        | 10            | Maximum domain label depth for chain of trust validation (DoS protection)                         |
-| dnssec.cacheExpirationHours | uint        | no        | 1             | How long to cache validation results in hours                                                     |
-| dnssec.maxUpstreamQueries | uint          | no        | 30            | Maximum upstream DNS queries per validation request (DoS protection)                              |
+| dnssec.maxChainDepth      | uint          | no        | 10            | Maximum delegated zones below the trust anchor; domain labels do not count |
+| dnssec.cacheExpirationHours | uint        | no        | 1             | Maximum validation cache lifetime in hours; supporting TTLs or signatures may expire it earlier |
+| dnssec.maxUpstreamQueries | uint          | no        | 30            | Total DNSKEY/DS query budget per client query, shared by both validation attempts |
 | dnssec.maxNSEC3Iterations | uint          | no        | 150           | Maximum NSEC3 hash iterations allowed (DoS protection, per RFC 5155 §10.3)                        |
 | dnssec.clockSkewToleranceSec | uint       | no        | 3600          | Clock skew tolerance in seconds for signature validation (per RFC 6781 §4.1.2)                    |
 | dnssec.trustAnchors       | string array  | no        | []            | Custom trust anchors (DNSKEY or DS records). Empty array uses built-in root trust anchors         |
 
 ### DoS Protection
 
-DNSSEC validation can be computationally expensive and requires additional DNS queries. Denyzer includes several protections against DoS attacks:
+DNSSEC validation requires additional queries and cryptographic work, so Denyzer bounds that work:
 
-- **maxChainDepth**: Limits validation depth for deeply nested domains (e.g., prevents validation of `a.b.c.d.e.f.g.h.i.j.example.com`)
-- **maxUpstreamQueries**: Limits the number of upstream queries (DNSKEY/DS lookups) per validation to prevent query amplification
-- **maxNSEC3Iterations**: Limits NSEC3 hash iterations to prevent CPU exhaustion attacks
-- **Validation caching**: Caches validation results to avoid repeated expensive validations
+- **maxChainDepth**: Limits delegated zones below the trust anchor. Labels within a zone do not count toward this depth; `maxUpstreamQueries` bounds their query cost.
+- **maxUpstreamQueries**: Limits DNSKEY/DS queries for one client query. A second validation uses the budget left by the first.
+- **maxNSEC3Iterations**: Limits iterations per NSEC3 hash to prevent CPU exhaustion.
+- **Per-query computation limits**: Each RRset gets at most 8 signature/key attempts. One client query gets at most 128 signature verifications and 128 NSEC3 hashes, including DS/DNSKEY lookups and revalidation. Exhaustion is Bogus; no more queries or verifications are made and the exhausted result is not cached. These computation limits are not configurable.
+- **Validation caching**: Caches zone status and proof lifetimes to reduce repeated validation. The deepest cached trusted zone can be the starting point of a later chain walk.
 
 ### Clock Skew Tolerance
 
@@ -1571,14 +1571,46 @@ The `clockSkewToleranceSec` parameter (default: 3600 seconds = 1 hour) allows va
 
 ### Validation Results
 
-Denyzer classifies DNSSEC validation results into four categories:
+Denyzer classifies validation results into four categories:
 
-| Result          | Description                                                          | Response Handling                        |
-| --------------- | -------------------------------------------------------------------- | ---------------------------------------- |
-| **Secure**      | Valid DNSSEC signatures and complete chain of trust                  | AD flag set, response returned           |
-| **Insecure**    | Domain is not signed with DNSSEC (no RRSIG records)                  | AD flag cleared, response returned       |
-| **Bogus**       | Invalid DNSSEC signatures or broken chain of trust                   | SERVFAIL returned with EDE code `6 (DNSSEC Bogus)`, response type `BOGUS` |
-| **Indeterminate** | Validation could not be completed (e.g., network errors, budget exceeded) | AD flag cleared, response returned |
+| Result | Meaning | Response handling |
+| --- | --- | --- |
+| **Secure** | Signatures and chains of trust validate for the reply's sections | Return the reply with AD set |
+| **Insecure** | The parent proves an unsigned zone, or an NSEC3 Opt-Out proof permits an unsigned delegation; also applies to CNAME chains containing such data | Return the reply with AD clear |
+| **Bogus** | Invalid signatures, proofs, or answer structure; exhausted budgets; or failed DS/DNSKEY lookups below a trust anchor | Return SERVFAIL with a specific EDE and response type `BOGUS` |
+| **Indeterminate** | No trust anchor covers the name, so its signing status cannot be determined; no chain lookups are made for it | Return the reply with AD clear |
+
+Validation failures may be transient. Except as described below, Denyzer bypasses its answer cache
+and asks the upstream once more, answering with the second validation's result. A cacheable second
+reply replaces the old entry. The first validation does not store Bogus zone status, so an
+incomplete DS/DNSKEY reply cannot prevent the retry.
+
+- Exhausting the computation or query budget stops retries and does not cache that validation failure.
+- If any DS/DNSKEY lookup ends without a reply, the original question is not retried, avoiding another wait for upstream timeouts and retries. This resolution failure is cached immediately.
+- If both replies fail validation, or the second original query receives no reply, the failure cache refuses that query for 1 second with the same EDE, without upstream queries or validation.
+- A failure within one minute after the refusal ends doubles the refusal time, up to 1 minute. A successful validation or expiry of the remembered failure resets the sequence. These time limits are not configurable.
+- At most 1000 failed queries are retained, partitioned by the client's upstream group and original query form. Different flags, classes, and EDNS data are independent; name case and message ID do not affect matching. CD clients always bypass failure refusal.
+- DNS64 synthesized replies are excluded from the ordinary answer cache, preventing lost synthesis metadata from causing revalidation as unsigned upstream data. They are synthesized again when needed.
+
+The upstream must forward complete DNSSEC records. If it omits proofs twice, even a correctly
+configured zone returns SERVFAIL. DS/DNSKEY lookups retry once within the shared query budget
+when a reply is truncated, has an error response code, lacks the target DNSKEY, or contains
+neither DS records nor denial records. If either attempt ends without a reply, the original
+question is not retried. Incomplete lookups do not cache zone status, so later queries can
+validate again. Records that arrive and fail verification can cache the zone as Bogus for
+1 minute after the final validation.
+
+| EDE | Reason |
+| --- | --- |
+| `22 (No Reachable Authority)` | A DS/DNSKEY lookup received no reply, including upstream errors or timeouts |
+| `23 (Network Error)` | A DS/DNSKEY reply was truncated, or a DS reply returned an error such as SERVFAIL or REFUSED |
+| `9 (DNSKEY Missing)` | A DNSKEY reply had an error response code or lacked the zone's DNSKEY records |
+| `12 (NSEC Missing)` | A DS reply contained neither the target DS nor valid denial records |
+| `10 (RRSIGs Missing)` | An RRset in a signed zone had no signature |
+| `7 (Signature Expired)` | All verifiable signatures for an RRset had expired |
+| `8 (Signature Not Yet Valid)` | All verifiable signatures for an RRset were not yet valid |
+| `1 (Unsupported DNSKEY Algorithm)` | None of the signatures used a supported algorithm or usable key |
+| `6 (DNSSEC Bogus)` | Other validation failures, or signatures that failed for different reasons |
 
 A `BOGUS` result means denyzer could not obtain a trustworthy answer, so it counts as an **error**
 in the [statistics](#statistics) — not as a block. A domain whose operator has misconfigured DNSSEC
@@ -1611,6 +1643,14 @@ Trust anchors can be specified in two formats:
 !!! warning
     Specifying custom trust anchors **replaces** the default root trust anchors. If you need to validate both public domains and private zones, you must include both the root trust anchors and your custom anchors.
 
+For nested trust anchors, the closest anchor above the name decides (RFC 6840 Appendix C.1).
+The lower zone must validate through the lower anchor; signatures and denial proofs from a
+higher zone are not accepted. A stale lower anchor causes validation failure even if a chain
+from the root could validate. Trust anchors apply to all client groups: after configuring an
+anchor for a private zone, public data for the same name from another upstream group must also
+satisfy that anchor. The anchor zone's DNSKEY RRset must include a self-signature made by a
+trusted key.
+
 ### Supported Algorithms
 
 Denyzer supports the following DNSSEC algorithms per RFC 8624:
@@ -1618,14 +1658,17 @@ Denyzer supports the following DNSSEC algorithms per RFC 8624:
 | Algorithm | ID | Status | Security Level |
 | --------- | -- | ------ | -------------- |
 | RSASHA1   | 5  | Deprecated (still supported) | Weak |
+| RSASHA1-NSEC3-SHA1 | 7 | Deprecated (still supported) | Weak |
 | RSASHA256 | 8  | Recommended | Moderate |
 | RSASHA512 | 10 | Recommended | Moderate |
 | ECDSAP256SHA256 | 13 | Recommended | Strong |
 | ECDSAP384SHA384 | 14 | Recommended | Strong |
 | ED25519   | 15 | Recommended | Very Strong |
-| ED448     | 16 | Recommended | Strongest |
 
-Denyzer automatically selects the strongest available algorithm when multiple signatures are present, providing protection against algorithm downgrade attacks per RFC 6840 §5.11.
+Other signature algorithms, including ED448 (16), cannot be verified. RSA public exponents are
+limited to `2^32+1` for RSASHA256/RSASHA512 and `2^31-1` for RSASHA1/RSASHA1-NSEC3-SHA1.
+Larger exponents are not used for verification. A zone is classified Insecure only when all
+keys named by supported DS records are present in the DNSKEY RRset and all are unusable.
 
 ### Performance Considerations
 
@@ -1723,7 +1766,7 @@ Recommendations:
 
 - Increase `maxUpstreamQueries` for domains with complex delegation chains
 - Check if upstream servers are slow to respond (may require multiple retries)
-- Increase `maxChainDepth` for deeply nested subdomains
+- Increase `maxChainDepth` for long delegation chains; ordinary label depth does not count
 
 **Problem**: Signatures rejected as "expired" or "not yet valid" despite being valid
 

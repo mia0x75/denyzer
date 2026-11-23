@@ -37,7 +37,7 @@ func TestAnswerTerminal(t *testing.T) {
 	}
 }
 
-func TestMergeValidationResults(t *testing.T) {
+func TestWorstValidationResult(t *testing.T) {
 	t.Parallel()
 	order := []ValidationResult{ValidationResultSecure, ValidationResultInsecure, ValidationResultIndeterminate, ValidationResultBogus}
 	for i, a := range order {
@@ -45,7 +45,7 @@ func TestMergeValidationResults(t *testing.T) {
 			t.Run(a.String()+"/"+b.String(), func(t *testing.T) {
 				t.Parallel()
 				want := order[max(i, j)]
-				if got := mergeValidationResults(a, b); got != want {
+				if got := worst(a, b); got != want {
 					t.Fatalf("got %s, want %s", got, want)
 				}
 			})

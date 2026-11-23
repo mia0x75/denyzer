@@ -502,21 +502,16 @@ dnssec:
   # default: false
   validate: true
 
-  # Maximum domain label depth for chain of trust validation
-  # Prevents DoS with deeply nested domains (e.g., a.b.c.d.e.f.g.h.i.j.example.com)
-  # default: 10
+  # Maximum delegated zones below the trust anchor, bounding long chain walks.
+  # Labels that do not form a separate zone do not count; default: 10.
   maxChainDepth: 10
 
-  # How long to cache validation results (in hours)
-  # Improves performance by avoiding repeated validation of the same domains
-  # default: 1
+  # Maximum validation cache lifetime in hours; default: 1.
+  # Results expire earlier when supporting record TTLs or signatures expire.
   cacheExpirationHours: 1
 
-  # Maximum upstream DNS queries per validation request
-  # Protects against DoS attacks with queries requiring many upstream lookups
-  # (e.g., deeply nested delegation chains requiring DNSKEY + DS queries per level)
-  # Validation will fail if budget is exhausted
-  # default: 30
+  # Total upstream DNSKEY/DS query budget per client query; default: 30.
+  # Both validation attempts share this budget; exhaustion returns SERVFAIL.
   maxUpstreamQueries: 30
 
   # Maximum NSEC3 hash iterations allowed during validation

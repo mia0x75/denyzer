@@ -11,12 +11,12 @@ type DNSSEC struct {
 	Validate bool `default:"false" yaml:"validate"`
 	// Custom trust anchors (DNSKEY or DS records); empty uses built-in IANA root trust anchors.
 	TrustAnchors []string `yaml:"trustAnchors"`
-	// Maximum domain label depth for chain of trust validation (DoS protection).
+	// Bound delegated zones below the trust anchor to prevent unbounded chain walks.
 	MaxChainDepth uint `default:"10" yaml:"maxChainDepth"`
-	// How long to cache DNSSEC validation results, in hours.
+	// Cap validation caching in hours; proof lifetimes can expire results earlier.
 	CacheExpirationHours uint `default:"1"   yaml:"cacheExpirationHours"`
 	MaxNSEC3Iterations   uint `default:"150" yaml:"maxNSEC3Iterations"` // RFC 5155 §10.3
-	// DoS protection: max upstream queries per validation
+	// Share this upstream query budget across both validations of one client query.
 	MaxUpstreamQueries uint `default:"30" yaml:"maxUpstreamQueries"`
 	// Clock skew tolerance in seconds for signature validation (default: 3600 = 1 hour)
 	// Allows validation to succeed even if system clock is off by this amount.
@@ -43,7 +43,7 @@ func (c *DNSSEC) LogConfig(logger *slog.Logger) {
 		logger.Info(fmt.Sprintf("Max chain depth = %d", c.MaxChainDepth))
 		logger.Info(fmt.Sprintf("Cache expiration = %d hour(s)", c.CacheExpirationHours))
 		logger.Info(fmt.Sprintf("Max NSEC3 iterations = %d", c.MaxNSEC3Iterations))
-		logger.Info(fmt.Sprintf("Max upstream queries per validation = %d", c.MaxUpstreamQueries))
+		logger.Info(fmt.Sprintf("Max upstream queries per client query = %d", c.MaxUpstreamQueries))
 		logger.Info(fmt.Sprintf("Clock skew tolerance = %d second(s)", c.ClockSkewToleranceSec))
 	}
 }

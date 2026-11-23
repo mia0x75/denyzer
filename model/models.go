@@ -45,9 +45,7 @@ func (t ResponseType) ToExtendedErrorCode() uint16 {
 	// protection is operator policy, so it reports as Blocked.
 	case ResponseTypeREBIND:
 		return dns.ExtendedErrorCodeBlocked
-	// EdeResolver sits above the DNSSEC resolver and rewrites the EDE option from
-	// the response type, so this must reproduce the code the DNSSEC resolver sets
-	// on its SERVFAIL; mapping it to anything else would overwrite Bogus (6).
+	// Precise validation errors are preserved by EDEResolver; this is the fallback code.
 	case ResponseTypeBOGUS:
 		return dns.ExtendedErrorCodeDNSBogus
 	case ResponseTypeFILTERED:
@@ -82,4 +80,6 @@ type Request struct {
 	ClientNames     []string
 	Req             *dns.Msg
 	RequestTS       time.Time
+	// Retrying validation must bypass the cached reply that failed it.
+	AskedAgain bool
 }

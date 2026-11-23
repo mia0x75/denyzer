@@ -1,8 +1,6 @@
 package dnssec
 
 import (
-	"context"
-
 	"github.com/mia0x75/denyzer/log"
 	"github.com/miekg/dns"
 	. "github.com/onsi/ginkgo/v2"
@@ -11,15 +9,12 @@ import (
 
 var _ = Describe("Wildcard validation functions", func() {
 	var (
-		ctx          context.Context
 		sut          *Validator
 		trustStore   *TrustAnchorStore
 		mockUpstream *mockResolver
 	)
 
 	BeforeEach(func(specCtx SpecContext) {
-		ctx = specCtx
-
 		var err error
 		trustStore, err = NewTrustAnchorStore(nil)
 		Expect(err).Should(Succeed())
@@ -27,7 +22,7 @@ var _ = Describe("Wildcard validation functions", func() {
 		mockUpstream = &mockResolver{}
 		logger, _ := log.NewMockLogger()
 
-		sut = NewValidator(ctx, trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
+		sut = NewValidator(specCtx, trustStore, logger, mockUpstream, 1, 10, 150, 30, 3600)
 	})
 
 	Describe("validateWildcardExpansion", func() {
@@ -37,7 +32,7 @@ var _ = Describe("Wildcard validation functions", func() {
 				SignerName: "example.com.",
 			}
 
-			err := sut.validateWildcardExpansion(ctx, "example.com.", rrsig, nil, "example.com.")
+			err := sut.validateWildcardExpansion("example.com.", rrsig, nil, "example.com.")
 			Expect(err).Should(Succeed())
 		})
 
@@ -47,7 +42,7 @@ var _ = Describe("Wildcard validation functions", func() {
 				SignerName: "example.com.",
 			}
 
-			err := sut.validateWildcardExpansion(ctx, "sub.example.com.", rrsig, nil, "sub.example.com.")
+			err := sut.validateWildcardExpansion("sub.example.com.", rrsig, nil, "sub.example.com.")
 			Expect(err).Should(Succeed())
 		})
 
@@ -63,7 +58,7 @@ var _ = Describe("Wildcard validation functions", func() {
 				NextDomain: "zzz.example.com.",
 			}
 
-			err := sut.validateWildcardExpansion(ctx, "sub.example.com.", rrsig, []dns.RR{nsec}, "sub.example.com.")
+			err := sut.validateWildcardExpansion("sub.example.com.", rrsig, []dns.RR{nsec}, "sub.example.com.")
 			Expect(err).Should(Succeed())
 		})
 
@@ -78,21 +73,21 @@ var _ = Describe("Wildcard validation functions", func() {
 				NextDomain: "zzz.example.com.",
 			}
 
-			err := sut.validateWildcardExpansion(ctx, "sub.example.com.", rrsig, []dns.RR{nsec}, "sub.example.com.")
+			err := sut.validateWildcardExpansion("sub.example.com.", rrsig, []dns.RR{nsec}, "sub.example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("not within signer zone"))
 		})
 
-		It("should accept wildcard when no NSEC/NSEC3 proof provided (positive response)", func() {
+		It("should fail when no NSEC/NSEC3 proof provided", func() {
 			rrsig := &dns.RRSIG{
 				Labels:     2,
 				SignerName: "example.com.",
 			}
 
-			// No NSEC/NSEC3 records in authority section
-			// For positive responses, the cryptographic signature is sufficient proof
-			err := sut.validateWildcardExpansion(ctx, "sub.example.com.", rrsig, []dns.RR{}, "sub.example.com.")
-			Expect(err).ShouldNot(HaveOccurred())
+			// No NSEC/NSEC3 records in authority section. RFC 4035 §5.3.4: the RRSIG of the wildcard
+			// does not show that the wildcard answers for the name.
+			err := sut.validateWildcardExpansion("sub.example.com.", rrsig, []dns.RR{}, "sub.example.com.")
+			Expect(err).Should(HaveOccurred())
 		})
 
 		It("should handle deeply nested wildcards", func() {
@@ -106,9 +101,24 @@ var _ = Describe("Wildcard validation functions", func() {
 				NextDomain: "zzz.sub.example.com.",
 			}
 
-			err := sut.validateWildcardExpansion(ctx, "test.sub.example.com.", rrsig, []dns.RR{nsec}, "test.sub.example.com.")
+			err := sut.validateWildcardExpansion("test.sub.example.com.", rrsig, []dns.RR{nsec}, "test.sub.example.com.")
 			Expect(err).Should(Succeed())
 		})
+	})
+
+	Describe("isWildcardExpansion", func() {
+		// RFC 4034 §3.1.3: the Labels field counts neither the root label nor a leading "*" label
+		DescribeTable("compares the Labels field with the labels that an RRSIG for the owner name counts",
+			func(owner string, labels uint8, expected bool) {
+				Expect(isWildcardExpansion(owner, &dns.RRSIG{Labels: labels})).Should(Equal(expected))
+			},
+			Entry("a name with its own RRSIG", "sub.example.com.", uint8(3), false),
+			Entry("a name that *.example.com. answers for", "sub.example.com.", uint8(2), true),
+			Entry("a name below one that *.example.com. answers for", "a.sub.example.com.", uint8(2), true),
+			Entry("the wildcard *.example.com. itself", "*.example.com.", uint8(2), false),
+			Entry("the wildcard *.example.com. answered by *.com.", "*.example.com.", uint8(1), true),
+			Entry("the wildcard of the root itself", "*.", uint8(0), false),
+		)
 	})
 
 	Describe("validateWildcardNSEC", func() {
@@ -118,7 +128,7 @@ var _ = Describe("Wildcard validation functions", func() {
 				NextDomain: "zzz.example.com.",
 			}
 
-			err := sut.validateWildcardNSEC(ctx, []*dns.NSEC{nsec}, "sub.example.com.")
+			err := sut.validateWildcardNSEC([]*dns.NSEC{nsec}, "sub.example.com.")
 			Expect(err).Should(Succeed())
 		})
 
@@ -128,13 +138,13 @@ var _ = Describe("Wildcard validation functions", func() {
 				NextDomain: "b.example.com.",
 			}
 
-			err := sut.validateWildcardNSEC(ctx, []*dns.NSEC{nsec}, "z.example.com.")
+			err := sut.validateWildcardNSEC([]*dns.NSEC{nsec}, "z.example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("no NSEC record covers"))
 		})
 
 		It("should handle empty NSEC list", func() {
-			err := sut.validateWildcardNSEC(ctx, []*dns.NSEC{}, "sub.example.com.")
+			err := sut.validateWildcardNSEC([]*dns.NSEC{}, "sub.example.com.")
 			Expect(err).Should(HaveOccurred())
 		})
 
@@ -144,7 +154,7 @@ var _ = Describe("Wildcard validation functions", func() {
 				NextDomain: "zzz.example.com.",
 			}
 
-			err := sut.validateWildcardNSEC(ctx, []*dns.NSEC{nsec}, "sub.example.com")
+			err := sut.validateWildcardNSEC([]*dns.NSEC{nsec}, "sub.example.com")
 			Expect(err).Should(Succeed())
 		})
 
@@ -159,61 +169,47 @@ var _ = Describe("Wildcard validation functions", func() {
 			}
 
 			// Query covered by second NSEC
-			err := sut.validateWildcardNSEC(ctx, []*dns.NSEC{nsec1, nsec2}, "n.example.com.")
+			err := sut.validateWildcardNSEC([]*dns.NSEC{nsec1, nsec2}, "n.example.com.")
 			Expect(err).Should(Succeed())
 		})
 	})
 
 	Describe("validateWildcardNSEC3", func() {
 		It("should fail when no NSEC3 records provided", func() {
-			err := sut.validateWildcardNSEC3(ctx, []*dns.NSEC3{}, "sub.example.com.")
+			err := sut.validateWildcardNSEC3([]*dns.NSEC3{}, "sub.example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("no NSEC3 records"))
 		})
 
 		It("should fail when NSEC3 parameters inconsistent", func() {
-			nsec3_1 := &dns.NSEC3{
-				Hdr:        dns.RR_Header{Name: "abc123.example.com.", Rrtype: dns.TypeNSEC3},
-				Hash:       dns.SHA1,
-				Salt:       "aabbcc",
-				Iterations: 10,
-			}
-			nsec3_2 := &dns.NSEC3{
-				Hdr:        dns.RR_Header{Name: "def456.example.com.", Rrtype: dns.TypeNSEC3},
-				Hash:       dns.SHA1,
-				Salt:       "ddeeff", // Different salt
-				Iterations: 10,
-			}
+			// Two records that cover the name, each with the salt of another chain
+			nsec3_1 := nsec3SaltedRange("example.com.", "sub.example.com.", "aabbcc", 10, -1, 1)
+			nsec3_2 := nsec3SaltedRange("example.com.", "sub.example.com.", "ddeeff", 10, -1, 1)
 
-			err := sut.validateWildcardNSEC3(ctx, []*dns.NSEC3{nsec3_1, nsec3_2}, "sub.example.com.")
+			err := sut.validateWildcardNSEC3([]*dns.NSEC3{nsec3_1, nsec3_2}, "sub.example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("inconsistent"))
+
+			Expect(sut.validateWildcardNSEC3([]*dns.NSEC3{nsec3_1}, "sub.example.com.")).Should(Succeed())
 		})
 
 		It("should fail when iteration count exceeds maximum", func() {
-			nsec3 := &dns.NSEC3{
-				Hdr:        dns.RR_Header{Name: "abc123.example.com.", Rrtype: dns.TypeNSEC3},
-				Hash:       dns.SHA1,
-				Salt:       "aabbcc",
-				Iterations: 10000, // Way over the limit
-			}
+			// Way over the limit
+			nsec3 := nsec3SaltedRange("example.com.", "sub.example.com.", "aabbcc", 10000, -1, 1)
 
-			err := sut.validateWildcardNSEC3(ctx, []*dns.NSEC3{nsec3}, "sub.example.com.")
+			err := sut.validateWildcardNSEC3([]*dns.NSEC3{nsec3}, "sub.example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("exceeds maximum"))
 		})
 
-		It("should fail for unsupported hash algorithm", func() {
-			nsec3 := &dns.NSEC3{
-				Hdr:        dns.RR_Header{Name: "abc123.example.com.", Rrtype: dns.TypeNSEC3},
-				Hash:       2, // Not SHA1
-				Salt:       "aabbcc",
-				Iterations: 10,
-			}
+		It("should ignore a record with another hash algorithm than SHA-1", func() {
+			// RFC 5155 §8.1: such a record is no part of a proof, so the name has none
+			nsec3 := nsec3SaltedRange("example.com.", "sub.example.com.", "aabbcc", 10, -1, 1)
+			nsec3.Hash = 2
 
-			err := sut.validateWildcardNSEC3(ctx, []*dns.NSEC3{nsec3}, "sub.example.com.")
+			err := sut.validateWildcardNSEC3([]*dns.NSEC3{nsec3}, "sub.example.com.")
 			Expect(err).Should(HaveOccurred())
-			Expect(err.Error()).Should(ContainSubstring("unsupported"))
+			Expect(err.Error()).Should(ContainSubstring("no NSEC3 record covers"))
 		})
 
 		It("should normalize domain names", func() {
@@ -226,7 +222,7 @@ var _ = Describe("Wildcard validation functions", func() {
 			}
 
 			// Will fail because hash won't match, but validates inputs
-			err := sut.validateWildcardNSEC3(ctx, []*dns.NSEC3{nsec3}, "sub.example.com")
+			err := sut.validateWildcardNSEC3([]*dns.NSEC3{nsec3}, "sub.example.com")
 			Expect(err).Should(HaveOccurred())
 		})
 	})
@@ -238,47 +234,58 @@ var _ = Describe("Wildcard validation functions", func() {
 				NextDomain: "zzz.example.com.",
 			}
 
-			err := sut.validateWildcardProof(ctx, "*.example.com.", "sub.example.com.", []dns.RR{nsec}, "sub.example.com.")
+			err := sut.validateWildcardProof("*.example.com.", "sub.example.com.", []dns.RR{nsec}, "sub.example.com.")
 			Expect(err).Should(Succeed())
 		})
 
-		It("should accept wildcard when neither NSEC nor NSEC3 available (positive response)", func() {
-			// For positive responses, the cryptographic signature is sufficient proof
-			err := sut.validateWildcardProof(ctx, "*.example.com.", "sub.example.com.", []dns.RR{}, "sub.example.com.")
-			Expect(err).ShouldNot(HaveOccurred())
+		It("should fail when neither NSEC nor NSEC3 available", func() {
+			// RFC 4035 §5.3.4: a wildcard answers only for a name that is proven not to exist
+			err := sut.validateWildcardProof("*.example.com.", "sub.example.com.", []dns.RR{}, "sub.example.com.")
+			Expect(err).Should(HaveOccurred())
 		})
 
-		It("should accept wildcard with non-NSEC/NSEC3 records (positive response)", func() {
+		It("should fail with non-NSEC/NSEC3 records", func() {
 			otherRR := &dns.A{
 				Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA},
 			}
 
-			// For positive responses, the cryptographic signature is sufficient proof
-			err := sut.validateWildcardProof(ctx, "*.example.com.", "sub.example.com.", []dns.RR{otherRR}, "sub.example.com.")
-			Expect(err).ShouldNot(HaveOccurred())
+			err := sut.validateWildcardProof("*.example.com.", "sub.example.com.", []dns.RR{otherRR}, "sub.example.com.")
+			Expect(err).Should(HaveOccurred())
 		})
 
-		It("should prefer NSEC over NSEC3 when both present", func() {
+		It("should take the proof from NSEC records and, if they do not give it, from NSEC3 records", func() {
+			// RFC 5155 §10.4: a server answers with one of the chains of a zone, and each chain is a
+			// signed statement of the zone. Each of these records gives the proof without the other.
 			nsec := &dns.NSEC{
 				Hdr:        dns.RR_Header{Name: "a.example.com.", Rrtype: dns.TypeNSEC},
 				NextDomain: "zzz.example.com.",
 			}
-			nsec3 := &dns.NSEC3{
-				Hdr:        dns.RR_Header{Name: "abc123.example.com.", Rrtype: dns.TypeNSEC3},
-				Hash:       dns.SHA1,
-				Salt:       "",
-				Iterations: 0,
+			nsec3 := nsec3Range("example.com.", "sub.example.com.", -1, 1)
+
+			// An NSEC record that does not cover the name, and an NSEC3 record that does not cover
+			// its hash
+			otherNSEC := &dns.NSEC{
+				Hdr:        dns.RR_Header{Name: "t.example.com.", Rrtype: dns.TypeNSEC},
+				NextDomain: "zzz.example.com.",
+			}
+			otherNSEC3 := nsec3Range("example.com.", "sub.example.com.", 1, 2)
+
+			proof := func(records ...dns.RR) error {
+				return sut.validateWildcardProof("*.example.com.", "sub.example.com.", records, "sub.example.com.")
 			}
 
-			// Should use NSEC and succeed
-			err := sut.validateWildcardProof(ctx, "*.example.com.", "sub.example.com.", []dns.RR{nsec, nsec3}, "sub.example.com.")
-			Expect(err).Should(Succeed())
+			Expect(proof(nsec)).Should(Succeed())
+			Expect(proof(nsec3)).Should(Succeed())
+			Expect(proof(nsec, nsec3)).Should(Succeed())
+			Expect(proof(nsec, otherNSEC3)).Should(Succeed())
+			Expect(proof(otherNSEC, nsec3)).Should(Succeed())
+			Expect(proof(otherNSEC, otherNSEC3)).Should(HaveOccurred())
 		})
 	})
 
 	Describe("validateWildcardExpansionDetails", func() {
 		It("should fail when RRset has fewer labels than RRSIG claims", func() {
-			err := sut.validateWildcardExpansionDetails(ctx, "example.com.", "example.com.", 3, nil, "sub.example.com.")
+			err := sut.validateWildcardExpansionDetails("example.com.", "example.com.", 3, nil, "sub.example.com.")
 			Expect(err).Should(HaveOccurred())
 			Expect(err.Error()).Should(ContainSubstring("invalid wildcard"))
 		})
@@ -290,7 +297,7 @@ var _ = Describe("Wildcard validation functions", func() {
 			}
 
 			// sub.example.com with RRSIG labels=2 -> wildcard is *.example.com
-			err := sut.validateWildcardExpansionDetails(ctx, "sub.example.com.", "example.com.", 2, []dns.RR{nsec},
+			err := sut.validateWildcardExpansionDetails("sub.example.com.", "example.com.", 2, []dns.RR{nsec},
 				"sub.example.com.")
 			Expect(err).Should(Succeed())
 		})
@@ -302,7 +309,7 @@ var _ = Describe("Wildcard validation functions", func() {
 			}
 
 			// test.sub.example.com with RRSIG labels=3 -> wildcard is *.sub.example.com
-			err := sut.validateWildcardExpansionDetails(ctx, "test.sub.example.com.", "example.com.", 3, []dns.RR{nsec},
+			err := sut.validateWildcardExpansionDetails("test.sub.example.com.", "example.com.", 3, []dns.RR{nsec},
 				"test.sub.example.com.")
 			Expect(err).Should(Succeed())
 		})
