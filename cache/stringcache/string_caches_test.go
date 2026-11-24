@@ -1,8 +1,12 @@
 package stringcache
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/mia0x75/denyzer/log"
+	"github.com/mia0x75/denyzer/util"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -13,6 +17,38 @@ var _ = Describe("Caches", func() {
 		cache   stringCache
 		factory cacheFactory
 	)
+
+	Describe("logMatch", func() {
+		var (
+			recorder *log.Recorder
+			stop     func()
+		)
+
+		BeforeEach(func() {
+			t := GinkgoT()
+			t.Cleanup(log.SaveSettings(log.Log()))
+			log.SetLevel(log.Log(), slog.LevelDebug)
+			recorder, stop = log.Capture(log.Log())
+			t.Cleanup(stop)
+		})
+
+		It("logs the rule and the searched string", func() {
+			logMatch("string_map", "block rule", "ads.example.com", "ads.example.com")
+
+			Expect(recorder.LastRecord().Message).
+				Should(Equal("block rule 'ads.example.com' matched with 'ads.example.com'"))
+		})
+
+		It("obfuscates the rule and the searched string when log privacy is enabled", func() {
+			util.LogPrivacy.Store(true)
+			DeferCleanup(func() { util.LogPrivacy.Store(false) })
+
+			logMatch("string_map", "block rule", "ads.example.com", "ads.example.com")
+
+			Expect(recorder.LastRecord().Message).
+				Should(Equal("block rule '***.*******.***' matched with '***.*******.***'"))
+		})
+	})
 
 	Describe("String StringCache", func() {
 		It("should not return a cache when empty", func() {

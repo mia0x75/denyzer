@@ -493,14 +493,15 @@ func (r *BlockingResolver) handleBlocked(
 	logger *slog.Logger,
 	request *model.Request,
 	question dns.Question,
-	reason string,
+	reason, reasonLabel string,
 	field slog.Attr,
 ) (*model.Response, error) {
 	modelResp := model.NewResponseWithReason(request, model.ResponseTypeBLOCKED, reason)
+	modelResp.ReasonLabel = reasonLabel
 	r.blockHandler.handleBlock(question, modelResp.Res)
 
 	if logger.Enabled(ctx, slog.LevelDebug) {
-		logger.LogAttrs(ctx, slog.LevelDebug, fmt.Sprintf("blocking request '%s'", reason), field)
+		logger.LogAttrs(ctx, slog.LevelDebug, fmt.Sprintf("blocking request '%s'", logReason(reason, reasonLabel)), field)
 	}
 
 	return modelResp, nil
@@ -539,8 +540,8 @@ func (r *BlockingResolver) handleDenylist(ctx context.Context, groupsToCheck []s
 					ctx,
 					slog.LevelDebug,
 					"domain is allowlisted",
-					slog.String(logFieldDomain, domain),
-					slog.Any("matches", matches),
+					slog.Any(logFieldDomain, util.Obfuscated(domain)),
+					slog.Any("matches", obfuscateMatches(matches)),
 				)
 			}
 
@@ -558,8 +559,8 @@ func (r *BlockingResolver) handleDenylist(ctx context.Context, groupsToCheck []s
 				logger,
 				request,
 				question,
-				"BLOCKED (ALLOWLIST ONLY)",
-				slog.String(logFieldDomain, domain),
+				"BLOCKED (ALLOWLIST ONLY)", "",
+				slog.Any(logFieldDomain, util.Obfuscated(domain)),
 			)
 			if err != nil {
 				err = fmt.Errorf("failed to handle allowlist-only block for %s: %w", domain, err)
@@ -574,8 +575,8 @@ func (r *BlockingResolver) handleDenylist(ctx context.Context, groupsToCheck []s
 				logger,
 				request,
 				question,
-				formatBlockReason(matches, ""),
-				slog.String(logFieldDomain, domain),
+				formatBlockReason(matches, ""), formatBlockReasonLabel(matches, ""),
+				slog.Any(logFieldDomain, util.Obfuscated(domain)),
 			)
 
 			return true, resp, err
@@ -622,22 +623,17 @@ func (r *BlockingResolver) Resolve(ctx context.Context, request *model.Request) 
 					ctx,
 					slog.LevelDebug,
 					tName+" is allowlisted",
-					slog.String("response_entry", entryToCheck),
-					slog.Any("matches", matches),
+					slog.Any("response_entry", util.Obfuscated(entryToCheck)),
+					slog.Any("matches", obfuscateMatches(matches)),
 				)
 			}
 
 			continue
 		}
 		if matches := r.matches(groupsToCheck, r.denylistMatcher, entryToCheck); len(matches) > 0 {
-			return r.handleBlocked(
-				ctx,
-				logger,
-				request,
-				request.Req.Question[0],
-				formatBlockReason(matches, tName),
-				slog.String("response_entry", entryToCheck),
-			)
+			return r.handleBlocked(ctx, logger, request, request.Req.Question[0],
+				formatBlockReason(matches, tName), formatBlockReasonLabel(matches, tName),
+				slog.Any("response_entry", util.Obfuscated(entryToCheck)))
 		}
 	}
 
@@ -816,6 +812,38 @@ func formatBlockReason(matches map[string]string, typeName string) string {
 	}
 
 	return fmt.Sprintf("%s (%s)", reason, strings.Join(entries, ", "))
+}
+
+// formatBlockReasonLabel renders the low-cardinality form of the block reason,
+// "BLOCKED[ TYPE] (group[, group...])" with group names only and no rule: it
+// is what logs emit when log privacy is enabled (see logReason), so a blocked
+// domain is not written next to the rule that matched it.
+func formatBlockReasonLabel(matches map[string]string, typeName string) string {
+	label := "BLOCKED"
+	if typeName != "" {
+		label += " " + typeName
+	}
+
+	if len(matches) == 0 {
+		return label
+	}
+
+	return fmt.Sprintf("%s (%s)", label, strings.Join(slices.Sorted(maps.Keys(matches)), ", "))
+}
+
+// obfuscateMatches returns matches with each rule obfuscated when log privacy
+// is enabled, for logging. Group names are configuration, so they are kept.
+func obfuscateMatches(matches map[string]string) map[string]string {
+	if !util.LogPrivacy.Load() {
+		return matches
+	}
+
+	res := make(map[string]string, len(matches))
+	for group, rule := range matches {
+		res[group] = util.Obfuscate(rule)
+	}
+
+	return res
 }
 
 type blockHandler interface {

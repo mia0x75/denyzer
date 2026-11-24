@@ -17,6 +17,7 @@ import (
 	"github.com/mia0x75/denyzer/cache/stringcache"
 	"github.com/mia0x75/denyzer/config"
 	. "github.com/mia0x75/denyzer/model"
+	"github.com/mia0x75/denyzer/util"
 
 	"github.com/miekg/dns"
 	. "github.com/onsi/ginkgo/v2"
@@ -380,6 +381,53 @@ var _ = Describe("QueryLoggingResolver", func() {
 			for _, entity := range entities {
 				Expect(entity.Total).Should(Equal(uint64(1)))
 			}
+		})
+	})
+
+	Describe("response reason of a log entry", func() {
+		BeforeEach(func() {
+			sutConfig.Fields = []config.QueryLogField{config.QueryLogFieldResponseReason}
+		})
+
+		It("writes a reason without a label as it is", func() {
+			entry := sut.createLogEntry(
+				newRequestWithClient("example.com.", A, "192.168.178.25", "client1"),
+				&Response{RType: ResponseTypeCACHED, Res: mockAnswer, Reason: "CACHED"},
+				time.Now(), 0,
+			)
+
+			Expect(entry.ResponseReason).Should(Equal("CACHED"))
+		})
+
+		When("log privacy is enabled", func() {
+			BeforeEach(func() {
+				util.LogPrivacy.Store(true)
+				DeferCleanup(func() { util.LogPrivacy.Store(false) })
+			})
+
+			It("writes the label of a blocked reason, without the matched rule", func() {
+				entry := sut.createLogEntry(
+					newRequestWithClient("example.com.", A, "192.168.178.25", "client1"),
+					&Response{
+						RType: ResponseTypeBLOCKED, Res: mockAnswer,
+						Reason: "BLOCKED (ads: example.com)", ReasonLabel: "BLOCKED (ads)",
+					},
+					time.Now(), 0,
+				)
+
+				Expect(entry.ResponseReason).Should(Equal("BLOCKED (ads)"))
+				Expect(entry.ResponseReason).ShouldNot(ContainSubstring("example"))
+			})
+
+			It("writes a reason without a label as it is", func() {
+				entry := sut.createLogEntry(
+					newRequestWithClient("example.com.", A, "192.168.178.25", "client1"),
+					&Response{RType: ResponseTypeCACHED, Res: mockAnswer, Reason: "CACHED"},
+					time.Now(), 0,
+				)
+
+				Expect(entry.ResponseReason).Should(Equal("CACHED"))
+			})
 		})
 	})
 

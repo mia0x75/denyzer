@@ -344,6 +344,19 @@ func createGroupResolvers(
 	return valid, nil
 }
 
+// logReason returns the response reason to write to logs. With log privacy
+// enabled it prefers the low-cardinality reasonLabel: a blocked response's
+// reason names the matched rule, which for exact-match lists is the queried
+// domain. The reason itself (response data, API query answers and EDE) is
+// not log output and keeps the matched rule.
+func logReason(reason, reasonLabel string) string {
+	if reasonLabel != "" && util.LogPrivacy.Load() {
+		return reasonLabel
+	}
+
+	return reason
+}
+
 // formatUpstreamResolvers formats a list of upstream resolvers with their type and name
 func formatUpstreamResolvers(typeName, name string, resolvers []*upstreamResolverStatus) string {
 	upstreams := make([]string, len(resolvers))

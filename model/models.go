@@ -61,9 +61,13 @@ func (t ResponseType) ToExtendedErrorCode() uint16 {
 
 // Response represents the response of a DNS query
 type Response struct {
-	Res    *dns.Msg
+	Res *dns.Msg
+	// Reason is the reason for the response; a blocked one names the matched rule
 	Reason string
-	RType  ResponseType
+	// ReasonLabel is the low-cardinality form of Reason for logging: a blocked
+	// response's Reason names the matched rule, the label only the groups
+	ReasonLabel string
+	RType       ResponseType
 }
 
 // RequestProtocol represents the server protocol ENUM(

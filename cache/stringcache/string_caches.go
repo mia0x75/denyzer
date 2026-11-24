@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mia0x75/denyzer/log"
+	"github.com/mia0x75/denyzer/util"
 )
 
 type stringCache interface {
@@ -27,11 +28,13 @@ type cacheFactory interface {
 }
 
 // logMatch runs on every hit, so it skips logger derivation and message
-// formatting unless debug logging is on.
+// formatting unless debug logging is on. The rule and the searched string are
+// obfuscated when log privacy is enabled.
 func logMatch(prefix, kind, rule, searchString string) {
 	if log.Log().Enabled(context.TODO(), slog.LevelDebug) {
 		if logger := log.PrefixedLog(prefix); logger.Enabled(context.TODO(), slog.LevelDebug) {
-			logger.Debug(fmt.Sprintf("%s '%s' matched with '%s'", kind, rule, searchString))
+			logger.Debug(fmt.Sprintf("%s '%s' matched with '%s'",
+				kind, util.Obfuscate(rule), util.Obfuscate(searchString)))
 		}
 	}
 }
