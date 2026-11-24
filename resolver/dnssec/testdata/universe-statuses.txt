@@ -7,9 +7,6 @@
 # verifications and hashes for those replies. Running the test with -update-golden rewrites the
 # case lines; these comments and the tags are kept by hand.
 #
-# Tags:
-#   deferred:RSA-canonical-order            Signed data for large RSA exponents is put in the wrong order.
-#
 # A deferred tag is only for a reply that is refused and should not be.
 *.cwild.nsec3./A Secure 5 0
 *.cwild.nsec3./CNAME Secure 1 0
@@ -1430,7 +1427,7 @@ www.rsa./A@rsa./DS+unsign.an0 Bogus 1 0
 www.rsa./A@rsa./DS+upper.an0 Secure 4 0
 www.rsa./CNAME Secure 2 0
 www.rsa./DS Secure 2 0
-www.rsa./TXT Bogus 1 0 false-bogus deferred:RSA-canonical-order
+www.rsa./TXT Secure 1 0
 www.sec.nsec./A Secure 1 0
 www.sec.nsec./A@./DNSKEY+drop.an0 Bogus 0 0
 www.sec.nsec./A@./DNSKEY+dup.an0 Secure 6 0
