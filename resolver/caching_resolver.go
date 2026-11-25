@@ -366,8 +366,9 @@ func packForCache(ctx context.Context, logger *slog.Logger, msg *dns.Msg) ([]byt
 	return packed, err
 }
 
-// Cached wire bytes cannot preserve trusted-local or synthesized origins, which
-// DNSSEC and rebinding checks above the cache need to distinguish on every hit.
+// Cached wire bytes cannot preserve trusted-local origins, which DNSSEC and
+// rebinding checks above the cache need to distinguish on every hit. DNS64
+// synthesis lives above the cache, so its result is never a cache input.
 func isCacheableResponseType(rType model.ResponseType) bool {
 	return rType == model.ResponseTypeRESOLVED
 }
