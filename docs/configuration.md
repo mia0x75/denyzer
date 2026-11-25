@@ -1139,14 +1139,14 @@ With following parameters you can tune the caching behavior:
 
 | Parameter                     | Type            | Mandatory | Default value | Description                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ----------------------------- | --------------- | --------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| caching.minTime               | duration format | no        | 0 (use TTL)   | How long a response must be cached (min value). If <=0, use response's TTL, if >0 use this value, if TTL is smaller                                                                                                                                                                                                                                                                                            |
+| caching.minTime               | duration format | no        | 0 (use TTL)   | How long a response must be cached (min value). If <=0, use response's TTL, if >0 use this value, if TTL is smaller. Not used for a response whose answer or authority section has DNSSEC signatures (RRSIG records, which DNSSEC validation requests with every query): such a response is cached for no longer than the smallest TTL of the records of these two sections, each signature counted with no more than the TTL that its zone signed and the time until it expires                                                                                                                                                                                                                                                                                            |
 | caching.maxTime               | duration format | no        | 0 (use TTL)   | How long a response must be cached (max value). If <0, do not cache responses. If 0, use TTL. If > 0, use this value, if TTL is greater                                                                                                                                                                                                                                                                        |
 | caching.maxItemsCount         | int             | no        | 0 (unlimited) | Max number of cache entries (responses) to be kept in cache (soft limit). Default (0): unlimited. Useful on systems with limited amount of RAM.                                                                                                                                                                                                                                                                |
 | caching.prefetching           | bool            | no        | false         | if true, denyzer will preload DNS results for often used queries (default: names queried more than 5 times in a 2 hour time window). Results in cache will be loaded again on their expire (TTL). This improves the response time for often used queries, but significantly increases external traffic. It is recommended to increase "minTime" to reduce the number of prefetch queries to external resolvers. |
 | caching.prefetchExpires       | duration format | no        | 2h            | Prefetch track time window                                                                                                                                                                                                                                                                                                                                                                                     |
 | caching.prefetchThreshold     | int             | no        | 5             | Name queries threshold for prefetch                                                                                                                                                                                                                                                                                                                                                                            |
 | caching.prefetchMaxItemsCount | int             | no        | 0 (unlimited) | Max number of domains to be kept in cache for prefetching (soft limit). Default (0): unlimited. Useful on systems with limited amount of RAM.                                                                                                                                                                                                                                                                  |
-| caching.cacheTimeNegative     | duration format | no        | 30m           | Time how long negative results (NXDOMAIN response or empty result) are cached. A value of -1 will disable caching for negative results.                                                                                                                                                                                                                                                                        |
+| caching.cacheTimeNegative     | duration format | no        | 30m           | Time how long negative results (NXDOMAIN response or empty result) are cached. A value of -1 will disable caching for negative results. The limit that `caching.minTime` describes for a response with DNSSEC signatures applies to a negative result too                                                                                                                                                                                                                                                                        |
 | caching.exclude               | Regex list      | no        |               | Exclusions rules as regex expressions of domains that won't be cached at all. Such as: /lan$/ or /^.*\.host\.com$/                                                                                                                                                                                                                                                                                                 |
 
 !!! example
@@ -1497,7 +1497,7 @@ When DNSSEC validation is enabled, Denyzer will:
 - Return SERVFAIL with a specific EDE for Bogus replies. Validation that cannot complete below a trust anchor is also Bogus; eligible failures trigger one more upstream request, as described in [Validation Results](#validation-results).
 - Preserve the original data and clear AD for clients setting CD, so those clients can validate for themselves (RFC 4035 §3.2.2).
 - Set AD only after successful validation, remove unvalidated additional records except EDNS OPT, and remove orphan RRSIGs whose covered RRset is absent from their section.
-- Bound each RRset's TTL in an AD reply by its record TTL, validating signature TTL, Original TTL, remaining signature validity, and wildcard proof lifetime where applicable (RFC 4035 §5.3.3, RFC 9077). Cached zone status is also bounded by its DS/DNSKEY or denial proof lifetime. `caching.minTime` may extend local storage, but cannot increase the TTL sent to clients; cache hits are revalidated.
+- Bound each RRset's TTL in an AD reply by its record TTL, validating signature TTL, Original TTL, remaining signature validity, and wildcard proof lifetime where applicable (RFC 4035 §5.3.3, RFC 9077). Cached zone status is also bounded by its DS/DNSKEY or denial proof lifetime. A signed response is held in the cache for no longer than those TTLs allow, whatever `caching.minTime` is; cache hits are revalidated.
 
 Independently of this setting, Denyzer normalizes every response against the DNSSEC-related bits of the query it answers, because the client's DO bit is not necessarily the one used towards the upstream:
 
@@ -1576,7 +1576,7 @@ Denyzer classifies validation results into four categories:
 | Result | Meaning | Response handling |
 | --- | --- | --- |
 | **Secure** | Signatures and chains of trust validate for the reply's sections | Return the reply with AD set |
-| **Insecure** | The parent proves an unsigned zone, or an NSEC3 Opt-Out proof permits an unsigned delegation; also applies to CNAME chains containing such data | Return the reply with AD clear |
+| **Insecure** | The parent proves an unsigned zone, or that has DS records, none with both a key algorithm and a digest type that denyzer supports (see [Supported Algorithms](#supported-algorithms)), or an NSEC3 Opt-Out proof permits an unsigned delegation; also applies to CNAME chains containing such data | Return the reply with AD clear |
 | **Bogus** | Invalid signatures, proofs, or answer structure; exhausted budgets; or failed DS/DNSKEY lookups below a trust anchor | Return SERVFAIL with a specific EDE and response type `BOGUS` |
 | **Indeterminate** | No trust anchor covers the name, so its signing status cannot be determined; no chain lookups are made for it | Return the reply with AD clear |
 
@@ -1665,10 +1665,9 @@ Denyzer supports the following DNSSEC algorithms per RFC 8624:
 | ECDSAP384SHA384 | 14 | Recommended | Strong |
 | ED25519   | 15 | Recommended | Very Strong |
 
-Other signature algorithms, including ED448 (16), cannot be verified. RSA public exponents are
-limited to `2^32+1` for RSASHA256/RSASHA512 and `2^31-1` for RSASHA1/RSASHA1-NSEC3-SHA1.
-Larger exponents are not used for verification. A zone is classified Insecure only when all
-keys named by supported DS records are present in the DNSKEY RRset and all are unusable.
+Denyzer verifies no signature of another algorithm, ED448 (16) among them. It uses a DS record only if it supports both the key algorithm and the digest type of that record: SHA-1 (1), SHA-256 (2) or SHA-384 (4). A zone that has DS records of which denyzer uses none is treated as Insecure, like an unsigned zone (RFC 4035 §5.2, RFC 6840 §5.2). In a zone that has a DS record that denyzer uses, a signature of another algorithm is left out: a record set is validated with its other signatures, and fails validation if it has none (RFC 6840 §5.11).
+
+RSA public exponents are limited to `2^32+1` for RSASHA256/RSASHA512 and `2^31-1` for RSASHA1/RSASHA1-NSEC3-SHA1. Larger exponents are not used for verification. A zone is classified Insecure only when all keys named by supported DS records are present in the DNSKEY RRset and all are unusable.
 
 ### Performance Considerations
 
@@ -1681,6 +1680,7 @@ DNSSEC validation adds overhead to DNS resolution:
 Recommendations:
 
 - Start with `cacheExpirationHours: 1` and increase if validation overhead is acceptable
+- Use `prefetching` in the caching resolver to keep the responses of popular domains in the cache; a prefetched response is validated when it is served, not before
 - Consider disabling for high-volume recursive resolvers if performance is critical
 
 ### Examples
@@ -1798,7 +1798,7 @@ When DNS64 is enabled, Denyzer will:
 
 Denyzer's DNS64 implementation complies with:
 
-- **RFC 6147** (DNS64 specification): Non-validating mode implementation
+- **RFC 6147** (DNS64 specification): Non-validating mode, and validating resolver mode (Section 5.5) when DNSSEC validation is enabled, except that the AD bit is never set on a synthesized response
 - **RFC 6052** (IPv4-to-IPv6 address embedding): All six prefix lengths supported (/32, /40, /48, /56, /64, /96)
 - **RFC 8914** (Extended DNS Errors): Synthesized responses include EDE code 4 (Forged Answer)
 
@@ -1889,17 +1889,19 @@ You can configure a custom exclusion set using the `dns64.exclusionSet` paramete
         - 64:ff9b::/96   # Includes configured prefix
     ```
 
-### DNSSEC Handling (Non-Validating Mode)
+### DNSSEC Handling
 
-DNS64 operates in **non-validating mode** and handles DNSSEC as follows:
+DNS64 handles DNSSEC as follows:
 
+- **Validation**: With DNSSEC validation enabled, the AAAA response and the A response are validated before synthesis, as any other response is (RFC 6147 Section 5.5); if either fails, SERVFAIL is returned and nothing is synthesized. Neither is validated for a client that sets the CD bit: unless it sets the DO bit too, synthesis goes on with the two responses as they are
 - **DO bit**: Copied from original AAAA query to A query (preserves client's DNSSEC request)
 - **CD bit**: Copied from original AAAA query to A query (preserves checking-disabled flag)
-- **AD bit**: Always **cleared** in synthesized responses (synthesis breaks authentication)
+- **DO and CD bits both set**: No synthesis, for a client that validates and synthesizes itself (RFC 6147 Section 5.5)
+- **AD bit**: Always **cleared** in synthesized responses (the synthesized RRset is unsigned)
 - **Extended DNS Error**: Synthesized responses include EDE code 4 (Forged Answer)
 
-!!! info "Future: DNSSEC-Aware DNS64"
-    Future enhancement may implement RFC 6147 Section 3 (DNSSEC-aware operation), where DNS64 can validate DNSSEC signatures and set the AD bit appropriately for synthesized responses. The current non-validating mode is suitable for most deployments.
+!!! info "Future: AD Bit for Synthesized Responses"
+    Future enhancement may set the AD bit for synthesized responses whose AAAA and A responses both validated (RFC 6147 Section 5.5).
 
 ### Performance Considerations
 
@@ -1907,7 +1909,7 @@ DNS64 adds overhead to DNS resolution:
 
 - **Additional A query**: Every AAAA query that requires synthesis triggers an additional A query
 - **Caching is critical**: Enable caching to minimize upstream query load
-- **Cache hit rate**: With caching, most AAAA queries hit the cache and avoid synthesis overhead
+- **Cache hit rate**: With caching, a repeated query gets its AAAA and A responses from the cache; the synthesis itself is done for every query. The exception is a query with the CD bit set: the responses to it carry that bit (RFC 4035 §3.2.2), and the cache stores no NOERROR response that does
 
 !!! warning "Enable Caching for DNS64"
     DNS64 without caching will **double** upstream query load (one AAAA + one A per query). Denyzer will log a warning if DNS64 is enabled without caching.
