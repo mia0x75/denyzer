@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/mia0x75/denyzer/resolver"
 
@@ -26,6 +27,8 @@ import (
 
 const (
 	dohMessageLimit    = dns.MaxMsgSize
+	dohBodyReadTimeout = 20 * time.Second
+	http3ProtocolMajor = 3
 	contentTypeHeader  = "Content-Type"
 	cacheControlHeader = "Cache-Control"
 	dnsContentType     = "application/dns-message"
@@ -123,6 +126,18 @@ func (s *Server) dohPostRequestHandler(rw http.ResponseWriter, req *http.Request
 		return
 	}
 
+	if req.ProtoMajor == http3ProtocolMajor {
+		timeout := time.Duration(s.cfg.Blocking.Loading.Downloads.ReadTimeout)
+		if timeout <= 0 {
+			timeout = dohBodyReadTimeout
+		}
+		if err := http.NewResponseController(rw).SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			http.Error(rw, "cannot set body read deadline", http.StatusInternalServerError)
+
+			return
+		}
+	}
+
 	rawMsg, err := io.ReadAll(io.LimitReader(req.Body, int64(dohMessageLimit)+1))
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
@@ -148,7 +163,18 @@ func (s *Server) processDohMessage(rawMsg []byte, rw http.ResponseWriter, httpRe
 		return
 	}
 
-	ctx, dnsReq := newRequestFromHTTP(httpReq.Context(), httpReq, msg)
+	if msg.Response || msg.Opcode != dns.OpcodeQuery || len(msg.Question) != 1 {
+		http.Error(rw, "expected a DNS query with exactly one question", http.StatusBadRequest)
+
+		return
+	}
+
+	ctx, dnsReq, err := newRequestFromHTTP(httpReq.Context(), httpReq, msg)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+
+		return
+	}
 
 	if err := s.handleReq(ctx, dnsReq, httpMsgWriter{rw}); errors.Is(err, resolver.ErrRateLimited) {
 		http.Error(rw, "too many requests", http.StatusTooManyRequests)
@@ -169,7 +195,7 @@ func (r httpMsgWriter) WriteMsg(msg *dns.Msg) error {
 
 	// https://www.rfc-editor.org/rfc/rfc8484#section-5.1
 	// get the smallest TTL from answer
-	r.rw.Header().Set(cacheControlHeader, fmt.Sprintf("max-age=%d", getSmallestTTLFromAnswer(msg)))
+	r.rw.Header().Set(cacheControlHeader, fmt.Sprintf("private, max-age=%d", getSmallestTTLFromAnswer(msg)))
 
 	// https://www.rfc-editor.org/rfc/rfc8484#section-4.2.1
 	r.rw.WriteHeader(http.StatusOK)

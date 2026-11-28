@@ -3,15 +3,69 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"testing"
+	"time"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/util"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/quic-go/quic-go/http3"
+	"github.com/stretchr/testify/require"
 )
+
+func TestHTTP3IncompleteDoHBodyExpires(t *testing.T) {
+	t.Parallel()
+	certificate := httptest.NewTLSServer(http.NotFoundHandler())
+	defer certificate.Close()
+	pc, err := (&net.ListenConfig{}).ListenPacket(t.Context(), "udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer pc.Close()
+	srv := &Server{cfg: &config.Config{Blocking: config.Blocking{Loading: config.SourceLoading{Downloads: config.Downloader{ReadTimeout: config.Duration(50 * time.Millisecond)}}}}}
+	finished := make(chan struct{})
+	h3 := newHTTP3Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(finished)
+		srv.dohPostRequestHandler(w, r)
+	}), newH3TLSConfig(certificate.TLS))
+	defer h3.Close()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- h3.inner.Serve(pc) }()
+	defer func() {
+		_ = h3.Close()
+		require.ErrorIs(t, <-serveDone, http.ErrServerClosed)
+	}()
+	transport := &http3.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true}}
+	defer transport.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+pc.LocalAddr().String()+"/dns-query", reader)
+	require.NoError(t, err)
+	req.Header.Set(contentTypeHeader, dnsContentType)
+	result := make(chan struct{})
+	go func() {
+		defer close(result)
+		resp, _ := transport.RoundTrip(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	_, err = writer.Write([]byte{0})
+	require.NoError(t, err)
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		t.Fatal("HTTP/3 body read outlived its deadline")
+	}
+	require.NoError(t, writer.Close())
+	<-result
+}
 
 var _ = Describe("HTTP/3 helpers", func() {
 	Describe("newH3TLSConfig", func() {

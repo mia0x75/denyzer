@@ -927,6 +927,8 @@ func (s *Server) Stop(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+const maxClientIDLength = 256
+
 func extractClientIDFromHost(hostName string) string {
 	const clientIDPrefix = "id-"
 	if strings.HasPrefix(hostName, clientIDPrefix) && strings.Contains(hostName, ".") {
@@ -941,6 +943,11 @@ func newRequest(
 	clientIP net.IP, clientID string,
 	protocol model.RequestProtocol, request *dns.Msg,
 ) (context.Context, *model.Request) {
+	if len(clientID) > maxClientIDLength {
+		clientID = ""
+	}
+	clientID = strings.Clone(clientID)
+
 	ctx = log.CtxWithAttrs(ctx,
 		slog.String("req_id", uuid.NewV7().String()),
 		slog.Any("question", util.LogQuestions(request.Question)),
@@ -986,17 +993,23 @@ func newRequestFromDNS(ctx context.Context, rw dns.ResponseWriter, msg *dns.Msg)
 	return newRequest(ctx, clientIP, clientID, protocol, msg)
 }
 
-func newRequestFromHTTP(ctx context.Context, req *http.Request, msg *dns.Msg) (context.Context, *model.Request) {
+func newRequestFromHTTP(ctx context.Context, req *http.Request, msg *dns.Msg) (context.Context, *model.Request, error) {
 	protocol := model.RequestProtocolTCP
 	clientIP := util.HTTPClientIP(req)
 
 	// Sanitize untrusted URL input before it can become a metrics or log label.
-	clientID := strings.ToValidUTF8(chi.URLParam(req, "clientID"), "")
+	clientID := chi.URLParam(req, "clientID")
 	if clientID == "" {
 		clientID = extractClientIDFromHost(req.Host)
 	}
+	if len(clientID) > maxClientIDLength {
+		return ctx, nil, fmt.Errorf("client ID exceeds %d bytes", maxClientIDLength)
+	}
+	clientID = strings.ToValidUTF8(clientID, "")
 
-	return newRequest(ctx, clientIP, clientID, protocol, msg)
+	ctx, request := newRequest(ctx, clientIP, clientID, protocol, msg)
+
+	return ctx, request, nil
 }
 
 // OnRequest will be executed if a new DNS request is received

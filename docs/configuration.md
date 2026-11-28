@@ -828,6 +828,10 @@ For DoH you can also pass the client name as url parameter:
 
 DoH URL: `https://denyzer.example.com/dns-query/alice` -> request's client name is `alice`
 
+Client names supplied through these URLs or hosts are limited to 256 bytes.
+DoH rejects longer names with HTTP 400; longer names from DoT are ignored and
+the normal IP-based client lookup applies.
+
 ### Resolving client name from IP address
 
 Denyzer resolves a client's name from its IP address using the first of the following sources that yields a match:
