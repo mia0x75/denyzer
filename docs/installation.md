@@ -70,12 +70,12 @@ may not match the access address, and is rejected by the CLI. See
         `setcap 'cap_net_bind_service=+ep' ./denyzer`, run as root (not recommended),
         or configure a port >= 1024.
 
-        If Denyzer runs under a **restricted capability bounding set** (for example a
-        hardened `systemd` unit, or a container that drops capabilities), use
-        `setcap 'cap_net_bind_service=+p' ./denyzer` instead. Denyzer raises the
-        capability to effective itself at startup, which avoids the
-        `operation not permitted` exec error that `+ep` triggers when the capability
-        is not in the bounding set.
+        Release binaries use CGO and cannot promote a permitted-only capability to
+        effective at startup. Under a restricted capability bounding set, allow
+        `CAP_NET_BIND_SERVICE` in that set and ensure it is effective in the running
+        process. `setcap 'cap_net_bind_service=+p'` alone is insufficient; file
+        capabilities cannot restore a capability removed from the bounding set.
+        If effective permission cannot be granted, configure a port >= 1024.
 
 === "Docker"
 
@@ -98,17 +98,17 @@ may not match the access address, and is rejected by the CLI. See
 
     !!! note "Running under a restricted runtime"
 
-        The container image is capability-aware. The binary ships with
-        `cap_net_bind_service=+p` (permitted only), so the container starts even under
-        a restricted runtime that drops all capabilities (for example the Kubernetes
-        *Restricted* Pod Security Standard, `capabilities: drop: [ALL]`).
+        The image uses `cap_net_bind_service=+p` (permitted only) on its binary.
+        This lets the binary execute when the runtime drops all capabilities,
+        but does not guarantee permission to bind privileged ports. The CGO build
+        cannot automatically promote the capability to effective at startup.
 
-        - On **ports >= 1024** no capability is required.
-        - On **privileged ports (< 1024, e.g. 53/853)** Denyzer needs `NET_BIND_SERVICE`.
-          With the default runtime capability set it is already present and Denyzer
-          enables it automatically. Under `drop: [ALL]`, grant it back (Kubernetes
-          `securityContext.capabilities.add: ["NET_BIND_SERVICE"]`, or
-          `docker run --cap-add NET_BIND_SERVICE`) or configure a port >= 1024.
+        - **Ports >= 1024** require no capability.
+        - **Ports still protected by the kernel (e.g. 53/853)** require
+          `NET_BIND_SERVICE` in the bounding set and effective in the process after
+          executing the binary. Check the runtime's capability settings: a file's
+          `+p` bit alone is insufficient. If effective permission cannot be granted,
+          configure a port >= 1024.
 
     !!! note "Writable mounts and file permissions"
 
