@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"testing"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/model"
@@ -13,7 +14,36 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
+
+func TestDNS64PreservesForwardedSubnet(t *testing.T) {
+	upstream := NewMockChainedResolver(t)
+	var seen []*dns.Msg
+	upstream.EXPECT().Resolve(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req *model.Request) (*model.Response, error) {
+		seen = append(seen, req.Req.Copy())
+		response := new(dns.Msg).SetReply(req.Req)
+		if req.Req.Question[0].Qtype == dns.TypeA {
+			response.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: "host.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("192.0.2.10")}}
+		}
+
+		return &model.Response{Res: response, RType: model.ResponseTypeRESOLVED}, nil
+	}).Twice()
+	chain := Chain(NewDNS64Resolver(config.DNS64{Enable: true}), NewECSResolver(config.ECS{Forward: true}), upstream)
+	query := new(dns.Msg).SetQuestion("host.example.", dns.TypeAAAA)
+	query.SetEdns0(edns0BufferSize, false)
+	subnet := &dns.EDNS0_SUBNET{Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 24, Address: net.ParseIP("198.51.100.0")}
+	query.IsEdns0().Option = append(query.IsEdns0().Option, subnet)
+	response, err := chain.Resolve(t.Context(), &model.Request{Req: query, ClientIP: net.ParseIP("192.0.2.1")})
+	require.NoError(t, err)
+	require.Len(t, seen, 2)
+	for _, message := range seen {
+		require.Equal(t, subnet, util.GetEdns0Option[*dns.EDNS0_SUBNET](message))
+	}
+	require.Equal(t, dns.TypeAAAA, query.Question[0].Qtype)
+	require.Equal(t, dns.TypeA, seen[1].Question[0].Qtype)
+	require.IsType(t, &dns.AAAA{}, response.Res.Answer[0])
+}
 
 var _ = Describe("DNS64Resolver", func() {
 	var (

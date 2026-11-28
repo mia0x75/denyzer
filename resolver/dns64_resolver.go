@@ -216,15 +216,9 @@ func (r *DNS64Resolver) synthesizeFromA(
 	aaaaResponse *model.Response,
 	logger *slog.Logger,
 ) (*model.Response, error) {
-	// Create new A query for same name
-	aReq := util.NewMsgWithQuestion(originalRequest.Req.Question[0].Name, dns.Type(dns.TypeA))
-
-	// Copy DNSSEC flags from original AAAA query
-	if originalRequest.Req.IsEdns0() != nil {
-		aReq.SetEdns0(edns0BufferSize, originalRequest.Req.IsEdns0().Do())
-	}
-	aReq.CheckingDisabled = originalRequest.Req.CheckingDisabled
-	aReq.RecursionDesired = originalRequest.Req.RecursionDesired
+	// Preserve the client subnet and other query options for the same upstream view.
+	aReq := originalRequest.Req.Copy()
+	aReq.Question[0].Qtype = dns.TypeA
 
 	// Resolve the A input in the same client view and retain the cache retry state.
 	aRequest := *originalRequest
