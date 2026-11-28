@@ -10,17 +10,50 @@ import (
 	"os"
 	"reflect"
 	"sync/atomic"
+	"testing"
+	"time"
 
 	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/model"
 	"github.com/mia0x75/denyzer/util"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	. "github.com/mia0x75/denyzer/helpertest"
 	"github.com/miekg/dns"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+func TestBootstrapKeepsPartialSuccess(t *testing.T) {
+	for _, goodType := range []uint16{dns.TypeA, dns.TypeAAAA} {
+		t.Run(dns.TypeToString[goodType], func(t *testing.T) {
+			m := NewMockChainedResolver(t)
+			m.EXPECT().Resolve(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req *model.Request) (*model.Response, error) {
+				if req.Req.Question[0].Qtype != goodType {
+					return nil, errors.New("one family unavailable")
+				}
+				reply := new(dns.Msg).SetReply(req.Req)
+				if goodType == dns.TypeA {
+					reply.Answer = []dns.RR{&dns.A{A: net.ParseIP("192.0.2.1")}}
+				} else {
+					reply.Answer = []dns.RR{&dns.AAAA{AAAA: net.ParseIP("2001:db8::1")}}
+				}
+
+				return &model.Response{Res: reply}, nil
+			}).Times(4)
+			cfg := &bootstrapConfig{connectIPVersion: config.IPVersionDual, timeout: config.Duration(time.Second)}
+			b := &Bootstrap{resolver: m, configurable: withConfig(cfg)}
+			ips, err := b.resolve(t.Context(), "bootstrap.example.", config.IPVersionDual.QTypes())
+			require.NoError(t, err)
+			require.Len(t, ips, 1)
+			upstreamCfg := upstreamConfig{Host: "bootstrap.example."}
+			set, err := b.UpstreamIPs(t.Context(), &UpstreamResolver{configurable: withConfig(upstreamCfg)})
+			require.NoError(t, err)
+			require.True(t, set.Current().Equal(ips[0]))
+		})
+	}
+}
 
 var _ = Describe("Bootstrap", Label("bootstrap"), func() {
 	var (

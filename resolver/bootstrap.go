@@ -277,15 +277,15 @@ func (b *Bootstrap) resolve(ctx context.Context, hostname string, qTypes []dns.T
 		ips = append(ips, qIPs...)
 	}
 
-	if err == nil && len(ips) == 0 {
-		return nil, fmt.Errorf("no such host %s", hostname)
+	if len(ips) > 0 {
+		return ips, nil
 	}
 
 	if err != nil {
-		return ips, fmt.Errorf("failed to resolve %s: %w", hostname, err)
+		return nil, fmt.Errorf("failed to resolve %s: %w", hostname, err)
 	}
 
-	return ips, nil
+	return nil, fmt.Errorf("no such host %s", hostname)
 }
 
 func (b *Bootstrap) resolveType(ctx context.Context, hostname string, qType dns.Type) (ips []net.IP, err error) {
