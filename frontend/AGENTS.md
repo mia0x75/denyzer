@@ -26,7 +26,6 @@ src/
 make dashboard               # From repo root: install deps, static-export, copy to web/dashboard
 bun run build                # Production static export (outputs ./out)
 bun run dev                  # Start dev server (Next.js + Turbo)
-bun run start                # Serve an existing build
 bun run lint                 # Run ESLint
 bun run lint:fix             # Run ESLint with auto-fix
 bun run format:check         # Check Prettier formatting
@@ -37,6 +36,10 @@ bun run verify               # Tests + lint + format + typecheck + knip + checkd
 bun run knip                 # Detect unused exports and dependencies
 bun run checkdupe            # Detect code duplication (jscpd)
 ```
+
+For a production preview, run `make dashboard` and `make build` from the repository
+root, then open the dashboard on Denyzer's `ports.admin` listener. This project
+uses a static export and does not support `next start`.
 
 After any code change, always run `bun run lint`, `bun run format:check`, and `bun run typecheck` to validate.
 
