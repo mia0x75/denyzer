@@ -7,6 +7,8 @@ import (
 	"maps"
 	"strings"
 	"sync"
+	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
@@ -21,7 +23,21 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
+
+func TestDisableBlockingRejectedGroupPreservesRecovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := config.Blocking{}
+		r := &BlockingResolver{configurable: withConfig(&cfg), status: &status{enabled: true, enableTimer: time.NewTimer(time.Hour)}}
+		require.NoError(t, r.DisableBlocking(t.Context(), time.Minute, []string{"default"}))
+		require.ErrorContains(t, r.DisableBlocking(t.Context(), 0, []string{"default", "unknown"}), "unknown")
+		require.False(t, r.BlockingStatus().Enabled)
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		require.True(t, r.BlockingStatus().Enabled)
+	})
+}
 
 var (
 	group1File, group2File, defaultGroupFile *TmpFile

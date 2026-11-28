@@ -383,20 +383,20 @@ func (r *BlockingResolver) DisableBlocking(ctx context.Context, duration time.Du
 	s := r.status
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	s.enableTimer.Stop()
 
 	allBlockingGroups := r.retrieveAllBlockingGroups()
 
+	for _, g := range disableGroups {
+		i := sort.SearchStrings(allBlockingGroups, g)
+		if i >= len(allBlockingGroups) || allBlockingGroups[i] != g {
+			return fmt.Errorf("group '%s' is unknown", g)
+		}
+	}
+
+	s.enableTimer.Stop()
 	if len(disableGroups) == 0 {
 		s.disabledGroups = allBlockingGroups
 	} else {
-		for _, g := range disableGroups {
-			i := sort.SearchStrings(allBlockingGroups, g)
-			if i >= len(allBlockingGroups) || allBlockingGroups[i] != g {
-				return fmt.Errorf("group '%s' is unknown", g)
-			}
-		}
-
 		// Clone so status owns the backing array: the caller keeps a reference to
 		// disableGroups, and groupsToCheckForClient reads s.disabledGroups
 		// lock-free, so an external in-place mutation must not be able to race it.
