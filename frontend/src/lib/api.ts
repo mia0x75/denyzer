@@ -39,38 +39,32 @@ async function postJSON(url: string): Promise<Response> {
 // --- Denyzer Server API (already served by Go server) ---
 
 async function fetchSfsDbSnapshot(): Promise<StatsSnapshot> {
-  const [summary, topDomains, topBlockedDomains, topClients, listed] =
-    await Promise.all([
-      fetchJSON<{
-        totalQueries: number;
-        blocked: number;
-        blockedPercentage: number;
-        cached: number;
-        forwarded: number;
-        filtered: number;
-        local: number;
-        errors: number;
-        other: number;
-        dropped: number;
-        cacheHitRate: number;
-        avgResponseMs: number;
-        cacheEntries: number;
-      }>("/api/stats/summary"),
-      fetchJSON<GoTopEntry[]>("/api/stats/top_domains?range=24h&limit=5"),
-      fetchJSON<GoTopEntry[]>(
-        "/api/stats/top_domains?range=24h&limit=5&blocked=true",
-      ),
-      fetchJSON<GoTopEntry[]>("/api/stats/top_clients?range=24h&limit=5"),
-      fetchJSON<{
-        denylistGroups: number;
-        listedDomains: number;
-        allowlistDomains: number;
-      }>("/api/stats/lists").catch(() => ({
-        denylistGroups: 0,
-        listedDomains: 0,
-        allowlistDomains: 0,
-      })),
-    ]);
+  const [summary, listed] = await Promise.all([
+    fetchJSON<{
+      totalQueries: number;
+      blocked: number;
+      blockedPercentage: number;
+      cached: number;
+      forwarded: number;
+      filtered: number;
+      local: number;
+      errors: number;
+      other: number;
+      dropped: number;
+      cacheHitRate: number;
+      avgResponseMs: number;
+      cacheEntries: number;
+    }>("/api/stats/summary"),
+    fetchJSON<{
+      denylistGroups: number;
+      listedDomains: number;
+      allowlistDomains: number;
+    }>("/api/stats/lists").catch(() => ({
+      denylistGroups: 0,
+      listedDomains: 0,
+      allowlistDomains: 0,
+    })),
+  ]);
 
   return {
     summary: {
@@ -87,22 +81,6 @@ async function fetchSfsDbSnapshot(): Promise<StatsSnapshot> {
       listedDomains: listed.listedDomains,
       allowlistDomains: listed.allowlistDomains,
     },
-    topLists: {
-      domains: (topDomains ?? []).map((d) => ({
-        name: d.name,
-        count: d.count,
-      })),
-      blockedDomains: (topBlockedDomains ?? []).map((d) => ({
-        name: d.name,
-        count: d.count,
-      })),
-      clients: (topClients ?? []).map((c) => ({
-        name: c.name,
-        count: c.count,
-      })),
-    },
-    lists: { denylist: {}, allowlist: {} },
-    cache: { entries: summary.cacheEntries },
   };
 }
 

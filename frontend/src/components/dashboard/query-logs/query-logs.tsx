@@ -140,7 +140,7 @@ export function QueryLogs() {
 
   const goNext = () => {
     const next = queryLogsData?.nextCursor;
-    if (!next) {
+    if (isFetchingLogs || isPlaceholderLogs || !next) {
       return;
     }
 
@@ -161,7 +161,8 @@ export function QueryLogs() {
     setPageIndex((index) => Math.max(0, index - 1));
   };
 
-  const haveNext = queryLogsData?.hasMore ?? false;
+  const haveNext =
+    !isFetchingLogs && !isPlaceholderLogs && (queryLogsData?.hasMore ?? false);
 
   return (
     <Card>

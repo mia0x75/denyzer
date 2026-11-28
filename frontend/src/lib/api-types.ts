@@ -82,16 +82,6 @@ export interface StatsSnapshotSummary {
 
 export interface StatsSnapshot {
   summary: StatsSnapshotSummary;
-  topLists: {
-    domains: Array<{ name: string; count: number }>;
-    blockedDomains: Array<{ name: string; count: number }>;
-    clients: Array<{ name: string; count: number }>;
-  };
-  lists: {
-    denylist: Record<string, number>;
-    allowlist: Record<string, number>;
-  };
-  cache: { entries: number };
 }
 
 export interface BlockingStatus {
