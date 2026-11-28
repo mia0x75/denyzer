@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 
+	"github.com/mia0x75/denyzer/config"
 	"github.com/mia0x75/denyzer/log"
 	"github.com/miekg/dns"
 	"github.com/spf13/cobra"
@@ -16,6 +17,7 @@ const (
 )
 
 func NewHealthcheckCommand() *cobra.Command {
+	network := "tcp"
 	c := &cobra.Command{
 		Use:   "healthcheck",
 		Short: "performs healthcheck",
@@ -26,13 +28,19 @@ func NewHealthcheckCommand() *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			_ = args
 
-			if _, err := initConfig(); err != nil {
+			cfg, err := initConfig()
+			network = "tcp"
+			if err != nil {
 				log.Log().Warn(fmt.Sprintf("using the flag defaults: %v", err))
+			} else if cfg.Ports.ProxyProtocol.Has(config.ProxyProtocolTypeDns) {
+				network = "udp"
 			}
 
 			return nil
 		},
-		RunE: healthcheck,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return healthcheck(cmd, args, network)
+		},
 	}
 
 	c.Flags().Uint16P("port", "p", defaultDNSPort, "denyzer port")
@@ -41,7 +49,7 @@ func NewHealthcheckCommand() *cobra.Command {
 	return c
 }
 
-func healthcheck(cmd *cobra.Command, args []string) error {
+func healthcheck(cmd *cobra.Command, args []string, network string) error {
 	_ = args
 	port, _ := cmd.Flags().GetUint16("port")
 	bindIP, _ := cmd.Flags().GetString("bindip")
@@ -56,7 +64,7 @@ func healthcheck(cmd *cobra.Command, args []string) error {
 	}
 
 	c := new(dns.Client)
-	c.Net = "tcp"
+	c.Net = network
 	m := new(dns.Msg)
 	m.SetQuestion("healthcheck.denyzer.", dns.TypeA)
 

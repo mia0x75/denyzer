@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 
 	"github.com/mia0x75/denyzer/helpertest"
 	"github.com/mia0x75/denyzer/log"
+	"github.com/miekg/dns"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -55,6 +57,26 @@ var _ = Describe("Healthcheck derives the port from the config", func() {
 
 			return c.Execute()
 		}, "2s").Should(Succeed())
+	})
+
+	It("uses ordinary UDP when TCP DNS requires a PROXY header", func() {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		Expect(err).Should(Succeed())
+		srv := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+			Expect(w.WriteMsg(new(dns.Msg).SetReply(req))).Should(Succeed())
+		})}
+		DeferCleanup(srv.Shutdown)
+		started := make(chan struct{})
+		srv.NotifyStartedFunc = func() { close(started) }
+		go func() {
+			defer GinkgoRecover()
+			Expect(srv.ActivateAndServe()).Should(Succeed())
+		}()
+		<-started
+		writeConfig("ports:\n  dns: " + pc.LocalAddr().String() + "\n  proxyProtocol: [dns]\nupstreams:\n  groups:\n    default: [192.0.2.53]\n")
+		command := NewHealthcheckCommand()
+		command.SetArgs([]string{})
+		Expect(command.Execute()).Should(Succeed())
 	})
 
 	It("still lets an explicit --port win over the config", func() {
