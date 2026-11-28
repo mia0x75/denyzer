@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
@@ -411,6 +412,16 @@ var _ = Describe("CustomDNSResolver", func() {
 					// will delegate to next resolver
 					m.AssertCalled(GinkgoT(), "Resolve", mock.Anything)
 				})
+			})
+			It("should pass the client names on when the target is resolved by the next resolver", func() {
+				request := newRequestWithClient("cname.example", A, "192.0.2.55", "laptop")
+
+				Expect(sut.Resolve(ctx, request)).Should(HaveResponseType(ResponseTypeCUSTOMDNS))
+
+				m.AssertCalled(GinkgoT(), "Resolve", mock.MatchedBy(func(req *Request) bool {
+					return req.Req.Question[0].Name == "example.com." &&
+						slices.Equal(req.ClientNames, []string{"laptop"})
+				}))
 			})
 			It("should not panic when CNAME points to external domain and next resolver returns NoResponse", func() {
 				// When CustomDNSResolver is wrapped by RewriterResolver (as it is in server.go),
