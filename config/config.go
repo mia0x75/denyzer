@@ -3,10 +3,12 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -895,7 +897,12 @@ func isRegularFile(path string) (bool, error) {
 // individual files that were merged to produce data; they are used to attribute
 // schema findings to specific source files on the error path.
 func unmarshalConfig(logger *slog.Logger, data []byte, cfg *Config, sources []configFile) error {
-	err := yaml.UnmarshalStrict(data, cfg)
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.SetStrict(true)
+	err := decoder.Decode(cfg)
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
 	if err != nil {
 		// Enrich the already-failing path with field-path schema errors,
 		// keeping the underlying yaml error for detail. This never rejects a
@@ -909,6 +916,9 @@ func unmarshalConfig(logger *slog.Logger, data []byte, cfg *Config, sources []co
 		}
 
 		return fmt.Errorf("wrong file structure: %w", err)
+	}
+	if err := decoder.Decode(new(struct{})); !errors.Is(err, io.EOF) {
+		return errors.New("configuration must contain a single YAML document")
 	}
 
 	// Success path: the schema disagreeing here is a potential gap in the
@@ -1033,7 +1043,7 @@ func (cfg *Config) validate(logger *slog.Logger) error {
 
 	// Blocking validation
 	if err := cfg.Blocking.validate(); err != nil {
-		logger.Warn(fmt.Sprint(err))
+		return fmt.Errorf("invalid blocking configuration: %w", err)
 	}
 
 	// DNS64 validation
