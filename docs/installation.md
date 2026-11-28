@@ -112,7 +112,9 @@ may not match the access address, and is rejected by the CLI. See
 
     !!! note "Writable mounts and file permissions"
 
-        The container runs as the unprivileged user **UID 100**. Any directory Denyzer
+        The container runs as the unprivileged user `denyzer` (**UID 100**, primary **GID 0**).
+        A named group `denyzer` (**GID 100**) is also defined, so `user: "denyzer:denyzer"` works.
+        Any directory Denyzer
         writes to - the query log target, or `loading.downloads.cachePath` - must be
         writable by that user, otherwise Denyzer logs a `permission denied` error and
         continues without writing.

@@ -85,6 +85,13 @@ LABEL org.opencontainers.image.title="denyzer" \
 
 
 
+COPY <<'EOF' /etc/passwd
+denyzer:x:100:0:Denyzer:/app:/sbin/nologin
+EOF
+COPY <<'EOF' /etc/group
+denyzer:x:100:
+EOF
+
 USER 100
 WORKDIR /app
 
