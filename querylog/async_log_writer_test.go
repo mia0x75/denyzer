@@ -3,16 +3,64 @@ package querylog
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
+	"testing"
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
+	"github.com/mia0x75/denyzer/log"
 	"github.com/mia0x75/denyzer/stats"
 	"github.com/mia0x75/denyzer/storage"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/require"
 )
+
+type stalledLogOutput struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *stalledLogOutput) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+
+	return len(p), nil
+}
+
+func TestAsyncLogWriterOverflowDoesNotWaitForLogOutput(t *testing.T) {
+	restore := log.SaveSettings(log.Log())
+	defer restore()
+	sink := &stalledLogOutput{entered: make(chan struct{}), release: make(chan struct{})}
+	log.SetLevel(log.Log(), slog.LevelWarn)
+	log.SetOutput(log.Log(), sink)
+	var workers sync.WaitGroup
+	defer func() { close(sink.release); workers.Wait() }()
+	workers.Go(func() { log.Log().Warn("blocked test output") })
+	<-sink.entered
+	w := &AsyncLogWriter{
+		ch: make(chan *storage.QueryLogEntry, 1), done: make(chan struct{}),
+		cancel: func() {}, cancelFlush: func() {},
+	}
+	close(w.done)
+	w.Write(&LogEntry{Start: time.Now()})
+	finished := make(chan error, 1)
+	workers.Go(func() {
+		w.Write(&LogEntry{Start: time.Now()})
+		finished <- w.CloseContext(t.Context())
+	})
+	select {
+	case err := <-finished:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("queue overflow or shutdown waited for log output")
+	}
+	require.Equal(t, uint64(1), w.dropped.Load())
+}
 
 // sharedDBPath points at the single SQLite file used by this spec file. The
 // storage layer opens the embedded database only once per process, so every

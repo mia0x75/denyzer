@@ -108,7 +108,6 @@ func (w *AsyncLogWriter) Write(entry *LogEntry) {
 	case w.ch <- e:
 	default:
 		w.dropped.Add(1)
-		log.PrefixedLog(loggerPrefixAsyncLogWriter).Warn("async writer channel full, dropping entry")
 	}
 }
 
