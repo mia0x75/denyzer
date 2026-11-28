@@ -152,6 +152,32 @@ var uniNoPath = map[string]struct{ algorithm, digestType uint8 }{
 // of a top-level name that does not exist. Only its honest replies are validated.
 var uniNSEC3Root = []uniZoneSpec{{".", uniNSEC3, `www A 192.0.2.32`, "nx"}}
 
+// A separate universe keeps the original zones' verification and hash counts stable.
+func uniDNAMEZones() []uniZoneSpec {
+	more := map[string]string{
+		"nsec.": `
+		todname     CNAME www.dname.nsec.
+		two         DNAME dname.nsec.
+		toroot      DNAME .
+		tounsigned  DNAME insecure.nsec.
+		a.*.went    A     192.0.2.40`,
+		"nsec3.": `
+		dname       DNAME nsec.
+		back        CNAME a.ent.dname.nsec.
+		a.*.went    A     192.0.2.41`,
+		"insecure.nsec.": `dname DNAME nsec3.`,
+		"other.":         `tonsec DNAME nsec.`,
+	}
+
+	specs := make([]uniZoneSpec, 0, len(uniZoneSpecs)+1)
+	for _, spec := range uniZoneSpecs {
+		spec.records += "\n" + more[spec.name]
+		specs = append(specs, spec)
+	}
+
+	return append(specs, uniZoneSpec{"dapex.", uniNSEC3, `@ DNAME nsec3.`, "-"})
+}
+
 // uniMutated lists the questions whose honest replies are mutated, one for each shape of reply.
 var uniMutated = []string{
 	"www.nsec./A", "www.nsec./CNAME", "x.wild.nsec./A", "alias.nsec./A", "dangling.nsec./A", "nx.nsec./A",
@@ -167,6 +193,29 @@ var uniSubMutated = []string{
 	"www.sec.nsec./A", "www.insecure.nsec./A", "www.unsigned.optout./A", "www.rsa./A", "www.sec.optout./A",
 	"www.sec.nsec3./A", "www.insecure.nsec3./A", "www.c.b.deep./A", "www.f.e.d.c.b.deep./A", "www.ed448./A",
 }
+
+func uniDNAMEQuestions() []string {
+	var ids []string
+
+	ask := func(names string, types ...uint16) {
+		for name := range strings.FieldsSeq(names) {
+			for _, qtype := range types {
+				ids = append(ids, uniID(name, qtype))
+			}
+		}
+	}
+
+	ask(`a.ent.dname.nsec. x.wild.dname.nsec. nx.dname.nsec. www.dname.nsec3. www.dname.insecure.nsec.
+		www.nsec3.toroot.nsec. www.tounsigned.nsec. www.two.nsec. back.dname.nsec. todname.nsec.
+		alias.tonsec.other.`, dns.TypeA)
+	ask("www.dapex.", dns.TypeA, dns.TypeDS)
+	ask("www.dname.nsec. dname.nsec.", dns.TypeDNAME, dns.TypeANY)
+	ask("www.nsec. alias.nsec. ent.nsec. x.wild.nsec. x.went.nsec. www.nsec3. ent.nsec3. x.went.nsec3.", dns.TypeANY)
+
+	return ids
+}
+
+var uniDNAMEMutated = []string{"www.dname.nsec./A"}
 
 type uniKey struct {
 	*dns.DNSKEY
@@ -595,9 +644,12 @@ func uniCompare(a, b string) int {
 }
 
 func uniParent(name string) string {
-	_, parent, _ := strings.Cut(name, ".")
+	next, end := dns.NextLabel(name, 0)
+	if end {
+		return "."
+	}
 
-	return dns.Fqdn(parent)
+	return name[next:]
 }
 
 func uniJoin(label, name string) string { return label + "." + strings.TrimPrefix(name, ".") }
@@ -739,32 +791,33 @@ func (u *universe) chase(truth *uniTruth, q dns.Question, anchors []string) {
 			rrset = z.rrsets[owner][dns.TypeCNAME]
 		}
 
-		if dname := z.rrsets[ce][dns.TypeDNAME]; absent && dname != nil {
-			// RFC 6672 §2.3: the DNAME and the unsigned CNAME made from it
-			m.Answer = append(m.Answer, z.signed(dname)...)
-			rrset = []dns.RR{&dns.CNAME{
-				Hdr: uniHdr(name, dns.TypeCNAME), Target: strings.TrimSuffix(name, ce) + dname[0].(*dns.DNAME).Target,
-			}}
-			proof = nil
+		switch dname := z.rrsets[ce][dns.TypeDNAME]; {
+		case absent && dname != nil:
+			// RFC 6672 §2.2 requires YXDOMAIN if substitution exceeds the wire limit.
+			rrset, proof = z.redirect(m, name, dname), nil
+			if rrset == nil {
+				m.Rcode = dns.RcodeYXDomain
+
+				return
+			}
+		case q.Qtype == dns.TypeANY:
+			// RFC 1034 §4.3.2 answers ANY without following a CNAME.
+			rrset = nil
+
+			if answer := z.all(owner, name); len(answer) > 0 {
+				m.Answer = append(m.Answer, answer...)
+				m.Ns = uniAppendNew(m.Ns, z.denials(proof...))
+
+				return
+			}
 		}
 
 		if rrset == nil {
-			switch {
-			case absent && z.kind == uniNSEC: // name error, or no data at the wildcard
-				proof = []string{nc, wild}
-			case absent: // RFC 5155 §7.2.2, §7.2.5: with the closest encloser
-				proof = []string{ce, nc, wild}
-			case optedOut: // RFC 5155 §7.2.4: a DS RRset below an Opt-Out span
-				proof = []string{ce, nc}
-			default: // the NSEC or NSEC3 of name shows that it has no such type
-				proof = []string{name}
-			}
-
 			if absent && !z.exists(wild) {
 				m.Rcode = dns.RcodeNameError
 			}
 
-			m.Ns = uniAppendNew(append(m.Ns, z.soa()...), z.denials(proof...))
+			m.Ns = uniAppendNew(append(m.Ns, z.soa()...), z.denials(z.denied(name, absent, optedOut)...))
 
 			return
 		}
@@ -772,13 +825,68 @@ func (u *universe) chase(truth *uniTruth, q dns.Question, anchors []string) {
 		m.Answer = append(m.Answer, z.signedAs(rrset, name)...)
 		m.Ns = uniAppendNew(m.Ns, z.denials(proof...))
 
+		// BIND also stops CNAME and ANY queries at a CNAME synthesized from DNAME.
 		alias, isAlias := rrset[0].(*dns.CNAME)
-		if !isAlias || q.Qtype == dns.TypeCNAME {
+		if !isAlias || q.Qtype == dns.TypeCNAME || q.Qtype == dns.TypeANY {
 			return
 		}
 
 		name = alias.Target
 	}
+}
+
+func (z *uniZone) denied(name string, absent, optedOut bool) []string {
+	ce, nc := z.encloser(name)
+	wild := uniJoin("*", ce)
+
+	switch {
+	case absent && z.kind == uniNSEC: // name error, or no data at the wildcard
+		return []string{nc, wild}
+	case absent: // RFC 5155 §7.2.2, §7.2.5: with the closest encloser
+		return []string{ce, nc, wild}
+	case optedOut: // RFC 5155 §7.2.4: a DS RRset below an Opt-Out span
+		return []string{ce, nc}
+	}
+
+	return []string{name}
+}
+
+func (z *uniZone) redirect(m *dns.Msg, name string, dname []dns.RR) []dns.RR {
+	if !slices.ContainsFunc(m.Answer, func(rr dns.RR) bool { return dns.IsDuplicate(rr, dname[0]) }) {
+		m.Answer = append(m.Answer, z.signed(dname)...)
+	}
+
+	target := strings.TrimSuffix(name, dname[0].Header().Name)
+	if to := dname[0].(*dns.DNAME).Target; to != "." {
+		target += to
+	}
+
+	wire := make([]byte, 2*maxNameOctets)
+	if length, err := dns.PackDomainName(target, wire, 0, nil, false); err != nil || length > maxNameOctets {
+		return nil
+	}
+
+	return []dns.RR{&dns.CNAME{Hdr: uniHdr(name, dns.TypeCNAME), Target: target}}
+}
+
+func (z *uniZone) all(owner, name string) []dns.RR {
+	var out []dns.RR
+
+	for _, rtype := range slices.Sorted(maps.Keys(z.rrsets[owner])) {
+		out = append(out, z.signedAs(z.rrsets[owner][rtype], name)...)
+	}
+
+	if z.kind != uniNSEC || len(out) == 0 || owner != name {
+		return out
+	}
+
+	for _, denial := range z.chain {
+		if denial.Header().Name == owner {
+			out = append(out, z.signed([]dns.RR{denial})...)
+		}
+	}
+
+	return out
 }
 
 // uniAppendNew appends to rrs the records of more that rrs does not hold yet: a reply holds the
@@ -928,11 +1036,18 @@ func (u *universe) mutations(question string, m *dns.Msg) []uniMutant {
 			return uniPart{p.section, uniOwned(p.rrs, rename), uniOwned(p.sigs, rename)}
 		}
 
-		with("drop", p.section == 1 && p.rrs[0].Header().Rrtype == dns.TypeSOA)
+		// RFC 6672 §5.3.1 permits omitting a synthesized CNAME unless it answers the query.
+		noCNAME := uniMadeFromDNAME(parts, p) && q.Qtype != dns.TypeCNAME && q.Qtype != dns.TypeANY
+
+		with("drop", (p.section == 1 && p.rrs[0].Header().Rrtype == dns.TypeSOA) || noCNAME)
 		with("dup", false, p, p)
 		with("move", false, uniPart{1 - p.section, p.rrs, p.sigs})
 		with("rename", false, owned(func(name string) string { return uniJoin("x", name) }))
 		with("upper", true, owned(strings.ToUpper))
+
+		if upper, isAlias := uniUpperTarget(p); isAlias && uniHasDNAME(parts) {
+			with("target-upper", true, upper)
+		}
 
 		signer := ""
 		if len(p.sigs) > 0 {
@@ -1025,6 +1140,39 @@ func (u *universe) mutations(question string, m *dns.Msg) []uniMutant {
 	}
 
 	return out
+}
+
+func uniHasDNAME(parts []uniPart) bool {
+	return slices.ContainsFunc(parts, func(p uniPart) bool { return p.rrs[0].Header().Rrtype == dns.TypeDNAME })
+}
+
+func uniMadeFromDNAME(parts []uniPart, p uniPart) bool {
+	if p.section != 0 || len(p.sigs) > 0 || p.rrs[0].Header().Rrtype != dns.TypeCNAME {
+		return false
+	}
+
+	owner := p.rrs[0].Header().Name
+
+	return slices.ContainsFunc(parts, func(above uniPart) bool {
+		rr := above.rrs[0].Header()
+
+		return above.section == 0 && rr.Rrtype == dns.TypeDNAME && rr.Name != owner && dns.IsSubDomain(rr.Name, owner)
+	})
+}
+
+func uniUpperTarget(p uniPart) (upper uniPart, isAlias bool) {
+	rr := dns.Copy(p.rrs[0])
+
+	switch rr := rr.(type) {
+	case *dns.CNAME:
+		rr.Target = strings.ToUpper(rr.Target)
+	case *dns.DNAME:
+		rr.Target = strings.ToUpper(rr.Target)
+	default:
+		return p, false
+	}
+
+	return uniPart{p.section, []dns.RR{rr}, p.sigs}, true
 }
 
 // respelt returns the case of the honest reply to question as a resolver sends it for a query that
@@ -1170,12 +1318,26 @@ func (u *universe) validator(ctx context.Context, c uniCase, asked *[]string) *V
 // respelt), the replies to uniSubMutated with each of the validator's own queries failing or
 // mutated, and the curated cases.
 func (u *universe) run(ctx context.Context) []uniResult {
-	var results []uniResult
+	results := u.honest(ctx, u.questions())
+	if u.prefix != "" {
+		return results
+	}
+
+	return slices.Concat(results, u.mutated(ctx, uniMutated, uniSubMutated), u.judged(ctx, u.curated()))
+}
+
+func (u *universe) runDNAME(ctx context.Context) []uniResult {
+	return slices.Concat(u.honest(ctx, uniDNAMEQuestions()), u.mutated(ctx, uniDNAMEMutated, nil),
+		u.judged(ctx, u.curatedDNAME()))
+}
+
+func (u *universe) honest(ctx context.Context, questions []string) []uniResult {
+	results := make([]uniResult, 0, len(questions))
 
 	// Honest replies and mutated ones share a validator each, with the cache of zones that honest
 	// DS and DNSKEY replies fill; every other case gets a new one.
 	shared, probes := u.validator(ctx, uniCase{}, nil), u.validator(ctx, uniCase{}, nil)
-	for _, question := range u.questions() {
+	for _, question := range questions {
 		truth := u.reply(question)
 
 		r := u.judge(ctx, shared, uniCase{id: question, question: question, msg: truth.msg.Copy(), want: truth.status.String()})
@@ -1190,9 +1352,11 @@ func (u *universe) run(ctx context.Context) []uniResult {
 		results = append(results, r)
 	}
 
-	if u.prefix != "" {
-		return results
-	}
+	return results
+}
+
+func (u *universe) mutated(ctx context.Context, questions, subQuestions []string) []uniResult {
+	var results []uniResult
 
 	mutant := func(id, question string, m uniMutant) uniCase {
 		c := uniCase{id: id + "+" + m.name, question: question, msg: m.msg}
@@ -1203,8 +1367,8 @@ func (u *universe) run(ctx context.Context) []uniResult {
 		return c
 	}
 
-	shared = u.validator(ctx, uniCase{}, nil)
-	for _, question := range uniMutated {
+	shared := u.validator(ctx, uniCase{}, nil)
+	for _, question := range questions {
 		for _, m := range u.mutations(question, u.reply(question).msg) {
 			results = append(results, u.judge(ctx, shared, mutant(question, question, m)))
 		}
@@ -1214,7 +1378,7 @@ func (u *universe) run(ctx context.Context) []uniResult {
 
 	mutated := map[string]bool{}
 
-	for _, question := range uniSubMutated {
+	for _, question := range subQuestions {
 		var asked []string
 
 		u.validator(ctx, uniCase{}, &asked).ValidateResponse(ctx, u.reply(question).msg.Copy(), uniQuestion(question))
@@ -1240,8 +1404,13 @@ func (u *universe) run(ctx context.Context) []uniResult {
 		}
 	}
 
-	for _, c := range u.curated() {
-		results = append(results, u.judge(ctx, u.validator(ctx, c, nil), c))
+	return results
+}
+
+func (u *universe) judged(ctx context.Context, cases []uniCase) []uniResult {
+	results := make([]uniResult, len(cases))
+	for i, c := range cases {
+		results[i] = u.judge(ctx, u.validator(ctx, c, nil), c)
 	}
 
 	return results
@@ -1798,6 +1967,105 @@ func (u *universe) curated() []uniCase {
 		honest("www.unassigned-digest./A"), nil).anchors = anchoredNoPath
 	attack("unsupported/anchor-below-ds-forged", "www.unassigned-digest./A",
 		msg(noError, forged("www.unassigned-digest.")), nil).anchors = anchoredNoPath
+
+	return cases
+}
+
+func (u *universe) curatedDNAME() []uniCase {
+	var cases []uniCase
+
+	nsec, nsec3 := u.zone("nsec."), u.zone("nsec3.")
+	add := func(want, id, question string, msg *dns.Msg) *uniCase {
+		cases = append(cases, uniCase{id: id, question: question, msg: msg, want: want})
+
+		return &cases[len(cases)-1]
+	}
+	attack := func(id, question string, msg *dns.Msg) *uniCase { return add("Bogus", id, question, msg) }
+	msg := func(rcode int, answer []dns.RR, authority ...[]dns.RR) *dns.Msg {
+		return uniReply(&dns.Msg{Response: true, Rcode: rcode},
+			uniPart{0, answer, nil}, uniPart{1, slices.Concat(authority...), nil})
+	}
+	honest := func(question string) *dns.Msg { return u.reply(question).msg.Copy() }
+	cname := func(owner, target string) []dns.RR {
+		return []dns.RR{&dns.CNAME{Hdr: uniHdr(owner, dns.TypeCNAME), Target: target}}
+	}
+	made := func(z *uniZone, lines ...string) []dns.RR {
+		rrset := make([]dns.RR, len(lines))
+		for i, line := range lines {
+			rrset[i] = uniRR(".", line)
+		}
+
+		return z.signer().signed(rrset)
+	}
+
+	const (
+		noError, nameError = dns.RcodeSuccess, dns.RcodeNameError
+		below              = "www.dname.nsec."
+	)
+
+	redirect, alias, target := nsec.signed(nsec.rrsets["dname.nsec."][dns.TypeDNAME]), cname(below, "www.nsec3."),
+		honest("www.nsec3./A").Answer
+
+	// RFC 6672 §2.2 requires the substituted name and class, and any supplied RRSIG must verify.
+	chaos := cname(below, "www.nsec3.")
+	chaos[0].Header().Class = dns.ClassCHAOS
+	attack("substitution/another-name", below+"/A",
+		msg(noError, slices.Concat(redirect, cname(below, "a.ent.nsec3."), honest("a.ent.nsec3./A").Answer)))
+	attack("substitution/another-class", below+"/A", msg(noError, slices.Concat(redirect, chaos, target)))
+	attack("substitution/failing-rrsig", below+"/A", msg(noError, slices.Concat(redirect, alias,
+		[]dns.RR{uniJunk(below, dns.TypeCNAME, nsec.signer().DNSKEY)}, target)))
+
+	// A DNAME redirects descendants, never its owner or a name sharing only its text suffix.
+	attack("substitution/owner-itself", "dname.nsec./A",
+		msg(noError, slices.Concat(redirect, cname("dname.nsec.", "www.nsec3."), target)))
+	attack("substitution/part-of-a-label", "xdname.nsec./A",
+		msg(noError, slices.Concat(redirect, cname("xdname.nsec.", "www.nsec3."), target)))
+	attack("substitution/dot-inside-a-label", `www.x\.dname.nsec./CNAME`,
+		msg(noError, slices.Concat(redirect, cname(`www.x\.dname.nsec.`, `www.x\.nsec3.`))))
+
+	// RFC 6672 §2.4 disallows multiple DNAMEs at one owner and data below that owner.
+	onward := slices.Concat(cname("a.ent.dname.nsec.", "a.ent.nsec3."), honest("a.ent.nsec3./A").Answer)
+	attack("substitution/two-records", "www.pair.nsec./A", msg(noError, slices.Concat(
+		made(nsec, "pair.nsec. DNAME nsec3.", "pair.nsec. DNAME other."), cname("www.pair.nsec.", "www.nsec3."), target)))
+	attack("substitution/second-cname", below+"/A",
+		msg(noError, slices.Concat(redirect, made(nsec, below+" CNAME a.ent.dname.nsec."), onward)))
+
+	// The closest DNAME must redirect the name, and unrelated DNAMEs answer nothing.
+	attack("substitution/farther-dname", "a.ent.dname.nsec./A", msg(nameError, slices.Concat(
+		redirect, cname("a.ent.dname.nsec.", "a.ent.nsec3."), made(nsec3, "a.ent.nsec3. CNAME "+below),
+		made(nsec, "nsec. DNAME other."), cname(below, "www.dname.other.")), honest("www.dname.other./A").Ns))
+	attack("substitution/unused-dname", "www.nsec3./A", msg(noError, slices.Concat(target, redirect)))
+
+	// RFC 6672 §3.3 leaves wildcard DNAME behavior undefined; Unbound also refuses this reply.
+	expanded := uniOwned(made(nsec, "*.wd.nsec. DNAME nsec3."), func(string) string { return "x.wd.nsec." })
+	add("Bogus", "substitution/wildcard-owner", "www.x.wd.nsec./A",
+		msg(noError, slices.Concat(expanded, cname("www.x.wd.nsec.", "www.nsec3."), target),
+			made(nsec, "*.wd.nsec. NSEC www.nsec. DNAME RRSIG NSEC")))
+
+	// RFC 6672 §2.2 permits YXDOMAIN with the authentic DNAME when substitution exceeds 255 octets.
+	long := strings.Repeat(strings.Repeat("l", 60)+".", 4) + "two.nsec."
+	add("Secure", "substitution/yxdomain", long+"/A", honest(long+"/A"))
+
+	// A trust anchor cuts off authority from a DNAME signed by its parent zone.
+	anchored := []string{"sec.nsec."}
+	across := slices.Concat(cname("www.sec.nsec.", "www.sec.nsec3."), honest("www.sec.nsec3./A").Answer)
+	attack("substitution/above-anchor", "www.sec.nsec./A",
+		msg(noError, slices.Concat(made(nsec, "nsec. DNAME nsec3."), across))).anchors = anchored
+	add("Secure", "substitution/at-anchor", "www.sec.nsec./A",
+		msg(noError, slices.Concat(made(u.zone("sec.nsec."), "sec.nsec. DNAME sec.nsec3."), across))).anchors = anchored
+
+	// An unsigned DNAME cannot authenticate a redirect into an unsigned zone either.
+	attack("substitution/unsigned-dname", below+"/A", msg(noError, slices.Concat(
+		[]dns.RR{uniRR(".", "dname.nsec. DNAME insecure.nsec.")}, cname(below, "www.insecure.nsec."),
+		honest("www.insecure.nsec./A").Answer)))
+
+	// ANY cannot have NODATA at an owner with data, including the proving NSEC RRset itself.
+	attack("any/nsec-of-the-name", "www.nsec./ANY", msg(noError, nil, nsec.soa(), nsec.denials("www.nsec.")))
+	attack("any/nsec3-of-the-name", "www.nsec3./ANY", msg(noError, nil, nsec3.soa(), nsec3.denials("www.nsec3.")))
+	attack("any/nsec-of-the-wildcard", "x.wild.nsec./ANY",
+		msg(noError, nil, nsec.soa(), nsec.denials("x.wild.nsec.", "*.wild.nsec.")))
+	attack("any/nsec-without-types", "www.nsec./ANY",
+		msg(noError, nil, nsec.soa(), made(nsec, "www.nsec. NSEC x.wild.nsec.")))
 
 	return cases
 }

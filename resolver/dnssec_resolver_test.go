@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
@@ -1120,6 +1121,60 @@ var _ = Describe("DNSSECResolver", func() {
 					Expect(resp.Res.AuthenticatedData).Should(BeTrue())
 				}
 				Expect(asked[dns.TypeA]).Should(Equal(3))
+			})
+
+			// DNS64 must synthesize only from validated inputs, including cache hits.
+			When("DNS64 is above and the cache is below", func() {
+				var dns64 ChainedResolver
+
+				synthesized := func() *model.Response {
+					resp, err := dns64.Resolve(ctx, &model.Request{Req: util.NewMsgWithQuestion("example.com.", AAAA)})
+					Expect(err).Should(Succeed())
+
+					return resp
+				}
+
+				JustBeforeEach(func() {
+					// The cache needs a negative lifetime to retain the AAAA denial.
+					negative := config.Duration(30 * time.Minute)
+					withCache(config.Caching{CacheTimeNegative: negative})
+					dns64 = NewDNS64Resolver(config.DNS64{Enable: true})
+					dns64.Next(sut)
+
+					replies = []*dns.Msg{{Answer: signed(a)}}
+					noData := &dns.Msg{Ns: slices.Concat(
+						signed(newRR("example.com. 300 IN SOA ns.example.com. hostmaster.example.com. 1 3600 600 86400 300")),
+						signed(newRR("example.com. 300 IN NSEC unsigned.example.com. A NS SOA RRSIG NSEC DNSKEY")))}
+					resolve := mockUpstream.ResolveFn
+					mockUpstream.ResolveFn = func(ctx context.Context, req *model.Request) (*model.Response, error) {
+						if req.Req.Question[0].Qtype != dns.TypeAAAA {
+							return resolve(ctx, req)
+						}
+
+						asked[dns.TypeAAAA]++
+
+						return &model.Response{Res: noData.Copy(), RType: model.ResponseTypeRESOLVED}, nil
+					}
+				})
+
+				It("lets DNS64 synthesize from a denial and an A RRset that are authentic, also from the cache", func() {
+					for range 2 {
+						resp := synthesized()
+						Expect(resp.RType).Should(Equal(model.ResponseTypeSYNTHESIZED))
+						Expect(resp.Res.Rcode).Should(Equal(dns.RcodeSuccess))
+						Expect(resp.Res.Answer).Should(HaveLen(1))
+					}
+
+					Expect(asked).Should(Equal(map[uint16]int{dns.TypeAAAA: 1, dns.TypeA: 1, dns.TypeDNSKEY: 1}))
+				})
+
+				It("answers SERVFAIL for an A RRset that is not authentic", func() {
+					replies = []*dns.Msg{{Answer: []dns.RR{a}}}
+
+					Expect(told(synthesized()).InfoCode).Should(Equal(dns.ExtendedErrorCodeRRSIGsMissing))
+					Expect(asked[dns.TypeAAAA]).Should(Equal(1))
+					Expect(asked[dns.TypeA]).Should(Equal(2), "asked again")
+				})
 			})
 
 			DescribeTable("does not retry or cache exhausted validation work",
