@@ -210,7 +210,8 @@ func createUpstreamClient(cfg upstreamConfig) upstreamClient {
 			userAgent: cfg.UserAgent,
 			upstream:  cfg.String(),
 			client: &http.Client{
-				Transport: transport,
+				Transport:     transport,
+				CheckRedirect: checkDoHRedirect,
 			},
 			host: dohHost(cfg.Host),
 		}
@@ -242,6 +243,18 @@ func createUpstreamClient(cfg upstreamConfig) upstreamClient {
 	default:
 		panic(fmt.Sprintf("invalid protocol %s", cfg.Net))
 	}
+}
+
+func checkDoHRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return errors.New("DoH redirects must use HTTPS")
+	}
+	const maxRedirects = 10
+	if len(via) >= maxRedirects {
+		return errors.New("too many DoH redirects")
+	}
+
+	return nil
 }
 
 // dohHost returns the Host header for an upstream host: an IPv6 literal must be
@@ -407,7 +420,7 @@ func (r *httpUpstreamClient) callExternal(
 		return nil, 0, fmt.Errorf("can't unpack message: %w", err)
 	}
 
-	return &response, time.Since(start), nil
+	return &response, time.Since(start), servFailToError(&response)
 }
 
 func (r *dnsUpstreamClient) fmtURL(ip net.IP, port uint16, _ string) string {

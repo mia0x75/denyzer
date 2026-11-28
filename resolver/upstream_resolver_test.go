@@ -7,11 +7,14 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
@@ -22,11 +25,65 @@ import (
 	"github.com/miekg/dns"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // dohTestURL is the upstream URL for DoH specs that answer at the transport
 // layer, where nothing ever dials it.
 const dohTestURL = "https://example.com/dns-query"
+
+func TestDoHServfailFallsBack(t *testing.T) {
+	query := new(dns.Msg).SetQuestion("host.example.", dns.TypeA)
+	failed := new(dns.Msg).SetRcode(query, dns.RcodeServerFailure)
+	raw, err := failed.Pack()
+	require.NoError(t, err)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", dnsContentType)
+		_, _ = w.Write(raw)
+	}))
+	defer srv.Close()
+	host, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+	require.NoError(t, err)
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	require.NoError(t, err)
+	cfg := newUpstreamConfig(config.Upstream{Net: config.NetProtocolHttps, Host: host, Port: uint16(portNumber)}, config.Upstreams{Timeout: config.Duration(time.Second)})
+	primary := newUpstreamResolverUnchecked(cfg, &Bootstrap{})
+	defer primary.upstreamClient.Close()
+	primary.upstreamClient.(*httpUpstreamClient).client.Transport = srv.Client().Transport
+	healthy := NewMockChainedResolver(t)
+	healthy.EXPECT().String().Return("healthy").Maybe()
+	healthy.EXPECT().Resolve(mock.Anything, mock.Anything).Return(&Response{Res: new(dns.Msg).SetReply(query), Reason: "healthy"}, nil).Once()
+	group := newStrictResolver(config.UpstreamGroup{}, []Resolver{primary, healthy})
+	response, err := group.Resolve(t.Context(), &Request{Req: query})
+	require.NoError(t, err)
+	require.Equal(t, "healthy", response.Reason)
+}
+
+func TestDoHRejectsPlaintextRedirect(t *testing.T) {
+	for _, code := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			var received atomic.Int32
+			plaintext := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if body, err := io.ReadAll(r.Body); err == nil && len(body) > 0 {
+					received.Add(1)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer plaintext.Close()
+			secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, plaintext.URL, code)
+			}))
+			defer secure.Close()
+			client := createUpstreamClient(upstreamConfig{Net: config.NetProtocolHttps}).(*httpUpstreamClient)
+			defer client.Close()
+			client.client.Transport = secure.Client().Transport
+			_, _, err := client.callExternal(t.Context(), new(dns.Msg).SetQuestion("host.example.", dns.TypeA), secure.URL)
+			require.ErrorContains(t, err, "redirects must use HTTPS")
+			require.Zero(t, received.Load())
+		})
+	}
+}
 
 // replyWithRR builds a reply to req whose answer section holds the single given record.
 func replyWithRR(req *dns.Msg, rr string) *dns.Msg {
@@ -642,8 +699,18 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 				quicClient := sut.upstreamClient.(*quicUpstreamClient)
 				quicClient.tlsConfig.InsecureSkipVerify = true
 
-				Expect(sut.Resolve(ctx, newRequest("example.com.", A))).
-					Should(HaveReturnCode(dns.RcodeServerFailure))
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				var upstreamErr *UpstreamServerError
+				Expect(errors.As(err, &upstreamErr)).Should(BeTrue())
+				Expect(upstreamErr.Msg.Rcode).Should(Equal(dns.RcodeServerFailure))
+				healthy := NewMockChainedResolver(GinkgoT())
+				healthy.EXPECT().String().Return("healthy").Maybe()
+				healthy.EXPECT().Resolve(mock.Anything, mock.Anything).
+					Return(&Response{Res: new(dns.Msg).SetReply(newRequest("example.com.", A).Req), Reason: "healthy"}, nil).Once()
+				group := newStrictResolver(config.UpstreamGroup{}, []Resolver{sut, healthy})
+				response, err := group.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(Succeed())
+				Expect(response.Reason).Should(Equal("healthy"))
 			})
 		})
 

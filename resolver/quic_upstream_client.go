@@ -76,7 +76,7 @@ func (r *quicUpstreamClient) callExternal(
 		return nil, 0, fmt.Errorf("DoQ exchange with %s failed: %w", upstreamURL, err)
 	}
 
-	return resp, time.Since(start), nil
+	return resp, time.Since(start), servFailToError(resp)
 }
 
 // openStream opens a QUIC stream, handling 0-RTT rejection and stale connections.
