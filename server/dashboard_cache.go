@@ -344,7 +344,7 @@ func topEntityBounds(now time.Time, window string) (granularity string, start, e
 		return topWindowBounds(now, window)
 	}
 
-	if !storage.WindowRollupsCurrent(now) {
+	if !storage.WindowRollupsReady() || !storage.WindowRollupsCurrent(now) {
 		return topWindowBounds(now, window)
 	}
 

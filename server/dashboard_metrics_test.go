@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mia0x75/denyzer/storage"
+	"github.com/stretchr/testify/require"
 )
 
 // dashboardFixture records the metric buckets used by the dashboard tests.
@@ -87,6 +89,43 @@ func TestDashboardMetricsHandlers(t *testing.T) {
 	t.Run("stale window rollups fall back to the day buckets", func(t *testing.T) {
 		testDashboardStaleWindowRollups(t, fixture)
 	})
+	t.Run("failed maintenance falls back after successful writes", func(t *testing.T) {
+		testDashboardFailedMaintenance(t, dbPath)
+	})
+}
+
+func testDashboardFailedMaintenance(t *testing.T, dbPath string) {
+	t.Helper()
+	now := time.Now()
+	require.NoError(t, storage.MaintainWindowRollups(now))
+	conn, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	defer conn.Close()
+	_, err = conn.ExecContext(t.Context(), `CREATE TRIGGER fail_rollup_maintenance BEFORE INSERT ON metrics
+WHEN NEW.dimension = 'meta' BEGIN SELECT RAISE(ABORT, 'maintenance failed'); END`)
+	require.NoError(t, err)
+	defer func() {
+		_, err := conn.ExecContext(t.Context(), `DROP TRIGGER fail_rollup_maintenance`)
+		require.NoError(t, err)
+		require.NoError(t, storage.MaintainWindowRollups(now))
+	}()
+	require.ErrorContains(t, storage.MaintainWindowRollups(now.AddDate(0, 0, 1)), "maintenance failed")
+	require.False(t, storage.WindowRollupsReady())
+	require.True(t, storage.WindowRollupsCurrent(now))
+	seedDayDomain(t, storage.DayBucket(now), "maintenance-failure.test", 2)
+	for _, window := range []string{window7Days, window30Days} {
+		t.Run(window, func(t *testing.T) {
+			snapshot, err := buildTopSnapshotAt(now, storage.DimensionDomain, window)
+			require.NoError(t, err)
+			var count uint64
+			for _, entity := range snapshot.All {
+				if entity.Name == "maintenance-failure.test" {
+					count = entity.Count
+				}
+			}
+			require.Equal(t, uint64(2), count)
+		})
+	}
 }
 
 // testDashboardSummary covers the "summary is backed by the all-time metric" scenario.
