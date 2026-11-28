@@ -50,16 +50,6 @@ func newCachingDownloader(inner *httpDownloader, dir string) *cachingDownloader 
 	}
 }
 
-func (c *cachingDownloader) setValidators(link, etag, lastModified string) {
-	if etag == "" && lastModified == "" {
-		return
-	}
-
-	c.mu.Lock()
-	c.validators[link] = cacheValidators{etag: etag, lastModified: lastModified}
-	c.mu.Unlock()
-}
-
 func (c *cachingDownloader) conditionalHeader(link string) http.Header {
 	c.mu.Lock()
 	v, ok := c.validators[link]
@@ -69,7 +59,7 @@ func (c *cachingDownloader) conditionalHeader(link string) http.Header {
 		return nil
 	}
 
-	// setValidators only stores an entry when at least one validator is non-empty,
+	// Entries are stored only when at least one validator is non-empty,
 	// so a present entry always yields at least one conditional header.
 	h := make(http.Header, 2)
 	if v.etag != "" {
@@ -171,6 +161,9 @@ func (c *cachingDownloader) serveAndStore(link string, resp *downloadResponse) (
 		// durability cost of fsync-per-download is not worth it.
 		_ = tmp.Close()
 
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
 		if err := os.Rename(tmp.Name(), finalPath); err != nil {
 			logger().Warn("cannot finalize cache file "+finalPath, slog.Any("error", err))
 			_ = os.Remove(tmp.Name())
@@ -178,7 +171,11 @@ func (c *cachingDownloader) serveAndStore(link string, resp *downloadResponse) (
 			return
 		}
 
-		c.setValidators(link, etag, lastModified)
+		if etag == "" && lastModified == "" {
+			delete(c.validators, link)
+		} else {
+			c.validators[link] = cacheValidators{etag: etag, lastModified: lastModified}
+		}
 	}
 
 	return fin, nil

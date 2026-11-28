@@ -10,13 +10,51 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/mia0x75/denyzer/config"
+	"github.com/stretchr/testify/require"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+func TestDownloadCachePublishesBodyAndValidatorsTogether(t *testing.T) {
+	dir := t.TempDir()
+	cache := newCachingDownloader(nil, dir)
+	const link = "https://lists.example/test"
+	path := cacheFilePath(dir, link)
+	require.NoError(t, os.WriteFile(path, []byte("seed"), 0o600))
+	reader, err := cache.serveAndStore(link, &downloadResponse{
+		body: io.NopCloser(strings.NewReader("new")), header: http.Header{"Etag": {"new-tag"}},
+	})
+	require.NoError(t, err)
+	_, err = io.CopyN(io.Discard, reader, 3)
+	require.NoError(t, err)
+	cache.mu.Lock()
+	closed := make(chan error, 1)
+	go func() { closed <- reader.Close() }()
+	select {
+	case closeErr := <-closed:
+		cache.mu.Unlock()
+		t.Fatalf("cache publication did not acquire the validators lock: %v", closeErr)
+	case <-time.After(50 * time.Millisecond):
+	}
+	body, err := os.ReadFile(path)
+	cache.mu.Unlock()
+	require.NoError(t, err)
+	require.Equal(t, "seed", string(body), "the body must not be replaced while validator publication is locked")
+	require.NoError(t, <-closed)
+	body, err = os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "new", string(body))
+	require.Equal(t, "new-tag", cache.conditionalHeader(link).Get("If-None-Match"))
+	reader, err = cache.serveAndStore(link, &downloadResponse{body: io.NopCloser(strings.NewReader("without validators")), header: http.Header{}})
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	require.Empty(t, cache.conditionalHeader(link))
+}
 
 var _ = Describe("Download cache helpers", func() {
 	Describe("cacheFilePath", func() {
